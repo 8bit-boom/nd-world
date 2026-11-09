@@ -32,6 +32,7 @@ md-5 = "0.10"
 qrcode = { version = "0.14", default-features = false }
 libc = "0.2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+zip9 = { package = "zip", version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }   # the streamed Full Backup only (ZipWriter::new_stream)
 flate2 = "1"
 brotli = "9"
 mimalloc = { version = "0.1", default-features = false }
