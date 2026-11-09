@@ -11408,3 +11408,22 @@ def test_rules_overlay_suggest_is_pythons(client, seed):
     a, b = gm.post(url, data={}), g.post(url, data={})
     assert (a.status_code, a.text) == (b.status_code, b.text)
     assert g.post(url, data={"rules_md": "## A"}).headers.get("x-nd-served-by") == "gateway"
+
+
+def test_hf_discovery_routes_are_pythons(client, seed):
+    """The Hugging Face discovery GETs: the cases that need no network are Python's exactly; with one, both answer in the same shape (any failure is an empty list)."""
+    base = os.environ.get("ND_TEST_BASE_URL")
+    if not base:
+        import pytest
+        pytest.skip("needs the gateway")
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    g = _via(gm, base)
+    for url in ("/api/ai/ollama/hf-search", "/api/ai/ollama/hf-search?q=", "/api/ai/ollama/hf-search?q=%20%20", "/api/ai/ollama/hf-files", "/api/ai/ollama/hf-files?repo=nosl",
+                "/api/ai/ollama/hf-files?repo=%2F", "/api/ai/imagegen/models/hf-files", "/api/ai/imagegen/models/hf-files?repo=x&suffix=.safetensors"):
+        a, b = gm.get(url), g.get(url)
+        assert (a.status_code, a.json()) == (b.status_code, b.json()), url
+        assert b.headers.get("x-nd-served-by") == "gateway", url
+    for url, key in (("/api/ai/ollama/hf-search?q=zzzz-no-such-model-qqq", "results"), ("/api/ai/ollama/hf-files?repo=nobody-xyz/none-xyz", "files"),
+                     ("/api/ai/imagegen/models/hf-files?repo=nobody-xyz/none-xyz", "files")):
+        a, b = gm.get(url), g.get(url)
+        assert a.status_code == b.status_code == 200 and set(a.json()) == set(b.json()) == {key}, url

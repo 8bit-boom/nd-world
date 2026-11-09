@@ -39,6 +39,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/api/ai/imagegen/status" | "/api/ai/imagegen/models" | "/api/ai/imagegen/loras" | "/api/ai/imagegen/upscalers" | "/api/ai/imagegen/refiners" | "/api/ai/imagegen/ipadapter-models"
         | "/api/ai/imagegen/progress" | "/api/ai/imagegen/updates" | "/api/ai/imagegen/backends" | "/api/ai/imagegen/samplers-schedulers" => imagegen_unbacked(&cfg, uri, headers),
         "/api/ai/imagegen/starred" => imagegen_starred(&cfg, uri, headers),
+        "/api/ai/ollama/hf-search" | "/api/ai/ollama/hf-files" | "/api/ai/imagegen/models/hf-files" => hf_discovery(&cfg, uri, headers),
         "/api/ai/unsloth/models" | "/api/ai/unsloth/image/status" | "/api/ai/unsloth/image/load-progress" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/status"
         | "/api/ai/unsloth/context-overrides" | "/api/ai/unsloth/audio-models" | "/api/ai/unsloth/version" | "/api/ai/unsloth/probe"
         | "/api/ai/unsloth/hub/download-progress" | "/api/ai/unsloth/gguf-variants" => unsloth_unconfigured(&cfg, uri, headers),
@@ -127,7 +128,7 @@ pub fn is_get(path: &str) -> bool {
         || id_between(path, "/sessions/", "/npc-candidates").is_some() || id_between(path, "/sessions/", "/summary.md").is_some() || id_between(path, "/sessions/", "/transcript.md").is_some()
         || id_between(path, "/api/audio-jobs/", "/transcript.md").is_some() || id_between(path, "/api/audio-jobs/", "/recap.md").is_some()
         || id_between(path, "/api/combat/", "/pc-state").is_some() || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/templates/", "/export.json").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.pdf").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some() || id_between(path, "/parties/", "/export.ndc").is_some() || saved_views_section(path).is_some()
-        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/backups" | "/api/ai/imagegen/status" | "/api/ai/imagegen/models" | "/api/ai/imagegen/loras" | "/api/ai/imagegen/upscalers" | "/api/ai/imagegen/refiners" | "/api/ai/imagegen/ipadapter-models" | "/api/ai/imagegen/progress" | "/api/ai/imagegen/updates" | "/api/ai/imagegen/backends" | "/api/ai/imagegen/samplers-schedulers" | "/api/ai/imagegen/starred" | "/api/ai/imagegen/tags/sources" | "/api/ai/imagegen/tags/status" | "/api/ai/imagegen/tags" | "/api/perf/summary" | "/api/perf/recent" | "/api/system/stats" | "/api/orgs/graph" | "/api/ai/context-info" | "/api/ai/ping" | "/api/ai/sessions" | "/api/ai/unsloth/models" | "/api/ai/unsloth/image/status" | "/api/ai/unsloth/image/load-progress" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/status" | "/api/ai/unsloth/context-overrides" | "/api/ai/unsloth/audio-models" | "/api/ai/unsloth/version" | "/api/ai/unsloth/probe" | "/api/ai/unsloth/hub/download-progress" | "/api/ai/unsloth/gguf-variants" | "/api/ai/recap-instructions" | "/api/ai/defaults" | "/api/ai/prompt-presets" | "/api/media-rename/history" | "/api/sessions/ai/audio-jobs" | "/api/kiy/plays" | "/api/media-rename/runs" | "/api/media-rename/summary" | "/api/media-rename/items" | "/api/gallery/browse" | "/admin/diagnostics/events" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/tables.json" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some() || trailing_id(path, "/api/ai/sessions/").is_some()
+        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/backups" | "/api/ai/imagegen/status" | "/api/ai/imagegen/models" | "/api/ai/imagegen/loras" | "/api/ai/imagegen/upscalers" | "/api/ai/imagegen/refiners" | "/api/ai/imagegen/ipadapter-models" | "/api/ai/imagegen/progress" | "/api/ai/imagegen/updates" | "/api/ai/imagegen/backends" | "/api/ai/imagegen/samplers-schedulers" | "/api/ai/imagegen/starred" | "/api/ai/imagegen/tags/sources" | "/api/ai/imagegen/tags/status" | "/api/ai/imagegen/tags" | "/api/perf/summary" | "/api/perf/recent" | "/api/system/stats" | "/api/orgs/graph" | "/api/ai/context-info" | "/api/ai/ping" | "/api/ai/sessions" | "/api/ai/unsloth/models" | "/api/ai/unsloth/image/status" | "/api/ai/unsloth/image/load-progress" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/status" | "/api/ai/unsloth/context-overrides" | "/api/ai/unsloth/audio-models" | "/api/ai/unsloth/version" | "/api/ai/unsloth/probe" | "/api/ai/unsloth/hub/download-progress" | "/api/ai/unsloth/gguf-variants" | "/api/ai/recap-instructions" | "/api/ai/defaults" | "/api/ai/prompt-presets" | "/api/media-rename/history" | "/api/sessions/ai/audio-jobs" | "/api/kiy/plays" | "/api/media-rename/runs" | "/api/media-rename/summary" | "/api/media-rename/items" | "/api/gallery/browse" | "/admin/diagnostics/events" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/tables.json" | "/api/video-jobs" | "/api/ai/ollama/hf-search" | "/api/ai/ollama/hf-files" | "/api/ai/imagegen/models/hf-files") || trailing_id(path, "/api/ai/chat/jobs/").is_some() || trailing_id(path, "/api/ai/sessions/").is_some()
 }
 
 /// the id of `/api/parties/<id>/vitals` (plain digits, as FastAPI's int reads them here)
@@ -4373,4 +4374,89 @@ fn world_summary_get(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Res
         None => Value::Null,
     };
     crate::edits::json_response(&json!({"recap": job.get("recap").cloned().unwrap_or(json!("")), "generated_at": finished}))
+}
+
+fn py_truthy(v: &Value) -> bool {
+    match v {
+        Value::Null => false,
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0),
+        Value::String(t) => !t.is_empty(),
+        Value::Array(a) => !a.is_empty(),
+        Value::Object(o) => !o.is_empty(),
+    }
+}
+
+/// `GET /api/ai/ollama/hf-search`, `/api/ai/ollama/hf-files`, `/api/ai/imagegen/models/hf-files` (app/ai.py `search_huggingface_models` /
+/// `list_huggingface_gguf_files` / `list_huggingface_repo_files_recursive`): discovery on Hugging Face's public API; any failure is an empty list, as in Python
+fn hf_discovery(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+    let (_db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    let param = |n: &str| crate::pages::query_param(uri, n);
+    let path = uri.path();
+    let strip = |t: &str| nd_render::text::py_strip(t).to_string();
+    let fetch = |url: String| -> Option<Value> {
+        let (status, body) = tokio::runtime::Handle::current().block_on(crate::kiy::fetch(&url, std::time::Duration::from_secs(10), "python-httpx/0.27"))?;
+        if status >= 400 {
+            return None;
+        }
+        serde_json::from_slice(&body).ok()
+    };
+    if path.ends_with("/hf-search") {
+        let q = strip(&param("q").unwrap_or_default());
+        let mut results: Vec<Value> = vec![];
+        if !q.is_empty() {
+            let url = format!("https://huggingface.co/api/models?search={}&sort=downloads&direction=-1&limit=20", utf8_percent_encode(&q, NON_ALPHANUMERIC));
+            if let Some(Value::Array(list)) = fetch(url) {
+                for m in list {
+                    let Value::Object(m) = m else { continue };
+                    let id = match m.get("id").filter(|v| py_truthy(v)).or_else(|| m.get("modelId")) {
+                        Some(Value::String(t)) => t.clone(),
+                        None | Some(Value::Null) => continue,
+                        _ => return None,
+                    };
+                    if id.is_empty() {
+                        continue;
+                    }
+                    let num = |k: &str| m.get(k).filter(|v| py_truthy(v)).cloned().unwrap_or(json!(0));
+                    results.push(json!({"id": id, "downloads": num("downloads"), "likes": num("likes")}));
+                }
+            }
+        }
+        return crate::edits::json_response(&json!({"results": results}));
+    }
+    let repo = strip(&param("repo").unwrap_or_default());
+    let repo = repo.trim_matches('/').to_string();
+    let recursive = path.ends_with("/models/hf-files");
+    let valid = repo.split('/').count() == 2 && repo.split('/').all(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')));
+    if !repo.contains('/') {
+        return crate::edits::json_response(&json!({"files": []}));
+    }
+    if !valid {
+        return None; // a name httpx would percent-encode its own way
+    }
+    let suffix = if recursive { param("suffix").unwrap_or_else(|| ".gguf".into()).to_lowercase() } else { String::new() };
+    if recursive && suffix.chars().any(|c| !c.is_ascii()) {
+        return None;
+    }
+    let url = format!("https://huggingface.co/api/models/{repo}/tree/main{}", if recursive { "?recursive=true" } else { "" });
+    let mut files: Vec<Value> = vec![];
+    if let Some(Value::Array(list)) = fetch(url) {
+        for e in list {
+            let Value::Object(e) = e else { continue };
+            let path = match e.get("path") { None => String::new(), Some(Value::String(t)) => t.clone(), _ => return None };
+            let size = e.get("size").cloned().unwrap_or(Value::Null);
+            if recursive {
+                if e.get("type").and_then(|t| t.as_str()) == Some("file") && path.to_lowercase().ends_with(&suffix) {
+                    files.push(json!({"path": path, "size_bytes": size}));
+                }
+            } else if path.to_lowercase().ends_with(".gguf") {
+                files.push(json!({"filename": path, "size_bytes": size}));
+            }
+        }
+    }
+    crate::edits::json_response(&json!({"files": files}))
 }
