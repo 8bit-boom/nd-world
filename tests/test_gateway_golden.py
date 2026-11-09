@@ -11427,3 +11427,25 @@ def test_hf_discovery_routes_are_pythons(client, seed):
                      ("/api/ai/imagegen/models/hf-files?repo=nobody-xyz/none-xyz", "files")):
         a, b = gm.get(url), g.get(url)
         assert a.status_code == b.status_code == 200 and set(a.json()) == set(b.json()) == {key}, url
+
+
+def test_api_docs_are_pythons(client, seed):
+    """/openapi.json, /docs, /docs/oauth2-redirect and /redoc from the gateway are FastAPI's own, byte for byte; a player gets what Python gives a player."""
+    from .conftest import PLAYER_PASSWORD
+    base = os.environ.get("ND_TEST_BASE_URL")
+    if not base:
+        import pytest
+        pytest.skip("needs the gateway")
+    for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
+        d = _signed_in(email, pw, seed.world_a.slug)
+        g = _via(d, base)
+        for url in ("/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"):
+            a, b = d.get(url), g.get(url)
+            if url == "/openapi.json" and a.status_code == 200:
+                spec = a.json()                      # the test server has a route of its own that the shipped app does not
+                spec["paths"] = {k: v for k, v in spec["paths"].items() if not k.startswith("/__test__")}
+                assert (a.headers["content-type"], spec) == (b.headers["content-type"], b.json()), (email, url)
+            else:
+                assert (a.status_code, a.headers["content-type"], a.content) == (b.status_code, b.headers["content-type"], b.content), (email, url, a.status_code, b.status_code)
+            if email == seed.gm.email:
+                assert b.headers.get("x-nd-served-by") == "gateway", url
