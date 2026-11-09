@@ -468,6 +468,9 @@
       else { delete win.dataset.accent; win.style.removeProperty('--ck-accent'); }
       save();
     });
+    const backBtn = mkBtn('◀', 'Back one page in this window (Alt+←)', function () { stepHistory(win.querySelector('.ck-body iframe'), -1); });
+    const fwdBtn = mkBtn('▶', 'Forward one page in this window (Alt+→)', function () { stepHistory(win.querySelector('.ck-body iframe'), 1); });
+    backBtn.classList.add('ck-nav'); fwdBtn.classList.add('ck-nav');
     const reloadBtn = mkBtn('⟳', 'Reload this panel', function () {
       const frame = win.querySelector('.ck-body iframe');
       if (frame) { frames.reload(frame); return; }
@@ -491,7 +494,7 @@
     const zoomBadge = mkBtn('', 'Zoom — click for 100%', function () { setZoom(p, 100); });
     zoomBadge.className = 'ck-wbtn ck-zoom-badge';
     zoomBadge.hidden = true;
-    head.append(title, zoomBadge, accentBtn, reloadBtn, maxBtn, colBtn, dockBtn, closeBtn);
+    head.append(title, zoomBadge, accentBtn, backBtn, fwdBtn, reloadBtn, maxBtn, colBtn, dockBtn, closeBtn);
     head.addEventListener('dblclick', function (e) {
       if (e.target.closest('.ck-wbtn')) return;
       win.classList.toggle('maxed');
@@ -540,6 +543,11 @@
     });
   }
 
+  // Back / forward inside a window's own page (the iframe keeps its own history; the buttons just walk it)
+  function stepHistory(frame, dir) {
+    if (!frame) return;
+    try { if (dir < 0) frame.contentWindow.history.back(); else frame.contentWindow.history.forward(); } catch (e) { /* cross-origin: nothing to do */ }
+  }
   function mkBtn(label, tip, fn) {
     const b = document.createElement('button');
     b.type = 'button';
@@ -1276,6 +1284,8 @@
   function openCtx(p, win, x, y) {
     if (COMPACT.matches) return;
     const items = [
+      ['◀ Back', function () { stepHistory(win.querySelector('.ck-body iframe'), -1); }],
+      ['▶ Forward', function () { stepHistory(win.querySelector('.ck-body iframe'), 1); }],
       ['⟳ Reload', function () {
         const f = win.querySelector('.ck-body iframe');
         if (f) { frames.reload(f); return; }
@@ -3025,6 +3035,9 @@
     const title = document.createElement('span');
     title.className = 'ck-mpanel-title';
     title.textContent = p.title || CK_TYPES[p.type].icon + ' ' + CK_TYPES[p.type].label;
+    const mback = mkBtn('◀', 'Back one page in this window', function () { stepHistory(sec.querySelector('.ck-mpanel-body iframe'), -1); });
+    const mfwd = mkBtn('▶', 'Forward one page in this window', function () { stepHistory(sec.querySelector('.ck-mpanel-body iframe'), 1); });
+    mback.classList.add('ck-nav'); mfwd.classList.add('ck-nav');
     const reload = mkBtn('⟳', 'Reload this panel', function () {
       const f = sec.querySelector('.ck-mpanel-body iframe');
       if (f) { frames.reload(f); return; }
@@ -3032,7 +3045,7 @@
       if (fn) fn();
     });
     const close = mkBtn('✕', 'Remove this panel', function () { closePanel(p, sec); });
-    head.append(title, reload, close);
+    head.append(title, mback, mfwd, reload, close);
     const body = document.createElement('div');
     body.className = 'ck-mpanel-body';
     fillBody(p, body);
