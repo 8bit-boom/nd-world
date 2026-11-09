@@ -10740,3 +10740,48 @@ def test_training_bundle_without_python(client, seed):
     finally:
         proc.terminate()
         proc.wait(timeout=10)
+
+
+def test_schematic_editor_reads_and_preview_are_pythons(client, seed):
+    """GET /maps/schematic/<slug>/walls.json, rooms.json and preview.svg from the gateway: the same answers as Python's - every element shape
+    of the preview, a missing map, an HTML map, a player on a strict map (a blank card) and a player on a plain one."""
+    import json as _json
+    from app.database import SessionLocal
+    from app.models import Schematic
+    from .conftest import PLAYER_PASSWORD
+    base = os.environ.get("ND_TEST_BASE_URL")
+    if not base:
+        import pytest
+        pytest.skip("needs the gateway")
+    w = seed.world_a.id
+    els = [{"type": "rect", "x": 10, "y": 20.5, "w": 100, "h": "40", "fill": "#123", "stroke": "#fff", "strokeW": 3, "opacity": 0.5},
+           {"type": "circle", "cx": 200, "cy": 100, "rx": 15}, {"type": "line", "x1": 0, "y1": 0, "x2": 50, "y2": 0},
+           {"type": "poly", "points": [[1, 2], [3.25, 4], "bad", [5]]}, {"type": "pencil", "pts": [[0, 0], [10, 10]]},
+           {"type": "Text", "x": 5, "y": 6, "label": "A <b> & c", "size": 0}, {"type": "token", "x": 30, "y": 40, "name": "Ñandú", "color": "red"},
+           {"type": "pin", "cx": 1, "cy": 2, "r": 3, "label": 7}, "not a dict", {"type": "unknown"}]
+    db = SessionLocal()
+    try:
+        db.add_all([
+            Schematic(world_id=w, name="Prev A", slug="gw-prev-a", is_html=False, canvas_width=1200, canvas_height=800, canvas_bg="light",
+                      elements_json=_json.dumps(els), walls_json=_json.dumps([{"id": "w1", "pts": [[0, 0], [10, 0]], "kind": "secret", "state": "closed"}]),
+                      fog_json=_json.dumps({"enabled": True, "range": 7.9, "darkness": 0.333, "personal": 3}), rooms_json="{}",
+                      lights_json=_json.dumps([{"id": "l1", "x": 10, "y": 10, "r": 100, "on": True}])),
+            Schematic(world_id=w, name="Prev Empty", slug="gw-prev-empty", is_html=False, canvas_width=None, canvas_height=None, elements_json="[]"),
+            Schematic(world_id=w, name="Prev Strict", slug="gw-prev-strict", is_html=False, canvas_width=900, canvas_height=600, elements_json=_json.dumps(els[:2]),
+                      fog_json=_json.dumps({"enabled": True, "strict": True})),
+        ])
+        db.commit()
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    urls = [f"/maps/schematic/{s}/{f}" for s in ("gw-prev-a", "gw-prev-empty", "gw-prev-strict") for f in ("walls.json", "rooms.json", "preview.svg")]
+    urls += ["/maps/schematic/nope-nope/preview.svg", "/maps/schematic/nope-nope/walls.json"]
+    for who in (gm, pl):
+        for url in urls:
+            a, b = who.get(url), _via(who, base).get(url)
+            assert (a.status_code, a.text) == (b.status_code, b.text), (url, a.status_code, b.status_code, a.text[:300], b.text[:300])
+            if a.status_code == 200:
+                assert a.headers.get("content-type") == b.headers.get("content-type"), url
+    b = _via(gm, base).get("/maps/schematic/gw-prev-a/preview.svg")
+    assert b.headers.get("x-nd-served-by") == "gateway"

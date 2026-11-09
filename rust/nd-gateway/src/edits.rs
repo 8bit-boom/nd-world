@@ -574,6 +574,21 @@ pub fn handles(method: &Method, path: &str) -> bool {
 /// The saved-layout routes (app/routers/view_prefs_api.py): a section name in the path, POST and DELETE
 fn view_route(method: &Method, path: &str) -> Option<(SlugHandler, String)> {
     let ok = |s: &str| !s.is_empty() && s.len() <= 40 && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+    // the schematic editor's reads: walls / fog / lights and the room-drawing state, and the list card's SVG preview
+    if *method == Method::GET {
+        if let Some(rest) = path.strip_prefix("/maps/schematic/") {
+            let slug_ok = |s: &str| !s.is_empty() && !s.contains('/');
+            if let Some(sl) = rest.strip_suffix("/walls.json").filter(|s| slug_ok(s)) {
+                return Some((sc_walls_get as SlugHandler, sl.to_string()));
+            }
+            if let Some(sl) = rest.strip_suffix("/rooms.json").filter(|s| slug_ok(s)) {
+                return Some((sc_rooms_get as SlugHandler, sl.to_string()));
+            }
+            if let Some(sl) = rest.strip_suffix("/preview.svg").filter(|s| slug_ok(s)) {
+                return Some((sc_preview_svg as SlugHandler, sl.to_string()));
+            }
+        }
+    }
     if let Some(id) = path.strip_prefix("/api/view-prefs/preset/").filter(|s| ok(s)) {
         return (*method == Method::POST).then(|| (view_pref_preset as SlugHandler, id.to_string()));
     }
@@ -12797,6 +12812,177 @@ fn rooms_refusal(d: &Map<String, Value>) -> Option<Option<String>> {
         return Some(Some("cells hold fewer squares than the grid has".into()));
     }
     Some(None)
+}
+
+/// `GET /maps/schematic/<slug>/walls.json` (app/routers/map_walls.py `walls_get`): every wall (secret doors too), the fog settings and every
+/// light, for the editor
+fn sc_walls_get(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let sc = match sc_gate(c, slug)? { Ok(sc) => sc, Err(r) => return Some(r) };
+    let walls = sc_load(&sc, "walls_json", true)?;
+    let fog = clean_fog(sc_load(&sc, "fog_json", false)?.as_object()?)?;
+    let (lights, _) = clean_lights(sc_load(&sc, "lights_json", true)?.as_array()?, &sc)?;
+    json_response(&json!({"walls": walls, "fog": fog, "lights": lights}))
+}
+
+/// `GET /maps/schematic/<slug>/rooms.json` (`rooms_get`): the room-drawing tool's state, {} when nothing is drawn
+fn sc_rooms_get(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let sc = match sc_gate(c, slug)? { Ok(sc) => sc, Err(r) => return Some(r) };
+    let stored = sc_load(&sc, "rooms_json", false)?;
+    json_response(&clean_rooms(stored.as_object()?)?)
+}
+
+/// `GET /maps/schematic/<slug>/preview.svg` (app/main.py `schematic_preview_svg`): the elements drawn as a small SVG for the /maps list card,
+/// the background picture inlined. Values Python would print its own way (inf / nan, a non-text label) are Python's.
+fn sc_preview_svg(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    use base64::Engine;
+    let Ok(sch) = c.db.query_row("SELECT * FROM schematics WHERE slug = ?1 LIMIT 1", [slug], |r| crate::layout::row_map(r)) else {
+        return Some(crate::idpages::refusal(404));
+    };
+    let wid = sch.get("world_id")?.as_i64()?;
+    if !c.p.is_gm && Some(wid) != c.world_id() {
+        return None; // another world's view rights: Python's
+    }
+    let world = c.db.query_row("SELECT * FROM worlds WHERE id = ?1", [wid], |r| crate::layout::row_map(r)).ok()?;
+    if !crate::pages::section_ok(&c.p, Some(&world), "maps")? {
+        return Some(crate::idpages::refusal(403));
+    }
+    let dim = |k: &str, d: i64| sch.get(k).and_then(|v| v.as_i64()).filter(|v| *v != 0).unwrap_or(d);
+    let (cw, ch) = (dim("canvas_width", 2000), dim("canvas_height", 1500));
+    let svg_resp = |body: String, cache: &str| Response::builder().header(header::CONTENT_TYPE, "image/svg+xml").header(header::CACHE_CONTROL, cache)
+        .header("x-nd-served-by", "gateway").body(Body::from(body)).ok();
+    if !crate::pages::edit_level(&c.p, &world, "maps")? && map_is_strict(&sch)? {
+        return svg_resp(format!("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {cw} {ch}\"><rect width=\"100%\" height=\"100%\" fill=\"#16161d\"/></svg>"), "private, no-cache");
+    }
+    let bg = sch.get("canvas_bg").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("dark");
+    let bg_color = if bg == "dark" || bg == "grid-dark" { "#16161d" } else { "#f5f2ea" };
+    let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let fl = |f: f64| -> Option<String> { f.is_finite().then(|| nd_render::py_float_repr(f)) };
+    // `_n(v, d)`: float(v), or the default d AS GIVEN when float() refuses (so a default 4 prints "4", a converted 4 prints "4.0")
+    let num = |v: Option<&Value>, d: f64, dlit: &str| -> Option<(f64, String)> {
+        let dflt = Some((d, dlit.to_string()));
+        let conv = |f: f64| f.is_finite().then(|| (f, nd_render::py_float_repr(f)));
+        match v {
+            None | Some(Value::Null) => dflt,
+            Some(Value::Bool(b)) => conv(if *b { 1.0 } else { 0.0 }),
+            Some(Value::Number(n)) => conv(n.as_f64()?),
+            Some(Value::String(s)) => match s.trim().parse::<f64>() {
+                Ok(f) if f.is_finite() && !s.trim().is_empty() && !s.contains('_') => conv(f),
+                Ok(_) => None, // "inf", "nan", "1_0": Python's spelling
+                Err(_) => dflt,
+            },
+            Some(_) => dflt,
+        }
+    };
+    // str(x) of a stored value
+    let pystr = |v: &Value| -> Option<String> {
+        match v {
+            Value::String(s) => Some(s.clone()),
+            Value::Bool(b) => Some(if *b { "True" } else { "False" }.into()),
+            Value::Number(n) if n.is_i64() || n.is_u64() => Some(n.to_string()),
+            Value::Number(n) => fl(n.as_f64()?),
+            _ => None,
+        }
+    };
+    let truthy = |v: Option<&Value>| crate::edits::py_truthy_pub(v);
+    let or = |v: Option<&Value>, d: &str| -> Option<String> { if truthy(v) { pystr(v?) } else { Some(d.to_string()) } };
+    let mut parts: Vec<String> = vec![];
+    let image_url = sch.get("image_url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if !image_url.is_empty() {
+        let uploads = c.cfg.db_path.parent()?.join("uploads");
+        let rel = image_url.split_once("/uploads/").map_or(image_url.as_str(), |(_, r)| r);
+        if let (Ok(src), Ok(root)) = (uploads.join(rel).canonicalize(), uploads.canonicalize()) {
+            if src.starts_with(&root) && src.is_file() && std::fs::metadata(&src).ok()?.len() <= 4 * 1024 * 1024 {
+                let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+                let mime = match ext.as_str() {
+                    "png" => "image/png", "jpg" | "jpeg" => "image/jpeg", "gif" => "image/gif", "webp" => "image/webp", "avif" => "image/avif",
+                    "svg" => "image/svg+xml", "bmp" => "image/bmp", "tif" | "tiff" => "image/tiff", "ico" => "image/vnd.microsoft.icon",
+                    _ => "image/png",
+                };
+                let data = base64::engine::general_purpose::STANDARD.encode(std::fs::read(&src).ok()?);
+                parts.push(format!("<image href=\"data:{mime};base64,{data}\" x=\"0\" y=\"0\" width=\"{cw}\" height=\"{ch}\" preserveAspectRatio=\"none\"/>"));
+            }
+        }
+    }
+    let raw = sch.get("elements_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
+    let elements: Vec<Value> = match serde_json::from_str::<Value>(raw) {
+        Ok(Value::Array(a)) => a,
+        Ok(_) => return None, // a non-list: Python's TypeError
+        Err(_) => vec![],
+    };
+    for e in elements.iter().take(600) {
+        let Value::Object(e) = e else { continue };
+        let et = or(e.get("type"), "")?.to_lowercase();
+        let stroke = esc(&or(e.get("stroke"), "#888888")?);
+        let sw = num(e.get("strokeW"), 2.0, "2")?.1;
+        let fill = esc(&or(e.get("fill"), "none")?);
+        let op = num(e.get("opacity"), 1.0, "1.0")?.0;
+        let op_attr = if op != 1.0 { format!(" opacity=\"{}\"", fl(op.min(1.0).max(0.0))?) } else { String::new() };
+        let n = |k: &str, d: f64, dl: &str| -> Option<String> { Some(num(e.get(k), d, dl)?.1) };
+        match et.as_str() {
+            "rect" => parts.push(format!("<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{fill}\" stroke=\"{stroke}\" stroke-width=\"{sw}\" rx=\"{}\"{op_attr}/>",
+                n("x", 0.0, "0.0")?, n("y", 0.0, "0.0")?, n("w", 50.0, "50")?, n("h", 50.0, "50")?, n("rx", 4.0, "4")?)),
+            "circle" => parts.push(format!("<ellipse cx=\"{}\" cy=\"{}\" rx=\"{}\" ry=\"{}\" fill=\"{fill}\" stroke=\"{stroke}\" stroke-width=\"{sw}\"{op_attr}/>",
+                n("cx", 0.0, "0.0")?, n("cy", 0.0, "0.0")?, n("rx", 30.0, "30")?, n("ry", 30.0, "30")?)),
+            "line" | "arrow" => {
+                let (x1, y1, x2, y2) = (num(e.get("x1"), 0.0, "0.0")?.0, num(e.get("y1"), 0.0, "0.0")?.0, num(e.get("x2"), 0.0, "0.0")?.0, num(e.get("y2"), 0.0, "0.0")?.0);
+                if et == "arrow" {
+                    let ang = (y2 - y1).atan2(x2 - x1);
+                    for off in [-2.5f64, 2.5] {
+                        parts.push(format!("<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{stroke}\" stroke-width=\"{sw}\"/>",
+                            fl(x2)?, fl(y2)?, fl(x2 - 10.0 * (ang + off).cos())?, fl(y2 - 10.0 * (ang + off).sin())?));
+                    }
+                }
+                parts.push(format!("<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{stroke}\" stroke-width=\"{sw}\"{op_attr}/>", fl(x1)?, fl(y1)?, fl(x2)?, fl(y2)?));
+            }
+            "poly" | "pencil" => {
+                let pts = if truthy(e.get("points")) { e.get("points") } else { e.get("pts") };
+                if let Some(Value::Array(pts)) = pts {
+                    if pts.len() >= 2 {
+                        let mut out = vec![];
+                        for p in pts {
+                            if let Value::Array(p) = p {
+                                if p.len() >= 2 {
+                                    out.push(format!("{},{}", num(p.first(), 0.0, "0.0")?.1, num(p.get(1), 0.0, "0.0")?.1));
+                                }
+                            }
+                        }
+                        if !out.is_empty() {
+                            parts.push(format!("<polyline points=\"{}\" fill=\"none\" stroke=\"{stroke}\" stroke-width=\"{sw}\"{op_attr}/>", out.join(" ")));
+                        }
+                    }
+                }
+            }
+            "text" => {
+                let label = if truthy(e.get("label")) { e.get("label") } else if truthy(e.get("text")) { e.get("text") } else { None };
+                let label = match label { None => String::new(), Some(Value::String(s)) => s.clone(), Some(_) => return None };
+                let size = if truthy(e.get("size")) { num(e.get("size"), 0.0, "0.0")?.1 } else { "18.0".to_string() };
+                parts.push(format!("<text x=\"{}\" y=\"{}\" fill=\"{}\" font-size=\"{}\" font-family=\"sans-serif\">{}</text>",
+                    n("x", 0.0, "0.0")?, n("y", 0.0, "0.0")?, if fill != "none" { fill.as_str() } else { "#dddddd" }, size, esc(&label)));
+            }
+            "token" | "pin" => {
+                let ix = num(e.get("x"), 0.0, "0.0")?;
+                let iy = num(e.get("y"), 0.0, "0.0")?;
+                let cx = num(e.get("cx"), ix.0, &ix.1)?;
+                let cy = num(e.get("cy"), iy.0, &iy.1)?;
+                let r = num(e.get("r"), 14.0, "14")?;
+                let tcolor = esc(&or(e.get("color"), "#c05050")?);
+                parts.push(format!("<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"{tcolor}\" stroke=\"#111\" stroke-width=\"2\"/>", cx.1, cy.1, r.1));
+                let name = if truthy(e.get("name")) { e.get("name") } else { e.get("label") };
+                if truthy(name) {
+                    parts.push(format!("<text x=\"{}\" y=\"{}\" text-anchor=\"middle\" fill=\"#dddddd\" font-size=\"14\" font-family=\"sans-serif\">{}</text>",
+                        cx.1, fl(cy.0 + r.0 + 12.0)?, esc(&pystr(name?)?)));
+                }
+            }
+            _ => {}
+        }
+    }
+    let name = esc(sch.get("name").and_then(|v| v.as_str()).unwrap_or(""));
+    let label = if parts.is_empty() && image_url.is_empty() {
+        format!("<text x=\"{}\" y=\"{}\" text-anchor=\"end\" font-size=\"20\" font-family=\"sans-serif\" fill=\"#666666\">{name}</text>", cw - 16, ch - 14)
+    } else {
+        String::new()
+    };
+    svg_resp(format!("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {cw} {ch}\" preserveAspectRatio=\"xMidYMid meet\"><rect width=\"{cw}\" height=\"{ch}\" fill=\"{bg_color}\"/>{}{label}</svg>", parts.concat()), "private, max-age=60")
 }
 
 fn sc_rooms(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
