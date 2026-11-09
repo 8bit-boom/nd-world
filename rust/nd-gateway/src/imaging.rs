@@ -407,3 +407,46 @@ pub fn make_display(preview_format: &str, path: &Path) -> Option<PathBuf> {
     }
     Some(dest)
 }
+
+/// What `convert_image_to` does with one file, as far as this port can say
+pub enum Convert {
+    /// Python returns None: not a convertible type, already that format, or a picture it cannot decode (the reference stays)
+    Skipped,
+    /// the new path (the original is still in place: the caller removes it once the references are written)
+    Done(PathBuf),
+    /// this port would not do it as Pillow does (animated, GIF, AVIF, 16-bit): the request is Python's
+    Decline,
+}
+
+/// Whether `convert_to` can answer for this file, without touching it
+pub fn convert_plan(path: &Path, target: &str) -> Convert {
+    let ext = match target { "jpg" | "jpeg" => "jpg", "png" => "png", "webp" => "webp", "avif" => "avif", _ => return Convert::Skipped };
+    if !CONVERTIBLE.contains(&suffix_lower(path).as_str()) {
+        return Convert::Skipped;
+    }
+    let dest = path.with_extension(ext);
+    if dest == path {
+        return Convert::Skipped;
+    }
+    if readable(path).is_some() {
+        return Convert::Done(dest);
+    }
+    // next to Python these are Python's; alone, a picture this port cannot read exactly is left as it is rather than flattened
+    if crate::config::python_free() { Convert::Skipped } else { Convert::Decline }
+}
+
+/// `convert_image_to(path, target, quality)` for a file `convert_plan` accepted: writes the new file; the caller removes the original
+pub fn convert_to(path: &Path, target: &str, quality: u8) -> Convert {
+    let dest = match convert_plan(path, target) {
+        Convert::Done(d) => d,
+        other => return other,
+    };
+    let Some(img) = readable(path) else { return Convert::Skipped };
+    let jpeg = target == "jpg" || target == "jpeg";
+    let framed = frame(&img, jpeg);
+    if encode(&framed, if jpeg { "jpg" } else { target }, quality, &dest).is_none() {
+        let _ = std::fs::remove_file(&dest);
+        return Convert::Skipped;
+    }
+    Convert::Done(dest)
+}

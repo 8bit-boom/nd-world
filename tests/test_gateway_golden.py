@@ -11199,3 +11199,111 @@ def test_uvtt_import_is_pythons(client, seed):
                 db.close()
     pl = _via(_signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug), base)
     assert pl.post("/maps/schematic/import-uvtt", files={"file": ("x.dd2vtt", raws["plain.dd2vtt"], "application/json")}).status_code in (401, 403)
+
+
+def test_convert_images_is_pythons(client, seed):
+    """POST /api/import/convert-images from Python and from the gateway on two identical sets of pictures: the same answer (the per-image results,
+    the validation messages), the same references afterwards, and the new files are the right format and size; animated / GIF sources are Python's."""
+    import io
+    import json as _json
+    from pathlib import Path
+    from PIL import Image
+    from app.database import SessionLocal
+    from app.models import Entity, ImageAlbum, InvestBoard, PlayerCharacter, Schematic
+    base = os.environ.get("ND_TEST_BASE_URL")
+    if not base:
+        import pytest
+        pytest.skip("needs the gateway")
+    up = Path(os.environ["DB_PATH"]).parent / "uploads"
+    (up / "schematics" / "embeds").mkdir(parents=True, exist_ok=True)
+    wid = seed.world_a.id
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    g = _via(gm, base)
+
+    def pic(rel, size=(120, 80), mode="RGB", fmt="PNG"):
+        p = up / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        Image.new(mode, size, (10, 100, 200) if mode == "RGB" else (10, 100, 200, 90)).save(p, fmt)
+
+    def make(tag):
+        pic(f"cv_{tag}_ent.png"); pic(f"cv_{tag}_pc.jpg", fmt="JPEG"); pic(f"cv_{tag}_bg.png", mode="RGBA", size=(64, 48))
+        pic(f"schematics/embeds/cv_{tag}_emb.png"); pic(f"cv_{tag}_card.webp", fmt="WEBP"); pic(f"cv_{tag}_alb.png", size=(33, 21))
+        pic(f"cv_{tag}_same.png"); pic(f"cv_{tag}_done.webp", fmt="WEBP")
+        (up / f"cv_{tag}_notes.svg").write_text("<svg xmlns='http://www.w3.org/2000/svg'/>")
+        db = SessionLocal()
+        try:
+            db.add(Entity(world_id=wid, kind="npc", name=f"E{tag}", image_url=f"/uploads/cv_{tag}_ent.png"))
+            db.add(Entity(world_id=wid, kind="npc", name=f"E2{tag}", image_url=f"/uploads/cv_{tag}_same.png"))
+            db.add(Entity(world_id=wid, kind="npc", name=f"E3{tag}", image_url="https://example.com/x.png"))
+            db.add(Entity(world_id=wid, kind="npc", name=f"E4{tag}", image_url=f"/uploads/cv_{tag}_gone.png"))
+            db.add(Entity(world_id=wid, kind="npc", name=f"E5{tag}", image_url=f"/uploads/cv_{tag}_notes.svg"))
+            db.add(Entity(world_id=wid, kind="npc", name=f"E6{tag}", image_url=f"/uploads/cv_{tag}_done.webp"))
+            db.add(PlayerCharacter(world_id=wid, name=f"P{tag}", portrait_url=f"/uploads/cv_{tag}_pc.jpg"))
+            db.add(Schematic(world_id=wid, name=f"S{tag}", slug=f"cv-{tag}", image_url=f"/uploads/cv_{tag}_bg.png",
+                             elements_json=_json.dumps([{"type": "image", "href": f"/uploads/schematics/embeds/cv_{tag}_emb.png"}, {"type": "rect"}, "junk"])))
+            db.add(InvestBoard(world_id=wid, name=f"B{tag}", slug=f"cv-{tag}", nodes_json=_json.dumps([{"title": "Card", "image_url": f"/uploads/cv_{tag}_card.webp"}, {"image_url": f"/uploads/cv_{tag}_same.png"}, {"title": "x"}])))
+            db.add(ImageAlbum(world_id=wid, name=f"A{tag}", image_urls_json=_json.dumps([f"/uploads/cv_{tag}_alb.png", f"/uploads/cv_{tag}_same.png", 7])))
+            db.commit()
+        finally:
+            db.close()
+
+    def clear(tag):
+        db = SessionLocal()
+        try:
+            for model, col in ((Entity, Entity.name), (PlayerCharacter, PlayerCharacter.name), (Schematic, Schematic.name), (InvestBoard, InvestBoard.name), (ImageAlbum, ImageAlbum.name)):
+                for row in db.query(model).filter(col.like(f"%{tag}")).all():
+                    db.delete(row)
+            db.commit()
+        finally:
+            db.close()
+
+    def refs(tag):
+        db = SessionLocal()
+        try:
+            out = {}
+            for e in db.query(Entity).filter(Entity.name.like(f"%{tag}")).all():
+                out[e.name.replace(tag, "")] = e.image_url
+            p = db.query(PlayerCharacter).filter(PlayerCharacter.name == f"P{tag}").one()
+            out["pc"] = p.portrait_url
+            s = db.query(Schematic).filter(Schematic.name == f"S{tag}").one()
+            out["sc"] = (s.image_url, s.elements_json)
+            out["bd"] = db.query(InvestBoard).filter(InvestBoard.name == f"B{tag}").one().nodes_json
+            out["al"] = db.query(ImageAlbum).filter(ImageAlbum.name == f"A{tag}").one().image_urls_json
+            return _json.loads(_json.dumps(out).replace(tag, "@"))
+        finally:
+            db.close()
+
+    # validation: the same answers
+    for body in ({}, {"format": "gif"}, {"format": None}, {"format": "webp", "quality": "x"}, {"format": "webp", "quality": None},
+                 {"format": "webp", "quality": 0}, {"format": "webp", "quality": 101}):
+        a, b = gm.post("/api/import/convert-images", json=body), g.post("/api/import/convert-images", json=body)
+        assert (a.status_code, a.json()) == (b.status_code, b.json()), body
+    assert g.post("/api/import/convert-images", json={}).headers.get("x-nd-served-by") == "gateway"
+
+    for fmt, q in (("webp", 80), ("jpg", 70), ("png", 90)):
+        make("zqa"); make("zqb")
+        try:
+            # the other set is out of the way while Python runs, then back for the gateway
+            clear("zqb")
+            ra = gm.post("/api/import/convert-images", json={"format": fmt, "quality": q})
+            refs_a = refs("zqa"); clear("zqa"); make("zqb")
+            rb = g.post("/api/import/convert-images", json={"format": fmt, "quality": q})
+            refs_b = refs("zqb")
+            assert refs_a == refs_b
+            assert ra.status_code == rb.status_code == 200, (ra.text[:300], rb.text[:300])
+            assert rb.headers.get("x-nd-served-by") == "gateway"
+            norm = lambda r, tag: _json.loads(_json.dumps(r.json()).replace(tag, "@"))
+            na, nb = norm(ra, "zqa"), norm(rb, "zqb")
+            assert na["converted"] == nb["converted"] and na["total"] == nb["total"]
+            sa = sorted(_json.dumps(r, sort_keys=True) for r in na["results"])
+            sb = sorted(_json.dumps(r, sort_keys=True) for r in nb["results"])
+            assert sa == sb
+            assert nb["converted"] >= 3, rb.json()
+            for r in rb.json()["results"]:
+                if r["status"] == "ok":
+                    path = up / r["new_url"][len("/uploads/"):]
+                    assert path.is_file() and not (up / r["old_url"][len("/uploads/"):]).exists()
+                    with Image.open(path) as im:
+                        assert im.format == {"webp": "WEBP", "jpg": "JPEG", "png": "PNG"}[fmt]
+        finally:
+            clear("zqa"); clear("zqb")
