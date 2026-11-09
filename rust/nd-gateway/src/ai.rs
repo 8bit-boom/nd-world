@@ -753,7 +753,7 @@ fn stream_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Opt
         Some(o @ Value::Object(_)) => clamp_options(o)?,
         Some(_) => return None,
     };
-    let messages = build_messages(b.get("messages")?)?;
+    let messages = build_messages(b.get("messages")?, cfg.db_path.parent().map(|d| d.join("uploads")).as_deref())?;
     let surface = if p.is_gm || surface == "chat" || surface == "ask_ai" { surface } else { "chat".into() };
     let requested = if p.is_gm && !model.is_empty() { model } else { surface_default(cfg, &surface)? };
     if !p.is_gm && system.chars().count() > PLAYER_SYSTEM_MAX_CHARS {
@@ -1620,25 +1620,72 @@ pub async fn audio_job_resummarize(cfg: std::sync::Arc<Config>, uri: Uri, header
 }
 
 /// `_build_ollama_messages`: only messages without attachments or with document ones (pictures and audio are Python's)
-fn build_messages(v: &Value) -> Option<Vec<Value>> {
+fn build_messages(v: &Value, uploads: Option<&std::path::Path>) -> Option<Vec<Value>> {
+    use base64::Engine;
+    // `_attachment_disk_path`: an /uploads/ URL's file, only when it stays under the uploads folder
+    let disk = |url: &str| -> Option<std::path::PathBuf> {
+        let rest = url.strip_prefix("/uploads/")?;
+        let root = uploads?.canonicalize().ok()?;
+        let path = uploads?.join(rest).canonicalize().ok()?;
+        (path.starts_with(&root) && path.is_file()).then_some(path)
+    };
     let mut messages = vec![];
     for m in v.as_array()? {
         let Value::Object(m) = m else { return None };
         let (Some(Value::String(role)), Some(Value::String(content))) = (m.get("role"), m.get("content")) else { return None };
         let mut content = content.clone();
+        let mut images: Vec<String> = vec![];
         for a in m.get("attachments").map(|a| a.as_array()).unwrap_or(Some(&vec![]))? {
             let Value::Object(a) = a else { return None };
             let s = |k: &str| match a.get(k) { None => Some(String::new()), Some(Value::String(s)) => Some(s.clone()), _ => None };
-            if a.get("kind") != Some(&json!("document")) || !matches!(a.get("url"), Some(Value::String(_))) {
-                return None;
-            }
+            let (Some(Value::String(kind)), Some(Value::String(url))) = (a.get("kind"), a.get("url")) else { return None };
             let (name, t) = (s("name")?, s("text")?);
-            if !t.is_empty() {
-                let snippet: String = t.chars().take(MAX_ATTACHMENT_TEXT_CHARS).collect();
-                content.push_str(&format!("\n\n---\nAttached file: {}\n\n{snippet}\n---", if name.is_empty() { "document" } else { &name }));
+            let snippet = || -> String { t.chars().take(MAX_ATTACHMENT_TEXT_CHARS).collect() };
+            match kind.as_str() {
+                "document" if !t.is_empty() => {
+                    content.push_str(&format!("\n\n---\nAttached file: {}\n\n{}\n---", if name.is_empty() { "document" } else { &name }, snippet()));
+                }
+                "audio" => {
+                    let label = if name.is_empty() { "audio clip" } else { &name };
+                    let is_wav = url.rsplit('/').next().is_some_and(|f| f.to_lowercase().ends_with(".wav") && f.len() > 4);
+                    let mut sent = false;
+                    if !t.is_empty() {
+                        content.push_str(&format!("\n\n---\nTranscript of attached audio file: {label}\n\n{}\n---", snippet()));
+                        sent = true;
+                    }
+                    // the wav's bytes go in an `audios` field that the Studio dialect drops: only the note is left of it
+                    if is_wav && disk(url).is_some() {
+                        if t.is_empty() {
+                            content.push_str(&format!("\n\n[Attached audio file: {label} — sent to the model directly for models with audio input support]"));
+                        }
+                        sent = true;
+                    }
+                    if !sent {
+                        content.push_str(&format!("\n\n[Attached audio file: {label} — not sent to the model: no transcription available and it isn't a .wav file for direct audio input; mentioned here for context only]"));
+                    }
+                }
+                "image" => {
+                    if let Some(path) = disk(url) {
+                        images.push(base64::engine::general_purpose::STANDARD.encode(std::fs::read(path).ok()?));
+                    }
+                }
+                _ => {}
             }
         }
-        messages.push(json!({"role": role, "content": content}));
+        if images.is_empty() {
+            messages.push(json!({"role": role, "content": content}));
+        } else {
+            // `_translate_messages`: text, then each picture as an image_url part (JPEG sniffed by its base64 prefix, else PNG)
+            let mut parts = vec![];
+            if !content.is_empty() {
+                parts.push(json!({"type": "text", "text": content}));
+            }
+            for b in images {
+                let media = if b.starts_with("/9j/") { "image/jpeg" } else { "image/png" };
+                parts.push(json!({"type": "image_url", "image_url": {"url": format!("data:{media};base64,{b}")}}));
+            }
+            messages.push(json!({"role": role, "content": parts}));
+        }
     }
     Some(messages)
 }
@@ -1684,7 +1731,7 @@ fn chat_job_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> O
         Some(o @ Value::Object(_)) => clamp_options(o)?,
         Some(_) => return None,
     };
-    let messages = build_messages(b.get("messages")?)?;
+    let messages = build_messages(b.get("messages")?, cfg.db_path.parent().map(|d| d.join("uploads")).as_deref())?;
     let backend = backend(&db)?;
     if !options.contains_key("num_ctx") {
         let total = format!("{system}{}", messages.iter().map(|m| m["content"].as_str().unwrap_or("")).collect::<String>());
@@ -4335,14 +4382,15 @@ fn sync_ai_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Op
             text_raw(&b, "surface")?;
             let think = match b.get("think") { None => false, Some(Value::Bool(t)) => *t, Some(_) => return None };
             let options = match b.get("options") { None => Map::new(), Some(o @ Value::Object(_)) => clamp_options(o)?, Some(_) => return None };
-            let messages = build_messages(b.get("messages")?)?;
+            let messages = build_messages(b.get("messages")?, cfg.db_path.parent().map(|d| d.join("uploads")).as_deref())?;
             let bk = backend(&db)?;
             let model = if model.is_empty() { bk.model.clone() } else { model };
             if !compact {
                 SyncAi::Chat { b: bk, model, system, messages, options }
             } else {
                 if messages.is_empty() { return refuse(StatusCode::BAD_REQUEST, "No messages to compact"); }
-                let all: String = messages.iter().map(|m| m["content"].as_str().unwrap_or("")).collect();
+                let text_of = |m: &Value| -> String { match &m["content"] { Value::String(t) => t.clone(), Value::Array(parts) => parts.iter().filter_map(|p| p["text"].as_str()).collect(), _ => String::new() } };
+                let all: String = messages.iter().map(|m| text_of(m)).collect();
                 let cpt = chars_per_token(&all);
                 let tokens = (all.chars().count() as i64 + cpt - 1) / cpt;
                 let ceiling = max_auto_ctx() - 512;
@@ -4351,7 +4399,7 @@ fn sync_ai_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Op
                 }
                 // _chat_history_to_text
                 let history = messages.iter().filter_map(|m| {
-                    let c = crate::edits::py_strip_pub(m["content"].as_str().unwrap_or(""));
+                    let c = crate::edits::py_strip_pub(&text_of(m));
                     (!c.is_empty()).then(|| format!("{}: {c}", if m["role"] == "user" { "GM" } else { "Assistant" }))
                 }).collect::<Vec<_>>().join("\n\n");
                 SyncAi::Compact { b: bk, model, history, think }

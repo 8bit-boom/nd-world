@@ -3215,3 +3215,51 @@ def test_ollama_and_swarmui_routes_without_those_backends_are_pythons(client, se
     for q in ("", "?filename=", "?filename=nothing-here.safetensors", "?subfolder=..&filename=x", "?subfolder=%2Fetc&filename=passwd"):
         a, b = both("delete", "/api/ai/imagegen/models/downloaded" + q)
         assert (a.status_code, a.json()) == (b.status_code, b.json()), q
+
+
+def test_chat_attachments_reach_the_backend_as_pythons_do(client, seed, studio):
+    """POST /api/ai/stream, /chat/compact and /chat with image (a pasted picture), audio (with and without a transcript, wav and not) and document
+    attachments: the same messages reach the backend from the gateway as from Python."""
+    import base64
+    import io
+    from pathlib import Path
+    from PIL import Image
+    base = str(client.base_url)
+    up = Path(os.environ["DB_PATH"]).parent / "uploads" / "ai_attachments"
+    up.mkdir(parents=True, exist_ok=True)
+    png, jpg = io.BytesIO(), io.BytesIO()
+    Image.new("RGB", (8, 8), (200, 10, 10)).save(png, "PNG")
+    Image.new("RGB", (8, 8), (10, 10, 200)).save(jpg, "JPEG")
+    (up / "t_pic.png").write_bytes(png.getvalue())
+    (up / "t_pic.jpg").write_bytes(jpg.getvalue())
+    (up / "t_clip.wav").write_bytes(b"RIFFxxxxWAVEfmt ")
+    (up / "t_clip.mp3").write_bytes(b"ID3xxxx")
+    att = lambda kind, name, text="", url=None: {"kind": kind, "url": url or f"/uploads/ai_attachments/{name}", "name": name, "text": text}  # noqa: E731
+    messages = [
+        {"role": "user", "content": "describe image", "attachments": [att("image", "t_pic.png"), att("image", "t_pic.jpg"), att("image", "gone.png")]},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "", "attachments": [att("image", "t_pic.png")]},
+        {"role": "user", "content": "listen", "attachments": [att("audio", "t_clip.wav"), att("audio", "t_clip.mp3"), att("audio", "t_clip.mp3", "said hello"),
+                                                              att("audio", "t_clip.wav", "wav words"), att("audio", "", url="/uploads/ai_attachments/missing.wav")]},
+        {"role": "user", "content": "read", "attachments": [att("document", "notes.txt", "line one\nline two"), att("document", "empty.txt", ""), att("video", "v.mp4"),
+                                                            att("image", "x", url="https://example.com/x.png"), att("image", "esc", url="/uploads/../world.db")]},
+    ]
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    g = _via(gm, base)
+    studio.script = [_delta(content="Hello"), {"choices": [{"delta": {}, "finish_reason": "stop"}]}]
+    studio.reply = {"choices": [{"message": {"role": "assistant", "content": "A summary."}}]}
+    for path, body in (("/api/ai/stream", {"messages": messages, "system": "s", "model": "", "surface": "chat", "think": False}),
+                       ("/api/ai/chat/compact", {"messages": messages, "system": "", "model": "", "think": False}),
+                       ("/api/ai/chat", {"messages": messages, "system": "s", "model": ""})):
+        out = []
+        for side in (gm, g):
+            studio.requests.clear()
+            r = side.post(path, json=body)
+            out.append((r.status_code, r.text if path != "/api/ai/stream" else r.text, [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+        assert out[0][0] == 200, (path, out[0][:2])
+        assert out[1][3] == "gateway", path
+        if out[0][2] != out[1][2]:
+            import difflib
+            a, b = json.dumps(out[0][2], indent=1).splitlines(), json.dumps(out[1][2], indent=1).splitlines()
+            raise AssertionError(path + "\n" + "\n".join(list(difflib.unified_diff(a, b, "python", "gateway", lineterm="", n=0))[:20]))
+        assert path.endswith("compact") or any("image_url" in json.dumps(m) for q in out[0][2] for m in q.get("messages", [])), path
