@@ -11754,8 +11754,13 @@ fn pc_fight_numbers(db: &Connection, pc: &Map<String, Value>) -> Option<(Value, 
 }
 
 fn pc_combatant(c: &Ctx, pc: &Map<String, Value>) -> Option<Value> {
-    let (_, shock, _, _, _) = pc_maxima(&c.db, pc)?;
-    let (hp, max_hp, res) = pc_fight_numbers(&c.db, pc)?;
+    pc_combatant_db(&c.db, pc)
+}
+
+/// `pc_to_combatant(pc, db)` without a request: what a character's sheet says right now, shaped as a combatant
+pub(crate) fn pc_combatant_db(db: &Connection, pc: &Map<String, Value>) -> Option<Value> {
+    let (_, shock, _, _, _) = pc_maxima(db, pc)?;
+    let (hp, max_hp, res) = pc_fight_numbers(db, pc)?;
     let stats = stat_values(pc)?;
     let get = |k: &str| stats.iter().find(|(id, _)| id == k).map_or(0, |(_, v)| *v);
     let conds: Vec<Value> = match serde_json::from_str::<Value>(pc.get("conditions_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]")) {

@@ -121,9 +121,7 @@ body {
       'same_as': '3 5'
     } %}
 
-    {# Build node lookup dict #}
-    {% set node_map = {} %}
-    {% for n in nodes %}{% if node_map.update({n.id: n}) %}{% endif %}{% endfor %}
+    {# node_map: {id: node} comes from the handler (the gateway's template engine cannot fill a dict in place) #}
 
     {# Count parallel edges per pair for offset calculation #}
     {% for e in edges %}

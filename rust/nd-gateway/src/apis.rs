@@ -79,6 +79,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         }
         path if id_between(path, "/api/entity/", "/preview").is_some() => entity_preview(&cfg, uri, headers, id_between(path, "/api/entity/", "/preview")?),
         path if id_between(path, "/entity/", "/download.md").is_some() => entity_download(&cfg, uri, headers, id_between(path, "/entity/", "/download.md")?),
+        path if id_between(path, "/api/combat/", "/pc-state").is_some() => combat_pc_state(&cfg, uri, headers, id_between(path, "/api/combat/", "/pc-state")?),
         path if id_between(path, "/api/characters/", "/vitals").is_some() => pc_vitals(&cfg, uri, headers, id_between(path, "/api/characters/", "/vitals")?),
         path if id_between(path, "/api/characters/", "/sync").is_some() => pc_sync_get(&cfg, uri, headers, id_between(path, "/api/characters/", "/sync")?),
         path if id_between(path, "/api/characters/", "/advance").is_some() => pc_advance_get(&cfg, uri, headers, id_between(path, "/api/characters/", "/advance")?),
@@ -87,6 +88,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         path if id_between(path, "/characters/", "/export.json").is_some() => pc_export_json(&cfg, uri, headers, id_between(path, "/characters/", "/export.json")?),
         path if id_between(path, "/characters/", "/export.pdf").is_some() => pc_export_pdf(&cfg, uri, headers, id_between(path, "/characters/", "/export.pdf")?),
         path if id_between(path, "/characters/", "/export.md").is_some() => pc_export_md(&cfg, uri, headers, id_between(path, "/characters/", "/export.md")?),
+        path if id_between(path, "/parties/", "/export.ndc").is_some() => party_export_ndc(&cfg, uri, headers, id_between(path, "/parties/", "/export.ndc")?),
         path if id_between(path, "/characters/", "/export.ndc").is_some() => pc_export_ndc(&cfg, uri, headers, id_between(path, "/characters/", "/export.ndc")?),
         path if id_between(path, "/characters/", "/export.foundry.json").is_some() => pc_export_foundry(&cfg, uri, headers, id_between(path, "/characters/", "/export.foundry.json")?),
         path if path.starts_with("/worlds/switch/") => world_switch(&cfg, uri, headers),
@@ -124,7 +126,7 @@ pub fn is_get(path: &str) -> bool {
         || kind_zip_path(path).is_some()
         || id_between(path, "/sessions/", "/npc-candidates").is_some() || id_between(path, "/sessions/", "/summary.md").is_some() || id_between(path, "/sessions/", "/transcript.md").is_some()
         || id_between(path, "/api/audio-jobs/", "/transcript.md").is_some() || id_between(path, "/api/audio-jobs/", "/recap.md").is_some()
-        || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/templates/", "/export.json").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.pdf").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some() || saved_views_section(path).is_some()
+        || id_between(path, "/api/combat/", "/pc-state").is_some() || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/templates/", "/export.json").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.pdf").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some() || id_between(path, "/parties/", "/export.ndc").is_some() || saved_views_section(path).is_some()
         || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/backups" | "/api/ai/imagegen/status" | "/api/ai/imagegen/models" | "/api/ai/imagegen/loras" | "/api/ai/imagegen/upscalers" | "/api/ai/imagegen/refiners" | "/api/ai/imagegen/ipadapter-models" | "/api/ai/imagegen/progress" | "/api/ai/imagegen/updates" | "/api/ai/imagegen/backends" | "/api/ai/imagegen/samplers-schedulers" | "/api/ai/imagegen/starred" | "/api/ai/imagegen/tags/sources" | "/api/ai/imagegen/tags/status" | "/api/ai/imagegen/tags" | "/api/perf/summary" | "/api/perf/recent" | "/api/system/stats" | "/api/orgs/graph" | "/api/ai/context-info" | "/api/ai/ping" | "/api/ai/sessions" | "/api/ai/unsloth/models" | "/api/ai/unsloth/image/status" | "/api/ai/unsloth/image/load-progress" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/status" | "/api/ai/unsloth/context-overrides" | "/api/ai/unsloth/audio-models" | "/api/ai/unsloth/version" | "/api/ai/unsloth/probe" | "/api/ai/unsloth/hub/download-progress" | "/api/ai/unsloth/gguf-variants" | "/api/ai/recap-instructions" | "/api/ai/defaults" | "/api/ai/prompt-presets" | "/api/media-rename/history" | "/api/sessions/ai/audio-jobs" | "/api/kiy/plays" | "/api/media-rename/runs" | "/api/media-rename/summary" | "/api/media-rename/items" | "/api/gallery/browse" | "/admin/diagnostics/events" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/tables.json" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some() || trailing_id(path, "/api/ai/sessions/").is_some()
 }
 
@@ -1710,24 +1712,56 @@ fn py_int_value(v: &Value) -> Option<i64> {
     }
 }
 
-/// `GET /characters/<id>/export.ndc` (app/routers/characters.py `character_export_ndc`): the character in the Android app's / editor's format
-fn pc_export_ndc(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
-    let db = crate::writes::open(cfg)?;
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
-    let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
-    let pc = db.query_row("SELECT * FROM player_characters WHERE id = ?1", [id], |r| crate::layout::row_map(r)).ok();
-    let Some(pc) = pc else { return Some(crate::idpages::refusal(404)) };
-    if !(p.is_gm || pc.get("owner_user_id").and_then(|v| v.as_i64()) == Some(p.user_id)) {
+/// `GET /parties/<id>/export.ndc` (app/routers/parties.py `party_export_ndc`, GM only): every native member in one .ndc array; members on a custom sheet are
+/// skipped (named in X-Skipped-Custom-Sheets)
+fn party_export_ndc(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
         return Some(crate::idpages::refusal(403));
     }
-    if !crate::edits::pc_maxima(&db, &pc)?.4 {
-        return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "The .ndc format is the Neon & Dragons app's — a character on a custom sheet (Hunt in the Moonlight, Asterion, …) can't be exported to it. Use the JSON, Markdown, PDF or Foundry export instead."));
+    let Some(party) = rows_of(&db, "SELECT * FROM parties WHERE id = ?1", &[&id])?.into_iter().next() else { return Some(crate::idpages::refusal(404)) };
+    let wid = party.get("world_id").and_then(|v| v.as_i64())?;
+    let ids = crate::edits::member_ids(party.get("member_pc_ids_json"))?;
+    let mut pcs: Vec<Map<String, Value>> = vec![];
+    if !ids.is_empty() {
+        let marks = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let mut st = db.prepare(&format!("SELECT * FROM player_characters WHERE id IN ({marks}) AND world_id = ? ORDER BY name")).ok()?;
+        let mut params: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
+        params.push(&wid);
+        pcs = st.query_map(params.as_slice(), |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     }
+    let mut docs = vec![];
+    let mut skipped: Vec<String> = vec![];
+    for pc in &pcs {
+        if crate::edits::pc_maxima(&db, pc)?.4 {
+            docs.push(Value::Object(pc_ndc_doc(cfg, &db, pc)?));
+        } else {
+            skipped.push(pc.get("name").and_then(|v| v.as_str())?.to_string());
+        }
+    }
+    let name = party.get("name").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("party");
+    // _safe_export_filename: ASCII letters, digits, space, - and _ only here (Unicode letters: Python's)
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-' || c == '_') {
+        return None;
+    }
+    let body = nd_render::py_dumps_indent_as(&Value::Array(docs), 2, false);
+    let mut r = crate::edits::json_response_raw(&body, "application/json")?;
+    r.headers_mut().insert("content-disposition", format!("attachment; filename=\"{name}.ndc\"").parse().ok()?);
+    if !skipped.is_empty() {
+        let joined: String = skipped.join(", ").chars().filter(|c| c.is_ascii()).collect();
+        r.headers_mut().insert("x-skipped-custom-sheets", if joined.is_empty() { "custom sheets".to_string() } else { joined }.parse().ok()?);
+    }
+    Some(r)
+}
+
+/// `GET /characters/<id>/export.ndc` (app/routers/characters.py `character_export_ndc`): the character in the Android app's / editor's format
+/// `_pc_to_ndc_dict(pc)`: a native sheet in the Android app's / editor's format (None: something Python would read or print its own way)
+pub(crate) fn pc_ndc_doc(cfg: &Config, db: &rusqlite::Connection, pc: &Map<String, Value>) -> Option<Map<String, Value>> {
     let list = |k: &str| -> Option<Vec<Value>> {
         match py_json_strict(pc.get(k).and_then(|v| v.as_str()), "[]")? { Value::Array(a) => Some(a), _ => None }
     };
     let (stats, feats, equipment, currency) = (list("stats_json")?, list("feats_json")?, list("equipment_json")?, list("currency_json")?);
-    let d = crate::edits::derived(&pc)?;
+    let d = crate::edits::derived(pc)?;
     let dint = |k: &str| d.get(k).and_then(|v| v.as_i64());
     let mut stat_val: Vec<(String, i64)> = vec![];
     for s in &stats {
@@ -1815,7 +1849,7 @@ fn pc_export_ndc(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Optio
     let race_id = text_col("race_id")?;
     let (phys, ment) = (dint("phys")?, dint("ment")?);
     let ecto = if race_id == "banshee" { phys + ment } else { 0 };
-    let n = |k: &str| crate::edits::col_int(&pc, k);
+    let n = |k: &str| crate::edits::col_int(pc, k);
     let empty_obj = || json!({});
     let empty_arr = || json!([]);
     let mut doc = Map::new();
@@ -1852,6 +1886,22 @@ fn pc_export_ndc(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Optio
         "portraitBase64": portrait, "notes": notes,
         "featSpecialAttrValues": empty_obj(), "professionSpecialAttrValues": empty_obj(), "raceSpecialAttrValues": empty_obj(),
     }
+    Some(doc)
+}
+
+fn pc_export_ndc(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let pc = db.query_row("SELECT * FROM player_characters WHERE id = ?1", [id], |r| crate::layout::row_map(r)).ok();
+    let Some(pc) = pc else { return Some(crate::idpages::refusal(404)) };
+    if !(p.is_gm || pc.get("owner_user_id").and_then(|v| v.as_i64()) == Some(p.user_id)) {
+        return Some(crate::idpages::refusal(403));
+    }
+    if !crate::edits::pc_maxima(&db, &pc)?.4 {
+        return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "The .ndc format is the Neon & Dragons app's — a character on a custom sheet (Hunt in the Moonlight, Asterion, …) can't be exported to it. Use the JSON, Markdown, PDF or Foundry export instead."));
+    }
+    let Some(doc) = pc_ndc_doc(cfg, &db, &pc) else { return None };
     let fname = export_name(pc.get("name").and_then(|v| v.as_str()))?;
     let body = nd_render::py_dumps_indent_as(&json!([Value::Object(doc)]), 2, false);
     let mut r = crate::edits::json_response_raw(&body, "application/json")?;
@@ -3978,6 +4028,47 @@ fn world_players(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Respons
         }
     }
     crate::edits::json_response(&Value::Array(out))
+}
+
+/// `GET /api/combat/<id>/pc-state` (app/routers/combat.py `combat_pc_state`, GM only): what the player characters of an encounter are like ON THEIR SHEETS now -
+/// the other direction of Sync
+fn combat_pc_state(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return Some(crate::idpages::refusal(403));
+    }
+    let wid = p.world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64());
+    let Some(cs) = rows_of(&db, "SELECT * FROM combat_sessions WHERE id = ?1", &[&id])?.into_iter().next() else { return Some(crate::idpages::refusal(404)) };
+    if wid.is_none() || cs.get("world_id").and_then(|v| v.as_i64()) != wid {
+        return Some(crate::idpages::refusal(404));
+    }
+    let raw = cs.get("combatants_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]");
+    if !crate::edits::plain_numbers(raw.as_bytes()) {
+        return None;
+    }
+    let combatants: Vec<Value> = match serde_json::from_str::<Value>(raw) {
+        Ok(Value::Array(a)) => a.into_iter().filter(|c| c.is_object()).collect(),
+        Ok(_) => vec![],
+        Err(_) if raw.contains("NaN") || raw.contains("Infinity") => return None,
+        Err(_) => vec![],
+    };
+    let mut out = Map::new();
+    for c in &combatants {
+        if c.get("source").and_then(|v| v.as_str()) != Some("pc") {
+            continue;
+        }
+        let Some(pc_id) = c.get("pc_id").filter(|v| crate::edits::py_truthy_pub(Some(v))) else { continue };
+        let Some(pc_id) = pc_id.as_i64() else { return None };
+        let Some(pc) = rows_of(&db, "SELECT * FROM player_characters WHERE id = ?1 AND world_id = ?2", &[&pc_id, &wid.unwrap_or(0)])?.into_iter().next() else { continue };
+        let sheet = crate::edits::pc_combatant_db(&db, &pc)?;
+        let key = c.get("id").and_then(|v| v.as_str())?.to_string();
+        let mut one = Map::new();
+        for k in ["hp", "max_hp", "shock", "max_shock", "conditions", "res"] {
+            one.insert(k.into(), sheet.get(k)?.clone());
+        }
+        out.insert(key, Value::Object(one));
+    }
+    crate::edits::json_response(&json!({"pcs": out}))
 }
 
 /// `GET /api/tables.json` (app/routers/tables.py `tables_json`, for the nd-cartographer studio): every roll table of the world and the built-in ones,

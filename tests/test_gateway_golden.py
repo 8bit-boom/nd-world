@@ -861,7 +861,7 @@ def test_id_pages_the_gateway_builds_are_pythons(client, seed):
         for url in urls:
             served[url] += _same_page(d, via, url, email)
     must = [u for u in urls if "999999" not in u and u not in (f"/handout/{other.id}", f"/display/combat/{ctpl.id}", f"/worlds/{seed.world_b.id}/rules/edit", f"/pages/{far.id}")]
-    assert all(served[u] for u in must), served
+    assert all(served[u] for u in must), {u: served[u] for u in must if not served[u]}
 
 
 def test_quest_page_the_gateway_builds_is_pythons(client, seed):
@@ -895,7 +895,7 @@ def test_quest_page_the_gateway_builds_is_pythons(client, seed):
         via = _via(d, base)
         for url in urls:
             served[url] += _same_page(d, via, url, email)
-    assert all(served[u] for u in must), served
+    assert all(served[u] for u in must), {u: served[u] for u in must if not served[u]}
 
 
 def test_document_library_the_gateway_builds_is_pythons(client, seed):
@@ -1146,6 +1146,14 @@ def test_board_pages_the_gateway_builds_are_pythons(client, seed):
                  "groups": [{"id": "g", "label": "Group", "x": 1e-7}]}
         edges = [{"from": "a", "to": "b"}, {"from": 7, "to": "a"}, {"from": "a", "to": "missing"}, {"from": "b", "to": "a"}]
         db.add_all([InvestBoard(world_id=w, name="Case <1>", slug="gw-case", nodes_json=json.dumps(nodes), edges_json=json.dumps(edges)),
+                    InvestBoard(world_id=w, name="Plain <é>", slug="gw-plain", description="d & e", nodes_json=json.dumps({"nodes": [
+                        {"id": "n1", "title": "Café <b>", "type": "person", "status": "verified", "body": "x" * 250, "tags": ["a", "b"], "x": 100, "y": 50, "color": "#123456"},
+                        {"id": "n2", "title": "", "type": "weird", "status": "confirmed_false", "x": 700, "y": 300},
+                        {"id": "n3", "type": "clue", "status": "dismissed", "x": -20, "y": 90, "tags": []}],
+                        "groups": [{"x": 10, "y": 10, "w": 300, "h": 200, "label": "G <1>", "color": "#abc"}, {"x": 0, "y": 0, "w": 5, "h": 5}]}),
+                        edges_json=json.dumps([{"from": "n1", "to": "n2", "kind": "causes", "direction": "both", "label": "so"}, {"from": "n2", "to": "n3", "kind": "refutes"},
+                                               {"from": "n1", "to": "n3", "kind": "bogus", "color": "#00ff00"}, {"from": "n1", "to": "zzz"}, {"from": "n3", "to": "n1", "kind": "same_as"},
+                                               {"from": "n1", "to": "n2", "kind": "leads_to", "direction": "rev"}])),
                     InvestBoard(world_id=w, name="Legacy", slug="gw-legacy", nodes_json=json.dumps([{"id": 1, "title": "Old", "x": 5.5}]), edges_json=""),
                     InvestBoard(world_id=w, name="Empty", slug="gw-empty", nodes_json="", edges_json=None),
                     InvestBoard(world_id=w, name="Bad", slug="gw-bad", nodes_json='"text"'),
@@ -1155,7 +1163,7 @@ def test_board_pages_the_gateway_builds_are_pythons(client, seed):
         db.commit()
     finally:
         db.close()
-    urls = [f"/boards/{s}{r}" for s in ("gw-case", "gw-legacy", "gw-empty", "gw-bad", "gw-far", "nope") for r in ("", "/notes", "/export")]
+    urls = [f"/boards/{s}{r}" for s in ("gw-case", "gw-legacy", "gw-empty", "gw-bad", "gw-far", "gw-plain", "nope") for r in ("", "/notes", "/export")]
     served = {u: 0 for u in urls}
     for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
                              (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
@@ -1163,8 +1171,8 @@ def test_board_pages_the_gateway_builds_are_pythons(client, seed):
         via = _via(d, base)
         for u in urls:
             served[u] += _same_page(d, via, u, email)
-    must = [f"/boards/{s}{r}" for s in ("gw-case", "gw-empty", "gw-legacy") for r in ("", "/notes")]  # /export stays Python's
-    assert all(served[u] for u in must), served
+    must = [f"/boards/{s}{r}" for s in ("gw-case", "gw-empty", "gw-legacy") for r in ("", "/notes")] + ["/boards/gw-plain/export", "/boards/gw-empty/export"]
+    assert all(served[u] for u in must), {u: served[u] for u in must if not served[u]}
     # an unknown slug's 404 is the gateway's own, both pages
     dg = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
     for u in ("/boards/nope", "/boards/nope/notes"):
@@ -11028,6 +11036,90 @@ def test_python_free_background_job_restart_and_remove(client, seed):
         assert g.post("/api/dice/record", json={"notation": "d6", "values": [9]}).json() == {"detail": "A d6 cannot show 9"}
         assert g.post("/api/media-rename/select", json={"kinds": ["audio"], "scope": "all"}).status_code == 200
         assert g.delete("/api/ai/prompt-presets/999999").status_code == 404
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
+def test_pc_state_party_ndc_and_sheet_start_are_pythons(client, seed):
+    """GET /api/combat/<id>/pc-state and GET /parties/<id>/export.ndc from the gateway next to Python's answers (members on a custom sheet, a missing character,
+    a character of another world, odd stored JSON, 403 / 404), and the character sheet's start (POST /pages/sheets/new) without Python."""
+    import json as _json
+    from app.database import SessionLocal
+    from app.models import CombatSession, Party, PlayerCharacter
+    from .conftest import PLAYER_PASSWORD
+    base = os.environ.get("ND_TEST_BASE_URL")
+    if not base:
+        import pytest
+        pytest.skip("needs the gateway")
+    w = seed.world_a.id
+    stats = _json.dumps([{"id": "str", "value": 3}, {"id": "dex", "value": 2}, {"id": "wil", "value": 2}])
+    db = SessionLocal()
+    try:
+        a = PlayerCharacter(world_id=w, owner_user_id=seed.player_a.id, name="Zora Vale", stats_json=stats, current_hp=7, temp_hp=1, xp=120, level=2,
+                            conditions_json=_json.dumps(["Prone", 3, "Dazed"]), pp_current=2, mp_current=1, backstory="Born <here>.", notes="n")
+        b = PlayerCharacter(world_id=w, owner_user_id=seed.player_a.id, name="Abe", current_hp=5)
+        far = PlayerCharacter(world_id=seed.world_b.id, name="Far", current_hp=1)
+        db.add_all([a, b, far])
+        db.flush()
+        combatants = [{"id": "c-1", "name": "Zora", "source": "pc", "pc_id": a.id, "hp": 1, "max_hp": 9}, {"id": "c-2", "name": "Goblin", "source": "entity", "hp": 4},
+                      {"id": "c-3", "name": "Abe", "source": "pc", "pc_id": b.id}, {"id": "c-4", "source": "pc", "pc_id": 999999}, {"id": "c-5", "source": "pc", "pc_id": far.id},
+                      {"id": "c-6", "source": "pc"}, "junk"]
+        cs = CombatSession(world_id=w, name="Fight", ruleset="nd", combatants_json=_json.dumps(combatants))
+        bad = CombatSession(world_id=w, name="Bad", combatants_json="not json")
+        otherw = CombatSession(world_id=seed.world_b.id, name="Other", combatants_json="[]")
+        party = Party(world_id=w, name="The Crew", member_pc_ids_json=_json.dumps([a.id, b.id, far.id, 999999]))
+        empty = Party(world_id=w, name="Empty")
+        uni = Party(world_id=w, name="Café Crew", member_pc_ids_json=_json.dumps([a.id]))
+        db.add_all([cs, bad, otherw, party, empty, uni])
+        db.commit()
+        ids = dict(cs=cs.id, bad=bad.id, other=otherw.id, party=party.id, empty=empty.id, uni=uni.id)
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    urls = [f"/api/combat/{ids['cs']}/pc-state", f"/api/combat/{ids['bad']}/pc-state", f"/api/combat/{ids['other']}/pc-state", "/api/combat/999999/pc-state",
+            f"/parties/{ids['party']}/export.ndc", f"/parties/{ids['empty']}/export.ndc", f"/parties/{ids['uni']}/export.ndc", "/parties/999999/export.ndc"]
+    served = 0
+    for who in (gm, pl):
+        for url in urls:
+            a_, b_ = who.get(url), _via(who, base).get(url)
+            assert (a_.status_code, a_.text) == (b_.status_code, b_.text), (url, a_.status_code, a_.text[:300], b_.status_code, b_.text[:300])
+            for h in ("content-type", "content-disposition", "x-skipped-custom-sheets"):
+                assert a_.headers.get(h) == b_.headers.get(h), (url, h, a_.headers.get(h), b_.headers.get(h))
+            served += b_.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 6, served
+
+
+def test_python_free_sheet_start_and_exports(client, seed):
+    """Without Python: POST /pages/sheets/new, the party .ndc, the board export and the combat pc-state all answer."""
+    import json as _json
+    from app.database import SessionLocal
+    from app.models import CombatSession, InvestBoard, PageDoc, Party, PlayerCharacter
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        tpl = PageDoc(world_id=w, name="Blank Sheet", file_url="/uploads/pages/x.html", visible_to_players=True, is_character_sheet_template=True)
+        pc = PlayerCharacter(world_id=w, owner_user_id=seed.gm.id, name="Gem", current_hp=3)
+        db.add_all([tpl, pc])
+        db.flush()
+        cs = CombatSession(world_id=w, name="F", combatants_json=_json.dumps([{"id": "c-1", "source": "pc", "pc_id": pc.id}]))
+        party = Party(world_id=w, name="Crew", member_pc_ids_json=_json.dumps([pc.id]))
+        db.add_all([cs, party, InvestBoard(world_id=w, name="B", slug="pf-board", nodes_json=_json.dumps({"nodes": [{"id": "a", "title": "A", "x": 1, "y": 2}], "groups": []}), edges_json="[]")])
+        db.commit()
+        ids = dict(tpl=tpl.id, cs=cs.id, party=party.id)
+    finally:
+        db.close()
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        r = g.post("/pages/sheets/new", data={"template_id": str(ids["tpl"])})
+        assert r.status_code == 303 and r.headers["location"].startswith("/pages/sheets/"), (r.status_code, r.text[:200])
+        r = g.get(f"/api/combat/{ids['cs']}/pc-state")
+        assert r.status_code == 200 and r.json()["pcs"]["c-1"]["hp"] == 3, r.text[:200]
+        r = g.get(f"/parties/{ids['party']}/export.ndc")
+        assert r.status_code == 200 and r.json()[0]["name"] == "Gem" and 'filename="Crew.ndc"' in r.headers["content-disposition"], r.text[:200]
+        r = g.get("/boards/pf-board/export")
+        assert r.status_code == 200 and "attachment" in r.headers["content-disposition"] and "A" in r.text, r.text[:200]
     finally:
         proc.terminate()
         proc.wait(timeout=10)

@@ -521,11 +521,10 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
     }
     if req.method() == axum::http::Method::GET && req.uri().path().starts_with("/boards/") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
-        // /boards/<slug>/export stays Python's: board_export.html fills a dict with `.update()`, which MiniJinja's values cannot do
         let f = if uri.path().ends_with("/notes") {
             Some(boards::board_notes as fn(&pages::Pages, &config::Config, &axum::http::Uri, &axum::http::HeaderMap) -> Option<Response<Body>>)
         } else if uri.path().ends_with("/export") {
-            None
+            Some(boards::board_export as fn(&pages::Pages, &config::Config, &axum::http::Uri, &axum::http::HeaderMap) -> Option<Response<Body>>)
         } else {
             Some(boards::board_view as fn(&pages::Pages, &config::Config, &axum::http::Uri, &axum::http::HeaderMap) -> Option<Response<Body>>)
         };

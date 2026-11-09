@@ -75,6 +75,70 @@ pub fn board_view(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -
     render_with(pages, "board.html", p.ctx, headers)
 }
 
+/// A number Python prints differently from the template engine here (a float): such a board is Python's
+fn has_float(v: &Value) -> bool {
+    match v {
+        Value::Number(n) => !(n.is_i64() || n.is_u64()),
+        Value::Array(a) => a.iter().any(has_float),
+        Value::Object(o) => o.values().any(has_float),
+        _ => false,
+    }
+}
+
+/// `GET /boards/<slug>/export` (app/main.py `board_export`): the board as one standalone HTML file (a download). Any board by that slug (the route
+/// checks no world: Python's), GM / assistant by the gate.
+pub fn board_export(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let slug = uri.path().strip_prefix("/boards/")?.strip_suffix("/export").filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))?.to_string();
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    p.world.as_ref()?;
+    let Ok(b) = db.query_row("SELECT * FROM invest_boards WHERE slug = ?1 ORDER BY id LIMIT 1", [&slug], |r| crate::layout::row_map(r)) else {
+        return Some(crate::idpages::refusal(404));
+    };
+    let (nodes, groups) = nodes_and_groups(&b)?;
+    let edges = loads(&b, "edges_json", "[]")?;
+    let (Some(node_list), Some(_)) = (nodes.as_array(), groups.as_array().or(Some(&vec![]))) else { return None };
+    if has_float(&nodes) || has_float(&groups) || has_float(&edges) || !crate::edits::plain_numbers(nd_render::py_dumps(&nodes).as_bytes()) {
+        return None;
+    }
+    // xs / ys: every node a dict, its x / y a whole number (or missing: 0)
+    let mut node_map = Map::new();
+    let (mut xs, mut ys) = (vec![], vec![]);
+    for n in node_list {
+        let o = n.as_object()?;
+        let coord = |k: &str| -> Option<i64> {
+            match o.get(k) { None => Some(0), Some(Value::Number(x)) => x.as_i64(), _ => None }
+        };
+        xs.push(coord("x")?);
+        ys.push(coord("y")?);
+        match o.get("id") {
+            Some(Value::String(id)) => { node_map.insert(id.clone(), n.clone()); }
+            _ => return None, // a node without a text id: how Python's dict holds it is Python's
+        }
+    }
+    // an edge naming a node by anything but text could match a number key in Python
+    if edges.as_array()?.iter().any(|e| e.as_object().map_or(true, |e| !["from", "to"].iter().all(|k| matches!(e.get(*k), None | Some(Value::String(_)))))) {
+        return None;
+    }
+    let canvas_w = xs.iter().copied().max().unwrap_or(0) + 300;
+    let canvas_h = ys.iter().copied().max().unwrap_or(0) + 200;
+    // the template looks nodes up by the edge's `from` / `to`: keys the way a dict would hold them (text and whole numbers; null for a missing id)
+    let lookup = node_map;
+    let (y, m, d, _, _) = nd_render::now_minute();
+    p.ctx.insert("board".into(), Value::Object(b));
+    p.ctx.insert("nodes".into(), nodes);
+    p.ctx.insert("edges".into(), edges);
+    p.ctx.insert("groups".into(), groups);
+    p.ctx.insert("node_map".into(), Value::Object(lookup));
+    p.ctx.insert("canvas_w".into(), json!(canvas_w));
+    p.ctx.insert("canvas_h".into(), json!(canvas_h));
+    p.ctx.insert("export_date".into(), json!(format!("{y:04}-{m:02}-{d:02}")));
+    let mut resp = render_with(pages, "board_export.html", p.ctx, headers)?;
+    resp.headers_mut().insert("content-disposition", format!("attachment; filename=\"{slug}-board.html\"").parse().ok()?);
+    Some(resp)
+}
+
 /// A node id as a dict key Python and the gateway agree on (None for one Python compares differently: floats, bools, lists...)
 fn id_key(v: Option<&Value>) -> Option<String> {
     match v {

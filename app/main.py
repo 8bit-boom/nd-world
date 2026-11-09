@@ -5641,6 +5641,7 @@ def board_export(slug: str, request: Request, db: Session = Depends(get_db), act
     resp = templates.TemplateResponse("board_export.html", {
         "request": request, "world": world, "worlds": worlds,
         "board": b, "nodes": nodes, "edges": edges, "groups": groups,
+        "node_map": {n.get("id"): n for n in nodes},      # a later node with the same id wins
         "canvas_w": canvas_w, "canvas_h": canvas_h,
         "export_date": _date.today().isoformat(),
     })
