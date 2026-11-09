@@ -11307,3 +11307,83 @@ def test_convert_images_is_pythons(client, seed):
                         assert im.format == {"webp": "WEBP", "jpg": "JPEG", "png": "PNG"}[fmt]
         finally:
             clear("zqa"); clear("zqb")
+
+
+def test_bulk_edit_preview_and_apply_are_pythons(client, seed):
+    """POST /api/bulk-edit/preview and /apply from Python and from the gateway on the same rows: the same candidates, excerpts and counts (case
+    sensitive and not, long texts, accents, wildcards), the same validation messages, and the same rows afterwards."""
+    from app.database import SessionLocal
+    from app.models import Entity, EntityNote, PlayerCharacter
+    base = os.environ.get("ND_TEST_BASE_URL")
+    if not base:
+        import pytest
+        pytest.skip("needs the gateway")
+    wid = seed.world_a.id
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    g = _via(gm, base)
+    long_text = ("Intro " * 40) + "The Zorblax guild met. zorblax ZORBLAX " + ("tail " * 60) + " Zorblax end"
+    db = SessionLocal()
+    try:
+        e1 = Entity(world_id=wid, kind="npc", name="Zorblax the Great", summary="A zorblax émigré café", body=long_text)
+        e2 = Entity(world_id=wid, kind="npc", name="Plain", summary=None, body="nothing 100% here_ x")
+        e3 = Entity(world_id=wid, kind="npc", name="Ünï Zorblax", summary="ZORBLAX", body="")
+        db.add_all([e1, e2, e3]); db.flush()
+        n1 = EntityNote(entity_id=e1.id, content="note about zorblax and Zorblax", visible_to_players=False)
+        pc = PlayerCharacter(world_id=wid, name="Hero", race="Zorblaxian", char_class="zorblax mage", backstory=long_text, notes="")
+        db.add_all([n1, pc]); db.commit()
+        ids = {"e1": e1.id, "e2": e2.id, "e3": e3.id, "n1": n1.id, "pc": pc.id}
+    finally:
+        db.close()
+
+    def snap():
+        d = SessionLocal()
+        try:
+            return ([(e.id, e.name, e.summary, e.body) for e in d.query(Entity).filter(Entity.id.in_([ids["e1"], ids["e2"], ids["e3"]])).order_by(Entity.id)],
+                    d.get(EntityNote, ids["n1"]).content, [d.get(PlayerCharacter, ids["pc"]).race, d.get(PlayerCharacter, ids["pc"]).char_class, d.get(PlayerCharacter, ids["pc"]).backstory])
+        finally:
+            d.close()
+
+    def put_back(state):
+        d = SessionLocal()
+        try:
+            for (i, name, summary, body) in state[0]:
+                e = d.get(Entity, i); e.name, e.summary, e.body = name, summary, body
+            d.get(EntityNote, ids["n1"]).content = state[1]
+            p = d.get(PlayerCharacter, ids["pc"]); p.race, p.char_class, p.backstory = state[2]
+            d.commit()
+        finally:
+            d.close()
+
+    try:
+        original = snap()
+        bodies = [{"find": "Zorblax", "replace": "Quux"}, {"find": "zorblax", "replace": "Quux", "case_insensitive": True},
+                  {"find": "  zorblax  ", "replace": "", "case_insensitive": True}, {"find": "ZORBLAX", "replace": "zorblax-longer-text", "case_insensitive": True},
+                  {"find": "café", "replace": "tea"}, {"find": "%", "replace": "pct"}, {"find": "_", "replace": "-"}, {"find": "100%"},
+                  {"find": "nomatchatall", "replace": "x"}, {"find": "   "}, {"find": ""}, {"find": "Z", "replace": "Zz", "case_insensitive": True}]
+        for body in bodies:
+            a, b = gm.post("/api/bulk-edit/preview", json=body), g.post("/api/bulk-edit/preview", json=body)
+            assert (a.status_code, a.json()) == (b.status_code, b.json()), (body, a.text[:400], b.text[:400])
+        assert g.post("/api/bulk-edit/preview", json=bodies[0]).headers.get("x-nd-served-by") == "gateway"
+        targets = [{"target_type": "entity", "target_id": ids["e1"], "field": "name"}, {"target_type": "entity", "target_id": ids["e1"], "field": "summary"},
+                   {"target_type": "entity", "target_id": ids["e1"], "field": "body"}, {"target_type": "entity", "target_id": ids["e3"], "field": "name"},
+                   {"target_type": "entity", "target_id": ids["e2"], "field": "summary"}, {"target_type": "entity_note", "target_id": ids["n1"], "field": "content"},
+                   {"target_type": "player_character", "target_id": ids["pc"], "field": "race"}, {"target_type": "player_character", "target_id": ids["pc"], "field": "backstory"},
+                   {"target_type": "entity", "target_id": ids["e1"], "field": "kind"}, {"target_type": "nope", "target_id": 1, "field": "x"}, {"target_type": "entity", "target_id": 99999, "field": "name"}]
+        for body in ({"find": "Zorblax", "replace": "Quux", "targets": targets},
+                     {"find": "zorblax", "replace": "aa", "case_insensitive": True, "targets": targets},
+                     {"find": "zorblax", "replace": "zorblax zorblax", "case_insensitive": True, "targets": targets + targets},
+                     {"find": "x", "targets": []}, {"find": " ", "targets": targets}, {"find": "x", "targets": targets * 30}):
+            a = gm.post("/api/bulk-edit/apply", json=body); after_python = snap(); put_back(original)
+            b = g.post("/api/bulk-edit/apply", json=body); after_gateway = snap(); put_back(original)
+            assert (a.status_code, a.json()) == (b.status_code, b.json()), (body.get("find"), a.text, b.text)
+            assert after_python == after_gateway, body.get("find")
+        assert g.post("/api/bulk-edit/apply", json={"find": "x", "targets": []}).headers.get("x-nd-served-by") == "gateway"
+    finally:
+        d = SessionLocal()
+        try:
+            d.query(EntityNote).filter(EntityNote.id == ids["n1"]).delete()
+            d.query(PlayerCharacter).filter(PlayerCharacter.id == ids["pc"]).delete()
+            d.query(Entity).filter(Entity.id.in_([ids["e1"], ids["e2"], ids["e3"]])).delete(synchronize_session=False)
+            d.commit()
+        finally:
+            d.close()

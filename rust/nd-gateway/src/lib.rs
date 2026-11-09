@@ -44,6 +44,7 @@ pub mod form;
 pub mod gallery;
 pub mod home;
 pub mod hub;
+pub mod bulk_edit;
 pub mod importer;
 pub mod settings_overrides;
 pub mod studio;
@@ -452,6 +453,17 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
         };
         if let Some(resp) = importer::convert_images(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
+    }
+    if req.method() == axum::http::Method::POST && matches!(req.uri().path(), "/api/bulk-edit/preview" | "/api/bulk-edit/apply") && app.cfg.rust_routes.iter().any(|r| r == "writes") {
+        let apply = req.uri().path().ends_with("/apply");
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        if let Some(resp) = bulk_edit::handle(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone(), apply).await {
             return resp;
         }
         return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
