@@ -173,8 +173,8 @@ jobs:
             echo "$p -> $code"
             [ "$code" = "200" ] || { echo "$p did not answer 200"; docker logs nd-pf; exit 1; }
           done
-          code=$(curl -s -b /tmp/jar -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/openapi.json)
-          [ "$code" = "501" ] || { echo "/openapi.json answered $code, expected the 501 'not in this image'"; exit 1; }
+          code=$(curl -s -b /tmp/jar -o /tmp/openapi.json -w '%{http_code}' http://127.0.0.1:8000/openapi.json)
+          { [ "$code" = "200" ] && grep -q '"openapi"' /tmp/openapi.json; } || { echo "/openapi.json answered $code, expected FastAPI's schema"; exit 1; }
           docker rm -f nd-pf
 
       - name: Push
