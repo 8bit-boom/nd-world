@@ -4831,9 +4831,32 @@ pub async fn live_job_action(cfg: std::sync::Arc<Config>, method: axum::http::Me
         _ => return None,
     };
     let key = percent_encoding::percent_decode_str(&key).decode_utf8().ok()?.into_owned();
-    let (kind, ident) = key.split_once(':')?;
-    let (kind, ident) = (kind.to_string(), ident.to_string());
+    let python_free = crate::config::python_free();
+    let (kind, ident) = match key.split_once(':') {
+        Some((k, i)) if matches!(k, "t" | "m" | "r") && !i.is_empty() => (k.to_string(), i.to_string()),
+        _ if python_free => return Some(crate::ai_more::detail(axum::http::StatusCode::NOT_FOUND, "Unknown job")), // `_split`
+        _ => return None,
+    };
     if !(ident.starts_with("gw") || kind == "r") {
+        // no Python app behind this gateway: nothing else can be running, and Python's answers for "not there" are these
+        if python_free && kind != "r" {
+            let msg = match action.as_str() {
+                "cancel" => "That job is not running any more.",
+                "restart" => "That job cannot be restarted (it is still running, or the server no longer has it).",
+                _ => "Cancel it first, or it is already gone.",
+            };
+            let ok = tokio::task::spawn_blocking({
+                let (cfg, method, uri, headers) = (cfg.clone(), method.clone(), uri.clone(), headers.clone());
+                move || {
+                    let db = crate::writes::open(&cfg)?;
+                    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+                    let p = crate::layout::build(&db, &cfg, method.as_str(), &uri, &headers, now)?;
+                    let w = p.world.as_ref()?;
+                    (crate::pages::edit_level(&p, w, "background_jobs") == Some(true)).then_some(())
+                }
+            }).await.ok().flatten().is_some();
+            return ok.then(|| crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, msg));
+        }
         return None;
     }
     tokio::task::spawn_blocking(move || {
@@ -4848,7 +4871,22 @@ pub async fn live_job_action(cfg: std::sync::Arc<Config>, method: axum::http::Me
             "m" => crate::runners::action(&ident, &action),
             "t" => crate::tasks::page_action(&ident, &action),
             // a bulk rename this process works on: its cancel (restart and remove are Python's: it reads the row)
-            "r" if action == "cancel" => crate::media_rename::cancel(&cfg, &p, ident.parse().ok()?),
+            "r" => {
+                let Ok(id) = ident.parse::<i64>() else { return Some(crate::ai_more::detail(axum::http::StatusCode::NOT_FOUND, "Unknown job")) };
+                match action.as_str() {
+                    "cancel" => crate::media_rename::cancel(&cfg, &p, id).or_else(|| {
+                        // nothing of this process runs it: with no Python behind the gateway it is not running at all
+                        if !crate::config::python_free() { return None; }
+                        Some(match crate::media_rename::exists(&cfg, &p, id) {
+                            true => crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "That job is not running any more."),
+                            false => crate::ai_more::detail(axum::http::StatusCode::NOT_FOUND, "Unknown job"),
+                        })
+                    }),
+                    "restart" if crate::config::python_free() => crate::media_rename::restart(cfg.clone(), &p, id),
+                    "remove" if crate::config::python_free() => crate::media_rename::remove(&cfg, &p, id),
+                    _ => None, // with Python behind: the row is read there
+                }
+            }
             _ => None,
         }
     }).await.ok().flatten()

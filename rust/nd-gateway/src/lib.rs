@@ -226,6 +226,29 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
     if req.method() == axum::http::Method::POST && req.uri().path() == "/api/dice/roll" && app.cfg.rust_routes.iter().any(|r| r == "dice_roll") {
         return writes::dice_roll(app.cfg.clone(), &app.proxy, req, peer).await;
     }
+    if req.method() == axum::http::Method::POST && req.uri().path().starts_with("/worlds/") && req.uri().path().ends_with("/reset-password") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 16).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), parts.uri.clone(), parts.headers.clone());
+        if let Ok(Some(resp)) = page_blocking(move || idpages::member_reset_password(&pages_, &cfg, &uri, &headers)).await {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
+    }
+    if req.method() == axum::http::Method::POST && req.uri().path() == "/api/dice/record" && app.cfg.rust_routes.iter().any(|r| r == "dice_roll") {
+        // the 3D tray's roll (app/routers/dice.py `api_dice_record`)
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        let (cfg, uri, headers, b) = (app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || writes::dice_record_blocking(&cfg, &uri, &headers, &b)).await {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
+    }
     if req.method() == axum::http::Method::POST && req.uri().path() == "/dice" && app.cfg.rust_routes.iter().any(|r| r == "dice_roll") {
         // the dice page's form (app/routers/dice.py `dice_roll_form`): a roll that is stored answers with the redirect
         let (parts, body) = req.into_parts();
@@ -817,7 +840,7 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         }
         return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
     }
-    if req.method() == axum::http::Method::DELETE && (req.uri().path().starts_with("/api/ai/chat/jobs/") || req.uri().path().starts_with("/api/ai/imagegen/model-templates/custom/")) && app.cfg.rust_routes.iter().any(|r| r == "ai") {
+    if req.method() == axum::http::Method::DELETE && (req.uri().path().starts_with("/api/ai/chat/jobs/") || req.uri().path().starts_with("/api/ai/imagegen/model-templates/custom/") || req.uri().path().starts_with("/api/ai/prompt-presets/")) && app.cfg.rust_routes.iter().any(|r| r == "ai") {
         let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || apis::delete(&cfg, &uri, &headers)).await {
             return resp;

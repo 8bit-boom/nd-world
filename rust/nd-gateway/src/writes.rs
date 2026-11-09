@@ -37,15 +37,21 @@ pub struct Rolled {
     pub total: i64,
 }
 
-/// `None` for anything Python would answer with an error (so the request goes to Python, which words the error).
-pub fn roll(notation: &str, rng: &mut impl Rng) -> Option<Rolled> {
+/// `_evaluate(notation, draw)`: the grammar's checks in Python's order, with Python's messages; `draw(n, sides)` supplies each dice term's faces
+fn evaluate(notation: &str, draw: &mut dyn FnMut(u32, u32) -> Result<Vec<u32>, String>) -> Result<Rolled, String> {
     let text = notation.trim_matches(' ');
-    if text.is_empty() || text.len() > 120 || !notation_re().is_match(text) {
-        return None;
+    if text.is_empty() {
+        return Err("Enter a dice notation like 2d6+3".into());
+    }
+    if text.chars().count() > 120 {
+        return Err("Notation is too long".into());
+    }
+    if !notation_re().is_match(text) {
+        return Err("Use dice notation like 2d6+3, d20-1, or 4d8+2d6+1".into());
     }
     let terms: Vec<_> = term_re().captures_iter(text).collect();
     if terms.len() > MAX_TERMS {
-        return None;
+        return Err(format!("At most {MAX_TERMS} terms per roll"));
     }
     let mut parts: Vec<String> = vec![];
     let mut total: i64 = 0;
@@ -53,27 +59,69 @@ pub fn roll(notation: &str, rng: &mut impl Rng) -> Option<Rolled> {
         let negative = &c[1] == "-";
         let sign = if negative { "-" } else { "+" };
         if let Some(flat) = c.get(4) {
-            let v: i64 = flat.as_str().parse().ok()?;
+            let v: i64 = flat.as_str().parse().map_err(|_| "Use dice notation like 2d6+3, d20-1, or 4d8+2d6+1".to_string())?;
             let sum = if negative { -v } else { v };
             parts.push(format!("{{\"term\": \"{sign}{}\", \"sum\": {sum}}}", flat.as_str()));
             total += sum;
         } else {
             let n: u32 = match c.get(2).map(|m| m.as_str()).filter(|s| !s.is_empty()) {
-                Some(s) => s.parse().ok()?,
+                Some(s) => s.parse().map_err(|_| "Roll at least one die".to_string())?,
                 None => 1,
             };
-            let sides: u32 = c[3].parse().ok()?;
-            if n < 1 || n > MAX_DICE_PER_TERM || sides < 2 || sides > MAX_SIDES {
-                return None;
+            let sides: u32 = c[3].parse().map_err(|_| "Dice need at least 2 sides".to_string())?;
+            if n < 1 {
+                return Err("Roll at least one die".into());
             }
-            let rolls: Vec<u32> = (0..n).map(|_| rng.gen_range(1..=sides)).collect();
+            if n as usize > MAX_DICE_PER_TERM as usize {
+                return Err(format!("At most {MAX_DICE_PER_TERM} dice per term"));
+            }
+            if sides < 2 {
+                return Err("Dice need at least 2 sides".into());
+            }
+            if sides > MAX_SIDES {
+                return Err(format!("Dice can have at most {MAX_SIDES} sides"));
+            }
+            let rolls = draw(n, sides)?;
             let sum: i64 = rolls.iter().map(|r| *r as i64).sum::<i64>() * if negative { -1 } else { 1 };
             let list = rolls.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
             parts.push(format!("{{\"term\": \"{sign}{n}d{sides}\", \"rolls\": [{list}], \"sum\": {sum}}}"));
             total += sum;
         }
     }
-    Some(Rolled { breakdown_json: format!("[{}]", parts.join(", ")), total })
+    Ok(Rolled { breakdown_json: format!("[{}]", parts.join(", ")), total })
+}
+
+/// `None` for anything Python would answer with an error (so the request goes to Python, which words the error).
+pub fn roll(notation: &str, rng: &mut impl Rng) -> Option<Rolled> {
+    evaluate(notation, &mut |n, sides| Ok((0..n).map(|_| rng.gen_range(1..=sides)).collect())).ok()
+}
+
+/// `parse_recorded(notation, values)`: a physics throw's faces checked against the notation (a d6 cannot show 9, the number of dice must match)
+pub fn roll_recorded(notation: &str, values: &[serde_json::Value]) -> Result<Rolled, String> {
+    use serde_json::Value;
+    if values.len() > MAX_TERMS * MAX_DICE_PER_TERM as usize {
+        return Err("Too many dice".into());
+    }
+    let mut used = 0usize;
+    let rolled = evaluate(notation, &mut |n, sides| {
+        let chunk: Vec<&Value> = values.iter().skip(used).take(n as usize).collect();
+        if chunk.len() != n as usize {
+            return Err("The thrown dice do not match the notation".into());
+        }
+        let mut faces = vec![];
+        for v in chunk {
+            match v {
+                Value::Number(num) if (num.is_i64() || num.is_u64()) && num.as_i64().map_or(false, |i| (1..=sides as i64).contains(&i)) => faces.push(num.as_i64().unwrap_or(0) as u32),
+                other => return Err(format!("A d{sides} cannot show {}", crate::ai::py_repr(other))),
+            }
+        }
+        used += n as usize;
+        Ok(faces)
+    })?;
+    if used != values.len() {
+        return Err("The thrown dice do not match the notation".into());
+    }
+    Ok(rolled)
 }
 
 // ── who is asking (app/main.py auth_gate + app/deps.py get_world_ctx / world_section_level) ──
@@ -332,6 +380,46 @@ fn store_roll(cfg: &Config, uri: &Uri, headers: &HeaderMap, notation: &str, labe
     tx.execute("INSERT INTO shared_state (key, n) VALUES (?1, 1) ON CONFLICT(key) DO UPDATE SET n = n + 1", params![format!("sig:{}:dice", actor.world_id)]).ok()?;
     tx.commit().ok()?;
     Some((id, iso, user_name, notation_stored, label_stored, rolled))
+}
+
+/// `POST /api/dice/record` (app/routers/dice.py `api_dice_record`): a roll thrown on the 3D tray, stored with the faces the browser reports. Python's own 400s for a
+/// notation or faces it refuses; None (Python's) for anything else unusual.
+pub fn dice_record_blocking(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
+    let ctype = headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
+    if ctype.split(';').next().unwrap_or("").trim().to_ascii_lowercase() != "application/json" || !crate::edits::plain_numbers(body) {
+        return None;
+    }
+    let json: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let obj = json.as_object()?;
+    let notation = obj.get("notation")?.as_str()?;
+    let values = obj.get("values")?.as_array()?;
+    if !ascii_printable(notation) {
+        return None;
+    }
+    let now = SystemTime::now();
+    let db = open(cfg)?;
+    let actor = actor_for_dice(&db, cfg, uri, headers, now.duration_since(UNIX_EPOCH).ok()?.as_secs())?;
+    let rolled = match roll_recorded(notation, values) {
+        Ok(r) => r,
+        Err(msg) => return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, msg)),
+    };
+    let notation_stored: String = notation.trim_matches(' ').chars().take(120).collect();
+    let user_name = if actor.display_name.is_empty() { "Someone".to_string() } else { actor.display_name.clone() };
+    let (stored_at, iso) = timestamps(now);
+    let tx = db.unchecked_transaction().ok()?;
+    tx.execute(
+        "INSERT INTO main.dice_rolls (world_id, user_id, user_name, notation, label, breakdown, total, created_at, group_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        params![actor.world_id, actor.user_id, user_name, notation_stored, "", rolled.breakdown_json, rolled.total, stored_at, crate::grp::new_row_group(&tx, Some(actor.world_id))],
+    ).ok()?;
+    let id = tx.last_insert_rowid();
+    tx.execute("INSERT INTO shared_state (key, n) VALUES (?1, 1) ON CONFLICT(key) DO UPDATE SET n = n + 1", params![format!("sig:{}:dice", actor.world_id)]).ok()?;
+    tx.commit().ok()?;
+    let breakdown = rolled.breakdown_json.replace(", ", ",").replace(": ", ":");
+    let answer = format!(
+        "{{\"id\":{id},\"user_name\":{},\"notation\":{},\"label\":\"\",\"breakdown\":{},\"total\":{},\"created_at\":\"{iso}Z\"}}",
+        serde_json::to_string(&user_name).ok()?, serde_json::to_string(&notation_stored).ok()?, breakdown, rolled.total
+    );
+    Response::builder().status(StatusCode::OK).header(header::CONTENT_TYPE, "application/json").header("x-nd-served-by", "gateway").body(Body::from(answer)).ok()
 }
 
 /// `POST /dice` (the page's form): a stored roll answers with the redirect back to the page; a notation Python rejects is Python's

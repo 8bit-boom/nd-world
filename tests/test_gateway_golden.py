@@ -10899,3 +10899,135 @@ def test_prop_library_upload_is_pythons(client, seed):
     # the rules around it: a player, no files, no world
     pl = _via(_signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug), base)
     assert pl.post("/api/maps/props/upload", files=[("files", ("a.png", png((20, 20), (0, 0, 20, 20)), "image/png"))]).status_code == 403
+
+
+def test_small_writes_are_pythons(client, seed):
+    """The gateway's answers match Python's for: POST /api/dice/record (every message Python words), DELETE /api/ai/prompt-presets/<id>,
+    POST /api/media-rename/select, and the member password reset page (the temporary password is the only difference)."""
+    import re as _re
+    from app.database import SessionLocal
+    from app.models import AudioClip, PromptPreset, World
+    from .conftest import PLAYER_PASSWORD
+    base = os.environ.get("ND_TEST_BASE_URL")
+    if not base:
+        import pytest
+        pytest.skip("needs the gateway")
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        presets = [PromptPreset(world_id=w, scope="chat", label=f"P{i}", icon="", text="t", negative="") for i in range(4)]
+        db.add_all(presets + [PromptPreset(world_id=seed.world_b.id, scope="chat", label="Other", icon="", text="t", negative="")])
+        for i, nm in enumerate(["IMG_2041", "Door Creak", "", "recording_12", "Wolf howl"]):
+            db.add(AudioClip(world_id=w, name=nm, file_url=f"/uploads/audio/f{i}.mp3"))
+        db.commit()
+        pids = [p.id for p in presets]
+        other_id = db.query(PromptPreset).filter_by(label="Other").first().id
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    g = _via(gm, base)
+    # dice record
+    bodies = [
+        {"notation": "2d6+3", "values": [3, 4]}, {"notation": "d20", "values": [20]}, {"notation": "d6", "values": [9]}, {"notation": "d6", "values": [0]},
+        {"notation": "2d6", "values": [3]}, {"notation": "2d6", "values": [3, 4, 5]}, {"notation": "d6", "values": [True]}, {"notation": "d6", "values": [3.0]},
+        {"notation": "d6", "values": ["3"]}, {"notation": "d6", "values": [None]}, {"notation": "d6", "values": [3, [1]]}, {"notation": "", "values": []},
+        {"notation": "abc", "values": []}, {"notation": "50d6+d100", "values": [1] * 50 + [77]}, {"notation": "51d6", "values": [1] * 51}, {"notation": "1d1", "values": [1]},
+        {"notation": "d1001", "values": [1]}, {"notation": "d6-2d4+7", "values": [6, 1, 2]}, {"notation": "d6", "values": [1] * 401}, {"notation": "x" * 130, "values": []},
+        {"notation": "d6", "values": "no"}, {"notation": 5, "values": []}, {"notation": "d6"}, {"values": []},
+    ]
+    for b in bodies:
+        a, c = gm.post("/api/dice/record", json=b), g.post("/api/dice/record", json=b)
+        assert a.status_code == c.status_code, (b, a.status_code, a.text[:200], c.status_code, c.text[:200])
+        if a.status_code == 200:
+            ja, jc = a.json(), c.json()
+            assert {k: v for k, v in ja.items() if k not in ("id", "created_at")} == {k: v for k, v in jc.items() if k not in ("id", "created_at")}, b
+            assert c.headers.get("x-nd-served-by") == "gateway"
+        elif a.status_code == 400:
+            assert a.json() == c.json(), (b, a.text, c.text)
+    # prompt preset delete
+    a = gm.delete(f"/api/ai/prompt-presets/{pids[0]}")
+    c = g.delete(f"/api/ai/prompt-presets/{pids[1]}")
+    assert (a.status_code, a.json()) == (c.status_code, c.json()) == (200, {"ok": True}) and c.headers.get("x-nd-served-by") == "gateway"
+    for pid in (999999, other_id, pids[0], pids[1]):
+        a, c = gm.delete(f"/api/ai/prompt-presets/{pid}"), g.delete(f"/api/ai/prompt-presets/{pid}")
+        assert (a.status_code, a.text) == (c.status_code, c.text), pid
+    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    assert pl.delete(f"/api/ai/prompt-presets/{pids[2]}").status_code == _via(pl, base).delete(f"/api/ai/prompt-presets/{pids[2]}").status_code
+    # media-rename select
+    for b in ({"kinds": ["audio"]}, {"kinds": ["audio"], "scope": "all"}, {"kinds": ["audio", "video", "image"], "scope": "all"}, {"kinds": ["image", "audio"]},
+              {"kinds": []}, {"kinds": ["audio"], "album": "0"}, {"kinds": ["audio"], "album": 99}, {"kinds": ["audio"], "album": "abc"}, {"kinds": ["audio"], "album": 2.7},
+              {"kinds": ["bogus"]}, {"kinds": "audio"}, {"kinds": ["audio", "audio"], "scope": "all"}, {"scope": "all"}, {"kinds": [[1]]}, {"kinds": [5]}):
+        a, c = gm.post("/api/media-rename/select", json=b), g.post("/api/media-rename/select", json=b)
+        assert (a.status_code, a.text) == (c.status_code, c.text), (b, a.status_code, a.text[:200], c.status_code, c.text[:200])
+    for raw in (b"not json", b"[1]", b"5"):
+        a, c = gm.post("/api/media-rename/select", content=raw, headers={"content-type": "application/json"}), g.post("/api/media-rename/select", content=raw, headers={"content-type": "application/json"})
+        assert (a.status_code, a.text) == (c.status_code, c.text), raw
+    # member password reset: the page is the same but for the temporary password; the old password stops working
+    path = f"/worlds/{w}/members/{seed.player_a.id}/reset-password"
+    assert pl.post(path).status_code == _via(pl, base).post(path).status_code == 403      # a player may not (before the reset ends their session)
+    ra, rc = gm.post(path), g.post(path)
+    assert ra.status_code == rc.status_code == 200 and rc.headers.get("x-nd-served-by") == "gateway", (ra.status_code, rc.status_code)
+    code = _re.compile(r'<code style="display:block[^>]*>([^<]+)</code>')
+    ta, tc = code.search(ra.text).group(1), code.search(rc.text).group(1)
+    assert len(ta) == len(tc) == 16 and ta != tc
+    norm = lambda t, pw: t.replace(pw, "TEMP")
+    assert norm(ra.text, ta) == norm(rc.text, tc)
+    import httpx
+    d = httpx.Client(base_url=DIRECT, timeout=30)
+    assert d.post("/login", data={"email": seed.player_a.email, "password": tc, "next": "/"}, follow_redirects=False).status_code == 303
+    assert d.post("/login", data={"email": seed.player_a.email, "password": PLAYER_PASSWORD, "next": "/"}, follow_redirects=False).status_code != 303
+    for bad in (f"/worlds/{w}/members/999999/reset-password", f"/worlds/999999/members/{seed.player_a.id}/reset-password"):
+        a, c = gm.post(bad), g.post(bad)
+        assert (a.status_code, a.text) == (c.status_code, c.text), bad
+
+
+def test_python_free_background_job_restart_and_remove(client, seed):
+    """With no Python behind the gateway: restart / remove / cancel of a bulk rename run ("r:<id>") and Python's answers for a task the server does not have."""
+    import json as _json
+    import time
+    from app.database import SessionLocal
+    from app.models import MediaRenameRun
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        ids = {}
+        for st in ("cancelled", "error", "done", "pending", "interrupted"):
+            r = MediaRenameRun(world_id=w, status=st, options_json="{}", items_json=_json.dumps([{"kind": "audio", "id": 1}]), results_json="[]", errors_json="[]", total=1, done=1)
+            db.add(r)
+            db.flush()
+            ids[st] = r.id
+        db.commit()
+    finally:
+        db.close()
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        ok = lambda r: (r.status_code, r.json())
+        assert ok(g.post(f"/api/live-jobs/r:{ids['done']}/restart")) == (400, {"detail": "That job cannot be restarted (it is still running, or the server no longer has it)."})
+        assert ok(g.post(f"/api/live-jobs/r:{ids['pending']}/restart"))[0] == 400
+        assert ok(g.post(f"/api/live-jobs/r:{ids['cancelled']}/restart")) == (200, {"ok": True})
+        assert ok(g.post(f"/api/live-jobs/r:{ids['interrupted']}/restart")) == (200, {"ok": True})
+        time.sleep(1.5)
+        db = SessionLocal()
+        try:
+            assert db.get(MediaRenameRun, ids["cancelled"]).status in ("pending", "running", "done", "error")
+        finally:
+            db.close()
+        assert ok(g.delete(f"/api/live-jobs/r:{ids['done']}")) == (200, {"ok": True})
+        assert ok(g.delete(f"/api/live-jobs/r:{ids['done']}")) == (404, {"detail": "Unknown job"})
+        assert ok(g.delete(f"/api/live-jobs/r:{ids['pending']}")) == (400, {"detail": "Cancel it first, or it is already gone."})
+        assert ok(g.post(f"/api/live-jobs/r:{ids['error']}/cancel")) == (400, {"detail": "That job is not running any more."})
+        assert ok(g.post("/api/live-jobs/r:999999/cancel")) == (404, {"detail": "Unknown job"})
+        assert ok(g.post("/api/live-jobs/r:abc/restart")) == (404, {"detail": "Unknown job"})
+        assert ok(g.post("/api/live-jobs/t:abc/restart")) == (400, {"detail": "That job cannot be restarted (it is still running, or the server no longer has it)."})
+        assert ok(g.post("/api/live-jobs/m:abc/cancel")) == (400, {"detail": "That job is not running any more."})
+        assert ok(g.delete("/api/live-jobs/t:abc")) == (400, {"detail": "Cancel it first, or it is already gone."})
+        assert ok(g.post("/api/live-jobs/zzz/restart")) == (404, {"detail": "Unknown job"})
+        assert ok(g.post("/api/live-jobs/x:1/restart")) == (404, {"detail": "Unknown job"})
+        # the other batch-1 routes work without Python as well
+        assert g.post("/api/dice/record", json={"notation": "2d6", "values": [3, 4]}).json()["total"] == 7
+        assert g.post("/api/dice/record", json={"notation": "d6", "values": [9]}).json() == {"detail": "A d6 cannot show 9"}
+        assert g.post("/api/media-rename/select", json={"kinds": ["audio"], "scope": "all"}).status_code == 200
+        assert g.delete("/api/ai/prompt-presets/999999").status_code == 404
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)

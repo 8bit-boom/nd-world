@@ -978,7 +978,7 @@ fn entities_picker(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Respo
 
 /// POST routes served here (small JSON reads that take a body)
 pub fn is_post(path: &str) -> bool {
-    matches!(path, "/api/ai/world-context-smart" | "/api/ai/world-context-player" | "/api/ai/unsloth/prefs" | "/api/ai/defaults" | "/api/system/gpu-power" | "/api/ai/models/add" | "/api/ai/models/remove" | "/api/ai/models/reset")
+    matches!(path, "/api/ai/world-context-smart" | "/api/ai/world-context-player" | "/api/ai/unsloth/prefs" | "/api/ai/defaults" | "/api/system/gpu-power" | "/api/ai/models/add" | "/api/ai/models/remove" | "/api/ai/models/reset" | "/api/media-rename/select")
 }
 
 pub fn post(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
@@ -988,6 +988,7 @@ pub fn post(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Op
         "/api/ai/unsloth/prefs" => unsloth_prefs(&cfg, uri, headers, body),
         "/api/ai/defaults" => ai_defaults_set(&cfg, uri, headers, body),
         "/api/system/gpu-power" => gpu_power(&cfg, uri, headers, body),
+        "/api/media-rename/select" => media_rename_select(&cfg, uri, headers, body),
         "/api/ai/models/add" | "/api/ai/models/remove" | "/api/ai/models/reset" => models_edit(&cfg, uri, headers, body),
         _ => None,
     }
@@ -2788,7 +2789,7 @@ fn player_image_jobs_list(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Optio
     crate::edits::json_response(&Value::Array(out))
 }
 
-/// DELETE routes: `/api/ai/chat/jobs/<id>` (a finished job's row) and `/api/ai/imagegen/model-templates/custom/<id>` (one of the world's own
+/// DELETE routes: `/api/ai/prompt-presets/<id>`, `/api/ai/chat/jobs/<id>` (a finished job's row) and `/api/ai/imagegen/model-templates/custom/<id>` (one of the world's own
 /// templates). Anything else, or a case Python judges otherwise, is Python's.
 pub fn delete(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
     let db = crate::writes::open(cfg)?;
@@ -2807,6 +2808,15 @@ pub fn delete(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<B
             return None; // IN_PROGRESS_STATUSES: Python's 400 / the running task
         }
         db.execute("DELETE FROM chat_jobs WHERE id = ?1", [id]).ok()?;
+        return crate::edits::json_response(&json!({"ok": true}));
+    }
+    if let Some(id) = trailing_id(path, "/api/ai/prompt-presets/") {
+        // `api_prompt_presets_delete`: the world's own preset of either scope (a 404 for another world's or a missing one)
+        let Some(wid) = p.world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64()) else { return Some(crate::idpages::refusal(404)) };
+        if rows_of(&db, "SELECT id FROM prompt_presets WHERE id = ?1 AND world_id = ?2", &[&id, &wid])?.is_empty() {
+            return Some(crate::idpages::refusal(404));
+        }
+        db.execute("DELETE FROM prompt_presets WHERE id = ?1", [id]).ok()?;
         return crate::edits::json_response(&json!({"ok": true}));
     }
     let id = trailing_id(path, "/api/ai/imagegen/model-templates/custom/")?;
@@ -3211,6 +3221,91 @@ fn media_rename_items(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Re
     let albums: Vec<Value> = album_list.into_iter().map(|(i, n)| json!({"id": i, "name": n})).collect();
     crate::edits::json_response(&json!({"kind": kind, "items": items, "albums": albums, "truncated": truncated,
         "generic_count": generic_flags.iter().filter(|g| **g).count()}))
+}
+
+/// `POST /api/media-rename/select` (app/routers/media_rename.py): everything that matches across the whole library, as the refs a run takes -
+/// {kinds, scope: "needs_work" | "all", album?} -> {items, count, capped}
+fn media_rename_select(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
+    const MAX_RUN_ITEMS: usize = 2000;
+    let (db, p) = page(cfg, uri, headers)?;
+    let Some(w) = p.world.as_ref() else { return Some(crate::idpages::refusal(404)) };
+    let wid = w.get("id")?.as_i64()?;
+    let b = match serde_json::from_slice::<Value>(body) {
+        Ok(Value::Object(o)) if crate::edits::plain_numbers(body) => o,
+        Ok(Value::Object(_)) => return None,
+        Ok(_) => return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "Send a JSON object.")),
+        Err(_) if body.windows(3).any(|x| x == b"NaN") || body.windows(8).any(|x| x == b"Infinity") => return None,
+        Err(_) => return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "Send a JSON body.")),
+    };
+    let Some(Value::Array(raw_kinds)) = b.get("kinds") else { return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "kinds must be a list.")) };
+    if raw_kinds.iter().any(|k| matches!(k, Value::Array(_) | Value::Object(_))) {
+        return None; // an unhashable member: Python's TypeError
+    }
+    let known = |k: &Value| matches!(k.as_str(), Some("audio" | "video" | "image"));
+    let kinds: Vec<&str> = if raw_kinds.iter().all(known) {
+        ["audio", "video", "image"].into_iter().filter(|k| raw_kinds.iter().any(|r| r.as_str() == Some(k))).collect()
+    } else {
+        return Some(crate::idpages::refusal(403)); // a kind that is not one of the three: `_require_edit`'s 403
+    };
+    for kind in &kinds {
+        let section = if *kind == "image" { "images" } else { kind };
+        if !crate::pages::edit_level(&p, w, section)? {
+            return Some(crate::idpages::refusal(403));
+        }
+    }
+    let only_generic = match b.get("scope") { None => true, Some(v) => v.as_str() != Some("all") };
+    // int(body.get("album") or 0): only with one kind; what int() refuses is 0
+    let album: i64 = if kinds.len() == 1 {
+        match b.get("album") {
+            Some(Value::Number(n)) => n.as_i64().or_else(|| n.as_f64().map(|f| f.trunc() as i64)).unwrap_or(0),
+            Some(Value::String(t)) => crate::form::py_int(t).unwrap_or(0),
+            Some(Value::Bool(true)) => 1,
+            _ => 0,
+        }
+    } else {
+        0
+    };
+    let mut refs: Vec<Value> = vec![];
+    for kind in kinds {
+        if kind == "audio" || kind == "video" {
+            let table = if kind == "audio" { "audio_clips" } else { "video_clips" };
+            let rows = if album != 0 {
+                rows_of(&db, &format!("SELECT id, name FROM {table} WHERE world_id = ?1 AND album_id = ?2 ORDER BY name, id"), &[&wid, &album])?
+            } else {
+                rows_of(&db, &format!("SELECT id, name FROM {table} WHERE world_id = ?1 ORDER BY name, id"), &[&wid])?
+            };
+            for r in rows {
+                if crate::media_rename::looks_generic(r.get("name").and_then(|v| v.as_str()).unwrap_or("")) || !only_generic {
+                    refs.push(json!({"kind": kind, "id": r.get("id")}));
+                }
+            }
+        } else {
+            let in_album: Option<Vec<String>> = if album != 0 {
+                let chosen = rows_of(&db, "SELECT * FROM image_albums WHERE id = ?1 AND world_id = ?2", &[&album, &wid])?.into_iter().next();
+                Some(match chosen {
+                    Some(a) => crate::gallery::album_urls(&a).as_array()?.iter().filter_map(|u| u.as_str().map(str::to_string)).collect(),
+                    None => vec![],
+                })
+            } else {
+                None
+            };
+            let usage = crate::media_rename::image_usage(&db, wid)?;
+            let mut sorted: Vec<&crate::media_rename::ImageUse> = usage.iter().collect();
+            sorted.sort_by(|a, b| a.0.cmp(&b.0));
+            for u in sorted {
+                if in_album.as_ref().is_some_and(|set| !set.contains(&u.0)) {
+                    continue;
+                }
+                let generic = crate::media_rename::looks_generic(&u.3) && u.1.is_empty();
+                if generic || !only_generic {
+                    refs.push(json!({"kind": "image", "url": u.0}));
+                }
+            }
+        }
+    }
+    let count = refs.len();
+    refs.truncate(MAX_RUN_ITEMS);
+    crate::edits::json_response(&json!({"items": refs, "count": count, "capped": count > MAX_RUN_ITEMS}))
 }
 
 /// `GET /api/kiy/plays` (app/routers/lore_extras.py): the saved King in Yellow plays (kiy_plays.json beside the database) without their text. GM only.
