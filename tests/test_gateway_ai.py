@@ -2906,11 +2906,10 @@ def test_python_free_teacher_examples_are_made_checked_and_ride_in_the_training_
         assert st["state"]["status"] == "idle" and st["ai_ready"] is True and st["model"] and st["counts"]["total"] == 0 and len(st["kinds"]) == 8
         # bad options are refused; a run starts
         assert g.post("/export/teacher/start", json={"kinds": "nope"}).status_code == 422
-        assert g.post("/export/teacher/start", json={"model": "zzother-model"}).status_code == 202      # the model picked on the page
+        assert g.post("/export/teacher/start", json={}).status_code == 202
         assert g.post("/export/teacher/start", json={}).status_code in (409, 202)   # already running (or already finished on a fast machine)
         st = _wait_teacher(g)
         assert st["state"]["status"] == "done", st
-        assert st["state"]["model"] == "zzother-model", st["state"]
         rep = st["state"]["report"]
         assert rep["added"] > 20 and rep["unsupported"] >= 1 and rep["partly"] >= 1 and rep["supported"] >= 5 and rep["jobs_done"] == rep["jobs"], rep
         assert rep["rejected"] >= 1       # the invented name that exists in the world was refused
@@ -3021,9 +3020,11 @@ def test_python_free_teacher_examples_stop_resume_failures_and_a_restart(client,
         g.post("/export/teacher/clear", json={})
         import shutil
         shutil.rmtree(data_dir / "cache", ignore_errors=True)
-        assert g.post("/export/teacher/start", json={"kinds": ["t_deeper"]}).status_code == 202
+        # the model picked on the page is the one the run reports
+        assert g.post("/export/teacher/start", json={"kinds": ["t_deeper"], "model": "zzother-model"}).status_code == 202
         st = _wait_teacher(g, timeout=120)
         assert st["state"]["status"] == "error" and "keeps failing" in st["state"]["text"], st
+        assert st["state"]["model"] == "zzother-model", st["state"]
     finally:
         proc.terminate()
         proc.wait(timeout=10)
