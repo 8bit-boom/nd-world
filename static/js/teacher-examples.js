@@ -10,7 +10,7 @@
   function options(limit) {
     var kinds = [].slice.call(document.querySelectorAll('.teacher-kind')).filter(function (c) { return c.checked; }).map(function (c) { return c.value; });
     return { kinds: kinds, per_source: +$('teacher-per').value, general_percent: +$('teacher-gen').value, judge: $('teacher-judge').checked,
-             drop_partly: $('teacher-partly').checked, limit: limit || null };
+             drop_partly: $('teacher-partly').checked, limit: limit || null, model: ($('teacher-model-select') || {}).value || '' };
   }
 
   function buildKinds(kinds, defaults) {
@@ -27,7 +27,26 @@
     });
   }
 
+  var modelsLoaded = false;
+  function loadModels() {
+    if (modelsLoaded) return;
+    modelsLoaded = true;
+    var sel = $('teacher-model-select');
+    if (!sel) return;
+    fetch('/api/ai/models', { credentials: 'same-origin' }).then(function (r) { return r.json(); }).then(function (d) {
+      var ids = [], seen = {};
+      (d.models || []).concat((d.available || []).map(function (id) { return { id: id, label: id }; })).forEach(function (m) {
+        var id = typeof m === 'string' ? m : m.id;
+        if (id && !seen[id]) { seen[id] = 1; ids.push([id, (typeof m === 'object' && m.label && m.label !== id) ? m.label + ' (' + id + ')' : id]); }
+      });
+      ids.forEach(function (x) { var o = document.createElement('option'); o.value = x[0]; o.textContent = x[1]; sel.appendChild(o); });
+      try { var saved = localStorage.getItem('nd_teacher_model'); if (saved && seen[saved]) sel.value = saved; } catch (e) { /* ignore */ }
+      sel.onchange = function () { try { localStorage.setItem('nd_teacher_model', sel.value); } catch (e) { /* ignore */ } };
+    }).catch(function () { modelsLoaded = false; });
+  }
+
   function render(d) {
+    loadModels();
     $('teacher-unavailable').style.display = 'none';
     $('teacher-body').style.display = '';
     buildKinds(d.kinds, d.defaults);
