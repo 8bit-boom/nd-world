@@ -29,6 +29,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/api/quests/board" => quests_board(&cfg, uri, headers),
         "/api/backups" => backups_list(&cfg, uri, headers),
         "/api/ai/sessions" => ai_chat_sessions(&cfg, uri, headers),
+        "/api/ai/projects" => ai_chat_projects(&cfg, uri, headers),
         "/api/ai/imagegen/models/downloaded" => imagegen_downloaded(&cfg, uri, headers),
         "/api/ai/imagegen/models/downloaded" | "/api/perf/summary" | "/api/perf/recent" => perf_empty(&cfg, uri, headers),
         "/api/ai/imagegen/tags/sources" | "/api/ai/imagegen/tags/status" | "/api/ai/imagegen/tags" => imagegen_tags_empty(&cfg, uri, headers),
@@ -130,7 +131,7 @@ pub fn is_get(path: &str) -> bool {
         || id_between(path, "/sessions/", "/npc-candidates").is_some() || id_between(path, "/sessions/", "/summary.md").is_some() || id_between(path, "/sessions/", "/transcript.md").is_some()
         || id_between(path, "/api/audio-jobs/", "/transcript.md").is_some() || id_between(path, "/api/audio-jobs/", "/recap.md").is_some()
         || id_between(path, "/api/combat/", "/pc-state").is_some() || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/templates/", "/export.json").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.pdf").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some() || id_between(path, "/parties/", "/export.ndc").is_some() || saved_views_section(path).is_some()
-        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/backups" | "/api/ai/imagegen/status" | "/api/ai/imagegen/models" | "/api/ai/imagegen/loras" | "/api/ai/imagegen/upscalers" | "/api/ai/imagegen/refiners" | "/api/ai/imagegen/ipadapter-models" | "/api/ai/imagegen/progress" | "/api/ai/imagegen/updates" | "/api/ai/imagegen/backends" | "/api/ai/imagegen/samplers-schedulers" | "/api/ai/imagegen/starred" | "/api/ai/imagegen/tags/sources" | "/api/ai/imagegen/tags/status" | "/api/ai/imagegen/tags" | "/api/perf/summary" | "/api/perf/recent" | "/api/system/stats" | "/api/orgs/graph" | "/api/ai/context-info" | "/api/ai/ping" | "/api/ai/sessions" | "/api/ai/unsloth/models" | "/api/ai/unsloth/image/status" | "/api/ai/unsloth/image/load-progress" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/status" | "/api/ai/unsloth/context-overrides" | "/api/ai/unsloth/audio-models" | "/api/ai/unsloth/version" | "/api/ai/unsloth/probe" | "/api/ai/unsloth/hub/download-progress" | "/api/ai/unsloth/gguf-variants" | "/api/ai/recap-instructions" | "/api/ai/defaults" | "/api/ai/prompt-presets" | "/api/media-rename/history" | "/api/sessions/ai/audio-jobs" | "/api/kiy/plays" | "/api/media-rename/runs" | "/api/media-rename/summary" | "/api/media-rename/items" | "/api/gallery/browse" | "/admin/diagnostics/events" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/tables.json" | "/api/video-jobs" | "/openapi.json" | "/docs" | "/docs/oauth2-redirect" | "/redoc" | "/api/ai/ollama/hf-search" | "/api/ai/ollama/hf-files" | "/api/ai/imagegen/models/hf-files") || trailing_id(path, "/api/ai/chat/jobs/").is_some() || trailing_id(path, "/api/ai/sessions/").is_some()
+        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/backups" | "/api/ai/imagegen/status" | "/api/ai/imagegen/models" | "/api/ai/imagegen/loras" | "/api/ai/imagegen/upscalers" | "/api/ai/imagegen/refiners" | "/api/ai/imagegen/ipadapter-models" | "/api/ai/imagegen/progress" | "/api/ai/imagegen/updates" | "/api/ai/imagegen/backends" | "/api/ai/imagegen/samplers-schedulers" | "/api/ai/imagegen/starred" | "/api/ai/imagegen/tags/sources" | "/api/ai/imagegen/tags/status" | "/api/ai/imagegen/tags" | "/api/perf/summary" | "/api/perf/recent" | "/api/system/stats" | "/api/orgs/graph" | "/api/ai/context-info" | "/api/ai/ping" | "/api/ai/sessions" | "/api/ai/projects" | "/api/ai/unsloth/models" | "/api/ai/unsloth/image/status" | "/api/ai/unsloth/image/load-progress" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/status" | "/api/ai/unsloth/context-overrides" | "/api/ai/unsloth/audio-models" | "/api/ai/unsloth/version" | "/api/ai/unsloth/probe" | "/api/ai/unsloth/hub/download-progress" | "/api/ai/unsloth/gguf-variants" | "/api/ai/recap-instructions" | "/api/ai/defaults" | "/api/ai/prompt-presets" | "/api/media-rename/history" | "/api/sessions/ai/audio-jobs" | "/api/kiy/plays" | "/api/media-rename/runs" | "/api/media-rename/summary" | "/api/media-rename/items" | "/api/gallery/browse" | "/admin/diagnostics/events" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/tables.json" | "/api/video-jobs" | "/openapi.json" | "/docs" | "/docs/oauth2-redirect" | "/redoc" | "/api/ai/ollama/hf-search" | "/api/ai/ollama/hf-files" | "/api/ai/imagegen/models/hf-files") || trailing_id(path, "/api/ai/chat/jobs/").is_some() || trailing_id(path, "/api/ai/sessions/").is_some()
 }
 
 /// the id of `/api/parties/<id>/vitals` (plain digits, as FastAPI's int reads them here)
@@ -3507,22 +3508,47 @@ fn ai_chat_sessions(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Resp
         return None;
     }
     let Some(wid) = world_id_of(&p) else { return Some(crate::idpages::refusal(404)) };
-    let rows = rows_of(&db, "SELECT id, title FROM chat_sessions WHERE world_id = ?1 AND surface = 'chat' ORDER BY updated_at DESC", &[&wid])?;
-    let list: Vec<Value> = rows.iter().map(|r| json!({"id": r.get("id"), "title": r.get("title")})).collect();
+    let rows = rows_of(&db, "SELECT id, title, project_id FROM chat_sessions WHERE world_id = ?1 AND surface = 'chat' ORDER BY updated_at DESC", &[&wid])?;
+    let list: Vec<Value> = rows.iter().map(|r| json!({"id": r.get("id"), "title": r.get("title"), "project_id": r.get("project_id")})).collect();
     crate::edits::json_response(&json!({"sessions": list}))
 }
 
-/// `GET /api/ai/sessions/<id>`: one saved Chat conversation: `{id, messages}`. GM only; another world's or surface's row is a 404
+/// `GET /api/ai/sessions/<id>`: one saved Chat conversation: `{id, project_id, messages}`. GM only; another world's or surface's row is a 404
 fn ai_chat_session_get(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
     let (db, p) = page(cfg, uri, headers)?;
     if !p.is_gm {
         return None;
     }
     let Some(wid) = world_id_of(&p) else { return Some(crate::idpages::refusal(404)) };
-    let rows = rows_of(&db, "SELECT id, messages_json FROM chat_sessions WHERE id = ?1 AND world_id = ?2 AND surface = 'chat'", &[&id, &wid])?;
+    let rows = rows_of(&db, "SELECT id, project_id, messages_json FROM chat_sessions WHERE id = ?1 AND world_id = ?2 AND surface = 'chat'", &[&id, &wid])?;
     let Some(row) = rows.into_iter().next() else { return Some(crate::idpages::refusal(404)) };
     let messages = py_json_strict(row.get("messages_json").and_then(|v| v.as_str()), "[]")?;
-    crate::edits::json_response(&json!({"id": id, "messages": messages}))
+    crate::edits::json_response(&json!({"id": id, "project_id": row.get("project_id"), "messages": messages}))
+}
+
+/// `GET /api/ai/projects` (app/routers/ai.py `api_chat_projects_list`): the active world's chat projects, newest first, each with its
+/// chats newest-first (the sidebar's Projects section). GM only.
+fn ai_chat_projects(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    let Some(wid) = world_id_of(&p) else { return Some(crate::idpages::refusal(404)) };
+    let projects = rows_of(&db, "SELECT id, name, notes FROM ai_projects WHERE world_id = ?1 ORDER BY created_at DESC, id DESC", &[&wid])?;
+    let chats = rows_of(&db, "SELECT id, title, project_id FROM chat_sessions WHERE world_id = ?1 AND surface = 'chat' AND project_id IS NOT NULL ORDER BY updated_at DESC", &[&wid])?;
+    let mut grouped: std::collections::HashMap<i64, Vec<Value>> = std::collections::HashMap::new();
+    for c in &chats {
+        let pid = c.get("project_id").and_then(|v| v.as_i64())?;
+        grouped.entry(pid).or_default().push(json!({"id": c.get("id"), "title": c.get("title")}));
+    }
+    let list: Vec<Value> = projects
+        .iter()
+        .map(|r| {
+            let pid = r.get("id").and_then(|v| v.as_i64())?;
+            Some(json!({"id": r.get("id"), "name": r.get("name"), "notes": r.get("notes"), "chats": grouped.get(&pid).cloned().unwrap_or_default()}))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    crate::edits::json_response(&json!({"projects": list}))
 }
 
 /// `GET /api/ai/recap-instructions`: the world's standing recap instructions. GM only.

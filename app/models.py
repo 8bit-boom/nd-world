@@ -1858,6 +1858,30 @@ class ChatSession(Base):
     entity_id = Column(Integer, ForeignKey("entities.id"), nullable=True, index=True)
     title = Column(String(256), default="")
     messages_json = Column(Text, default="[]")
+    # Projects group chats (the /ai sidebar's Projects section — see
+    # app.routers.ai's chat-project routes): nullable, so an ungrouped chat
+    # is just project_id=None. Healed in on existing installs by
+    # _heal_table_from_model (chat_sessions is in _GENERICALLY_HEALED_TABLES).
+    project_id = Column(Integer, ForeignKey("ai_projects.id"), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AiProject(Base):
+    """A named group of AI chats (the /ai sidebar's Projects section, like
+    Unsloth's). A project carries free-form GM notes that every chat in it
+    gets appended to its system prompt client-side (ai-chat-core.js composes
+    body.system the same way it already does for chat-preset system extras),
+    so a campaign-planning project can pin house rules without re-typing
+    them per chat. GM-only, per-world; deleting a project just ungroups its
+    chats (project_id=None) — never deletes the chats themselves. A
+    brand-new table: create_all covers it, no migration code needed."""
+    __tablename__ = "ai_projects"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    name = Column(String(128), default="")
+    notes = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

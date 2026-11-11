@@ -179,6 +179,7 @@ type Handler = fn(&mut Ctx, &[i64]) -> Option<Response<Body>>;
 const ROUTES: &[(&str, Handler)] = &[
     ("/admin/backup/restore/cancel", crate::restore::cancel),
     ("/api/ai/sessions", ai_chat_session_save),
+    ("/api/ai/projects", ai_chat_project_create),
     ("/api/kiy/plays", kiy_play_save),
     ("/api/characters/roll", characters_roll),
     ("/api/ai/imagegen/star", imagegen_star),
@@ -606,6 +607,18 @@ fn view_route(method: &Method, path: &str) -> Option<(SlugHandler, String)> {
     }
     if let Some(id) = path.strip_prefix("/api/ai/sessions/").filter(|s| !s.is_empty() && s.len() <= 15 && s.bytes().all(|b| b.is_ascii_digit()) && !(s.len() > 1 && s.starts_with('0'))) {
         return (*method == Method::DELETE).then(|| (ai_chat_session_delete as SlugHandler, id.to_string()));
+    }
+    // /api/ai/projects/<id>: POST renames / edits the notes, DELETE ungroups the chats and removes the project
+    if let Some(id) = path.strip_prefix("/api/ai/projects/").filter(|s| !s.is_empty() && s.len() <= 15 && s.bytes().all(|b| b.is_ascii_digit()) && !(s.len() > 1 && s.starts_with('0'))) {
+        return match *method {
+            Method::POST => Some((ai_chat_project_edit as SlugHandler, id.to_string())),
+            Method::DELETE => Some((ai_chat_project_delete as SlugHandler, id.to_string())),
+            _ => None,
+        };
+    }
+    // /api/ai/sessions/<id>/project: POST moves a chat between projects (project_id null = ungroup)
+    if let Some(id) = path.strip_prefix("/api/ai/sessions/").and_then(|r| r.strip_suffix("/project")).filter(|s| !s.is_empty() && s.len() <= 15 && s.bytes().all(|b| b.is_ascii_digit()) && !(s.len() > 1 && s.starts_with('0'))) {
+        return (*method == Method::POST).then(|| (ai_chat_session_project as SlugHandler, id.to_string()));
     }
     if let Some(id) = path.strip_prefix("/api/kiy/plays/").filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')) {
         return (*method == Method::DELETE).then(|| (kiy_play_delete as SlugHandler, id.to_string()));
@@ -8068,6 +8081,13 @@ fn ai_chat_session_save(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
         Some(Value::Number(n)) => n.as_i64()?,
         _ => return None,
     };
+    // project_id (the Projects sidebar): honored ONLY on create — an update
+    // ignoring it is what stops a replayed save from undoing a move.
+    let want_project: i64 = match body.get("project_id") {
+        None | Some(Value::Null) => 0,
+        Some(Value::Number(n)) => n.as_i64()?,
+        _ => return None,
+    };
     let mut msgs = vec![];
     for m in body.get("messages")?.as_array()? {
         let m = m.as_object()?;
@@ -8108,7 +8128,8 @@ fn ai_chat_session_save(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
     };
     let id = match existing {
         Some(id) => {
-            orm::update(&c.db, "chat_sessions", id, &[("messages_json", s(&stored))])?;
+            // SQLAlchemy's onupdate bumps updated_at on every UPDATE (the list orders by it)
+            orm::update(&c.db, "chat_sessions", id, &[("messages_json", s(&stored)), ("updated_at", s(&utc_now()))])?;
             id
         }
         None => {
@@ -8127,8 +8148,14 @@ fn ai_chat_session_save(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
                     }
                 }
             }
+            // _chat_project_id: a project of THIS world, else ungrouped (a stale id never fails a save)
+            let pid: Option<i64> = if want_project != 0 {
+                c.db.query_row("SELECT id FROM ai_projects WHERE id = ?1 AND world_id = ?2", rusqlite::params![want_project, wid], |r| r.get(0)).ok()
+            } else {
+                None
+            };
             orm::insert(&c.db, "chat_sessions", &[("world_id", Sql::Integer(wid)), ("user_id", Sql::Integer(c.p.user_id)), ("surface", s("chat")),
-                ("title", s(&title)), ("messages_json", s(&stored))])?
+                ("title", s(&title)), ("messages_json", s(&stored)), ("project_id", pid.map_or(Sql::Null, Sql::Integer))])?
         }
     };
     json_response(&json!({"id": id}))
@@ -8307,6 +8334,107 @@ fn ai_chat_session_delete(c: &mut Ctx, id: &str) -> Option<Response<Body>> {
         return Some(crate::idpages::refusal(404));
     }
     json_response(&json!({"ok": true}))
+}
+
+// ── Chat projects (app/routers/ai.py's chat-project block — the /ai sidebar's
+// Projects section): named groups of chats with notes the client rides into
+// every chat's system prompt. GM only, per world; deleting a project only
+// ungroups its chats. The name is trimmed, capped at 128 characters and
+// falls back to "New project"; the notes are capped at 16000. A body pydantic
+// would 422 (not an object, a non-text name/notes) is Python's.
+fn _project_text(body: &Map<String, Value>, key: &str) -> Option<String> {
+    match body.get(key) {
+        None => Some(String::new()),
+        Some(Value::String(t)) => Some(t.clone()),
+        _ => None,
+    }
+}
+
+fn ai_chat_project_create(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    if !c.p.is_gm {
+        return Some(crate::idpages::refusal(403));
+    }
+    let Some(wid) = c.world_id() else { return Some(crate::idpages::refusal(404)) };
+    let body: Value = serde_json::from_slice(c.body).ok().filter(|_| plain_numbers(c.body))?;
+    let body = body.as_object()?;
+    let raw_name = _project_text(body, "name")?;
+    if raw_name.chars().any(|ch| ('\u{1c}'..='\u{1f}').contains(&ch)) {
+        return None; // str.strip() reads these as space, trim() does not
+    }
+    let mut name: String = raw_name.trim().chars().take(128).collect();
+    if name.is_empty() {
+        name = "New project".to_string();
+    }
+    let notes: String = _project_text(body, "notes")?.chars().take(16000).collect();
+    let now = utc_now();
+    let id = orm::insert(&c.db, "ai_projects", &[("world_id", Sql::Integer(wid)), ("name", s(&name)), ("notes", s(&notes)),
+        ("created_at", s(&now)), ("updated_at", s(&now))])?;
+    json_response(&json!({"id": id, "name": name}))
+}
+
+fn ai_chat_project_edit(c: &mut Ctx, id: &str) -> Option<Response<Body>> {
+    if !c.p.is_gm {
+        return Some(crate::idpages::refusal(403));
+    }
+    let Some(wid) = c.world_id() else { return Some(crate::idpages::refusal(404)) };
+    let id: i64 = id.parse().ok()?;
+    let body: Value = serde_json::from_slice(c.body).ok().filter(|_| plain_numbers(c.body))?;
+    let body = body.as_object()?;
+    let raw_name = _project_text(body, "name")?;
+    if raw_name.chars().any(|ch| ('\u{1c}'..='\u{1f}').contains(&ch)) {
+        return None;
+    }
+    let notes: String = _project_text(body, "notes")?.chars().take(16000).collect();
+    let found: Option<String> = c.db.query_row("SELECT name FROM ai_projects WHERE id = ?1 AND world_id = ?2", rusqlite::params![id, wid], |r| r.get(0)).ok();
+    let Some(old_name) = found else { return Some(crate::idpages::refusal(404)) };
+    // Python keeps the stored name when the request's name trims to empty
+    let trimmed: String = raw_name.trim().chars().take(128).collect();
+    let name = if trimmed.is_empty() { old_name } else { trimmed };
+    orm::update(&c.db, "ai_projects", id, &[("name", s(&name)), ("notes", s(&notes)), ("updated_at", s(&utc_now()))])?;
+    json_response(&json!({"ok": true}))
+}
+
+fn ai_chat_project_delete(c: &mut Ctx, id: &str) -> Option<Response<Body>> {
+    if !c.p.is_gm {
+        return Some(crate::idpages::refusal(403));
+    }
+    let Some(wid) = c.world_id() else { return Some(crate::idpages::refusal(404)) };
+    let id: i64 = id.parse().ok()?;
+    let n = c.db.execute("DELETE FROM ai_projects WHERE id = ?1 AND world_id = ?2", rusqlite::params![id, wid]).ok()?;
+    if n == 0 {
+        return Some(crate::idpages::refusal(404));
+    }
+    // Ungroup, never delete: a project is an arrangement, the chats are content.
+    c.db.execute("UPDATE chat_sessions SET project_id = NULL WHERE project_id = ?1 AND world_id = ?2", rusqlite::params![id, wid]).ok()?;
+    json_response(&json!({"ok": true}))
+}
+
+fn ai_chat_session_project(c: &mut Ctx, id: &str) -> Option<Response<Body>> {
+    if !c.p.is_gm {
+        return Some(crate::idpages::refusal(403));
+    }
+    let Some(wid) = c.world_id() else { return Some(crate::idpages::refusal(404)) };
+    let id: i64 = id.parse().ok()?;
+    let body: Value = serde_json::from_slice(c.body).ok().filter(|_| plain_numbers(c.body))?;
+    let body = body.as_object()?;
+    let want: i64 = match body.get("project_id") {
+        None | Some(Value::Null) => 0,
+        Some(Value::Number(n)) => n.as_i64()?,
+        _ => return None,
+    };
+    let found: Option<i64> = c.db.query_row("SELECT id FROM chat_sessions WHERE id = ?1 AND world_id = ?2 AND surface = 'chat'", rusqlite::params![id, wid], |r| r.get(0)).ok();
+    if found.is_none() {
+        return Some(crate::idpages::refusal(404));
+    }
+    // _chat_project_id: a project of THIS world, else ungrouped
+    let pid: Option<i64> = if want != 0 {
+        c.db.query_row("SELECT id FROM ai_projects WHERE id = ?1 AND world_id = ?2", rusqlite::params![want, wid], |r| r.get(0)).ok()
+    } else {
+        None
+    };
+    // SQLAlchemy's onupdate bumps updated_at on the move (the list orders by it)
+    c.db.execute("UPDATE chat_sessions SET project_id = ?1, updated_at = ?2 WHERE id = ?3", rusqlite::params![pid.map_or(Sql::Null, Sql::Integer), utc_now(), id]).ok()?;
+    json_response(&json!({"ok": true, "project_id": pid}))
 }
 
 /// `view_prefs_reset_all`: every saved layout of the person gone, the site layout forgotten from the session

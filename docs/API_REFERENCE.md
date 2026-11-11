@@ -996,7 +996,10 @@ Several tables in one world (see docs/FORK_STATUS.md). GM only; plain form POSTs
 | POST | `/api/ai/models/remove` | GM | Hides a built-in model or removes a custom one; can also delete it from Ollama. |
 | POST | `/api/ai/models/reset` | GM | Restores all built-in models (clears the hidden list). |
 | POST | `/api/ai/pull` | GM | Streams progress while pulling a model into Ollama (SSE). |
-| GET/POST/DELETE | `/api/ai/sessions`, `/api/ai/sessions/{id}` | GM | AI Chat History — list, save, load, and delete a persisted chat conversation (`ChatSession`). |
+| GET/POST/DELETE | `/api/ai/sessions`, `/api/ai/sessions/{id}` | GM | AI Chat History — list, save, load, and delete a persisted chat conversation (`ChatSession`). The save body's `project_id` is honored only when the save creates the chat. |
+| POST | `/api/ai/sessions/{id}/project` | GM | Moves a chat into a project (or out, `project_id: null`) — the only way an existing chat changes project. |
+| GET/POST | `/api/ai/projects` | GM | AI Chat Projects (the /ai sidebar's Projects section) — list the world's `AiProject`s each with its chats, or create one (blank name → "New project"; name capped 128, notes 16000 chars). |
+| POST/DELETE | `/api/ai/projects/{id}` | GM | Rename a project / edit its notes (blank name keeps the old one), or delete it — deleting ungroups its chats and never deletes them. |
 | POST | `/api/ai/attachments/upload` | GM* | Attaches an image/audio/document to a chat message — audio is transcribed through Unsloth Studio and documents text-extracted inline. |
 | POST | `/api/ai/attachments/upload/chunk`, `/api/ai/attachments/upload/complete` | GM* | Chunked variant of the above for an attachment over the direct-upload size threshold. |
 | POST | `/api/ai/attachments/audio-jobs`, `/api/ai/attachments/audio-jobs/chunk`, `/api/ai/attachments/audio-jobs/complete` | GM* | Transcribe a chat voice attachment as a durable background job instead of blocking the upload request. |

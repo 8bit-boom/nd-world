@@ -10072,6 +10072,104 @@ def test_ai_chat_sessions_save_open_delete_are_pythons(client, seed):
         proc.terminate()
 
 
+def test_ai_chat_projects_are_pythons(client, seed):
+    """The /ai sidebar's Projects: GET /api/ai/projects (chats grouped per project), POST /api/ai/projects (create — blank name becomes
+    "New project", name/notes capped), POST /api/ai/projects/<id> (rename / notes; a blank name keeps the old one), DELETE (the chats are
+    kept, ungrouped), POST /api/ai/sessions/<id>/project (move, a stale id ungroups) and the save body's project_id honored only on create —
+    byte-identical from both servers, a player 403, a missing/foreign row 404; and a Python-free gateway runs the same flow."""
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    msgs = [{"role": "user", "content": "Planning"}, {"role": "assistant", "content": "ok"}]
+    made = {}
+    for side, cl in (("py", d), ("gw", v)):
+        r = cl.post("/api/ai/projects", json={"name": f"  Hunt é {os.urandom(2).hex()}  ", "notes": "Hunt rules."})
+        assert r.status_code == 200, (side, r.text)
+        if side == "gw":
+            assert r.headers.get("x-nd-served-by") == "gateway"
+        made[side] = r.json()
+        r2 = cl.post("/api/ai/projects", json={"name": "   "})
+        assert r2.status_code == 200 and r2.json()["name"] == "New project", (side, r2.text)
+        made[side + "_blank"] = r2.json()["id"]
+    assert made["gw"]["name"].startswith("Hunt é ")
+    # the list groups each project's chats (still empty) — same bytes
+    for side, cl in (("py", d), ("gw", v)):
+        a = cl.post("/api/ai/sessions", json={"messages": msgs, "project_id": made[side]["id"]})
+        assert a.status_code == 200, (side, a.text)
+        made[side + "_chat"] = a.json()["id"]
+    a, b = d.get("/api/ai/projects"), v.get("/api/ai/projects")
+    assert (a.status_code, a.content) == (b.status_code, b.content)
+    pj = a.json()["projects"]
+    hunt = [p for p in pj if p["id"] in (made["py"]["id"], made["gw"]["id"])][0]
+    assert hunt["notes"] == "Hunt rules." and [c["title"] for c in hunt["chats"]] == ["Planning"]
+    # an update replaying a different project_id must not move the chat
+    for side, cl in (("py", d), ("gw", v)):
+        r = cl.post("/api/ai/sessions", json={"session_id": made[side + "_chat"], "messages": msgs + [{"role": "user", "content": "more"}],
+                                              "project_id": made[side + "_blank"]})
+        assert r.status_code == 200 and r.json()["id"] == made[side + "_chat"]
+    assert d.get(f"/api/ai/sessions/{made['py_chat']}").json()["project_id"] == made["py"]["id"]
+    assert v.get(f"/api/ai/sessions/{made['gw_chat']}").json()["project_id"] == made["gw"]["id"]
+    # move: in, out, and a stale id silently ungroups
+    for side, cl in (("py", d), ("gw", v)):
+        r = cl.post(f"/api/ai/sessions/{made[side + '_chat']}/project", json={"project_id": made[side + "_blank"]})
+        assert r.status_code == 200 and r.json() == {"ok": True, "project_id": made[side + "_blank"]}, (side, r.text)
+        r = cl.post(f"/api/ai/sessions/{made[side + '_chat']}/project", json={"project_id": 99999999})
+        assert r.status_code == 200 and r.json() == {"ok": True, "project_id": None}, (side, r.text)
+        r = cl.post(f"/api/ai/sessions/{made[side + '_chat']}/project", json={"project_id": made[side]["id"]})
+        assert r.json()["project_id"] == made[side]["id"]
+    # edit keeps the stored name when the request's name trims to empty
+    for side, cl in (("py", d), ("gw", v)):
+        r = cl.post(f"/api/ai/projects/{made[side]['id']}", json={"name": "   ", "notes": "Updated."})
+        assert r.status_code == 200 and r.json() == {"ok": True}, (side, r.text)
+    a, b = d.get("/api/ai/projects"), v.get("/api/ai/projects")
+    assert (a.status_code, a.content) == (b.status_code, b.content)
+    assert [p for p in a.json()["projects"] if p["id"] in (made["py"]["id"], made["gw"]["id"])][0]["notes"] == "Updated."
+    # refusals: a player 403s everywhere; a missing/foreign row is a 404
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pv = _via(p, base)
+    for side, cl in (("py", p), ("gw", pv)):
+        assert cl.get("/api/ai/projects").status_code == 403
+        assert cl.post("/api/ai/projects", json={"name": "P"}).status_code == 403
+        assert cl.post("/api/ai/projects/1", json={"name": "P"}).status_code == 403
+        assert cl.delete("/api/ai/projects/1").status_code == 403
+        assert cl.post("/api/ai/sessions/1/project", json={"project_id": 1}).status_code == 403
+    for side, cl in (("py", d), ("gw", v)):
+        assert cl.post("/api/ai/projects/99999999", json={"name": "x"}).status_code == 404
+        assert cl.delete("/api/ai/projects/99999999").status_code == 404
+        assert cl.post("/api/ai/sessions/99999999/project", json={"project_id": None}).status_code == 404
+        # a body pydantic would 422 is Python's (the gateway declines)
+        r = cl.post("/api/ai/projects", json={"name": 5})
+        assert r.status_code == 422, (side, r.text)
+    # world-scoped: world B never sees world A's projects or chats
+    db = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_b.slug)
+    vb = _via(db, base)
+    assert db.get("/api/ai/projects").json()["projects"] == []
+    assert vb.get("/api/ai/projects").json()["projects"] == []
+    assert db.post(f"/api/ai/sessions/{made['py_chat']}/project", json={"project_id": made["py"]["id"]}).status_code == 404
+    assert vb.post(f"/api/ai/sessions/{made['gw_chat']}/project", json={"project_id": made["gw"]["id"]}).status_code == 404
+    # delete ungroups but keeps the chat — same flow on both, then python-free
+    for side, cl in (("py", d), ("gw", v)):
+        assert cl.delete(f"/api/ai/projects/{made[side]['id']}").json() == {"ok": True}
+        got = cl.get(f"/api/ai/sessions/{made[side + '_chat']}")
+        assert got.json()["project_id"] is None
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        r = g.post("/api/ai/projects", json={"name": "Solo"})
+        assert r.status_code == 200 and r.json()["name"] == "Solo", r.text
+        pid = r.json()["id"]
+        sid = g.post("/api/ai/sessions", json={"messages": msgs, "project_id": pid}).json()["id"]
+        assert g.get(f"/api/ai/sessions/{sid}").json()["project_id"] == pid
+        r = g.get("/api/ai/projects")
+        assert r.json()["projects"][0]["chats"] == [{"id": sid, "title": "Planning"}], r.text
+        assert g.post(f"/api/ai/projects/{pid}", json={"name": "", "notes": "n"}).json() == {"ok": True}
+        assert g.post(f"/api/ai/sessions/{sid}/project", json={"project_id": None}).json() == {"ok": True, "project_id": None}
+        assert g.delete(f"/api/ai/projects/{pid}").json() == {"ok": True}
+        assert g.get(f"/api/ai/sessions/{sid}").json()["project_id"] is None
+    finally:
+        proc.terminate()
+
+
 def test_ai_status_dot_on_studio_is_pythons(client, seed):
     """POST /api/ai/status (the AI dot on every page) with a stand-in Studio: ok with the loaded names, unavailable when Studio errors. Python
     caches its answer for 15 s, so each case waits until its cache has turned over before comparing."""

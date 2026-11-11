@@ -29,11 +29,14 @@ async function loadSessions(autoLoadLatest = false) {
     const r = await fetch('/api/ai/sessions');
     const d = await r.json();
     el.innerHTML = '';
-    if (!d.sessions.length) {
+    // Chats in a project are listed under it in the Projects section, not
+    // here — the main History list is the ungrouped ones.
+    const ungrouped = d.sessions.filter((s) => !s.project_id);
+    if (!ungrouped.length) {
       el.textContent = 'No saved chats yet.';
       return;
     }
-    for (const s of d.sessions) {
+    for (const s of ungrouped) {
       const item = document.createElement('div');
       item.className = 'session-item';
       item.id = 'session-' + s.id;
@@ -44,6 +47,12 @@ async function loadSessions(autoLoadLatest = false) {
       link.title = s.title;
       link.onclick = () => loadSession(s.id, link);
 
+      const move = document.createElement('button');
+      move.className = 'session-del';
+      move.textContent = '📁';
+      move.title = 'Move to a project';
+      move.onclick = (e) => { e.stopPropagation(); openProjectMove(s.id); };
+
       const del = document.createElement('button');
       del.className = 'session-del';
       del.textContent = '✕';
@@ -51,11 +60,12 @@ async function loadSessions(autoLoadLatest = false) {
       del.onclick = (e) => { e.stopPropagation(); deleteSession(s.id, item); };
 
       item.appendChild(link);
+      item.appendChild(move);
       item.appendChild(del);
       el.appendChild(item);
     }
-    if (autoLoadLatest && !currentSessionId && d.sessions.length) {
-      const latest = d.sessions[0];
+    if (autoLoadLatest && !currentSessionId && ungrouped.length) {
+      const latest = ungrouped[0];
       const link = el.querySelector('.session-link');
       loadSession(latest.id, link);
     }
@@ -70,7 +80,7 @@ async function autoSave() {
     const r = await fetch('/api/ai/sessions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: currentSessionId, messages: history })
+      body: JSON.stringify({ session_id: currentSessionId, messages: history, project_id: _activeProjectId || null })
     });
     const d = await r.json();
     currentSessionId = d.id;
@@ -84,6 +94,7 @@ async function loadSession(id, linkEl) {
     const d = await r.json();
     currentSessionId = d.id;
     history = d.messages;
+    setActiveProject(d.project_id || null);
     const box = document.getElementById('ai-messages');
     box.innerHTML = '';
     for (const m of d.messages) {
@@ -109,6 +120,7 @@ async function deleteSession(id, itemEl) {
       addMessage('assistant', 'Chat cleared — ask me anything about your world.', false);
     }
     itemEl.remove();
+    loadProjects();
     const el = document.getElementById('session-list');
     if (!el.children.length) el.textContent = 'No saved chats yet.';
   } catch(e) {
@@ -119,6 +131,7 @@ async function deleteSession(id, itemEl) {
 function newChat() {
   if (history.length && !currentSessionId) autoSave();
   currentSessionId = null;
+  setActiveProject(null);
   history = [];
   const box = document.getElementById('ai-messages');
   box.innerHTML = '';
@@ -129,7 +142,208 @@ function newChat() {
   ctxEl.textContent = '○ Ready';
 }
 
+// ── Projects (the sidebar's Projects section) ────────────────────────────────
+// A project groups chats and carries notes that ride into every chat's
+// system prompt (buildChatMessagesWithContext appends them the same way it
+// does chat-preset system extras). The server honors project_id on a save
+// only when the save CREATES the chat row; moving an existing chat goes
+// through POST /api/ai/sessions/{id}/project, so a stale replayed save can
+// never undo a move. Deleting a project keeps its chats, just ungrouped.
+
+let _projects = [];
+let _activeProjectId = null;
+let _activeProjectNotes = '';
+const _openProjects = new Set();
+let _projectsLoadedOnce = false;
+
+function _findProject(id) { return _projects.find((p) => p.id === id) || null; }
+
+function setActiveProject(pid) {
+  _activeProjectId = pid || null;
+  const p = _findProject(_activeProjectId);
+  _activeProjectNotes = p ? (p.notes || '') : '';
+}
+
+async function loadProjects() {
+  const el = document.getElementById('project-list');
+  try {
+    const r = await fetch('/api/ai/projects');
+    const d = await r.json();
+    _projects = d.projects || [];
+    if (!_projectsLoadedOnce) {
+      // First load: every project expanded, like Unsloth's.
+      for (const p of _projects) _openProjects.add(p.id);
+      _projectsLoadedOnce = true;
+    } else {
+      // Afterwards keep whatever the user collapsed (drop closed projects).
+      for (const id of [..._openProjects]) if (!_findProject(id)) _openProjects.delete(id);
+    }
+    if (_activeProjectId) setActiveProject(_activeProjectId);
+    renderProjects();
+  } catch(_) {
+    el.textContent = '✗ Unavailable';
+  }
+}
+
+function renderProjects() {
+  const el = document.getElementById('project-list');
+  el.innerHTML = '';
+  if (!_projects.length) {
+    el.textContent = 'No projects yet.';
+    return;
+  }
+  for (const p of _projects) {
+    const open = _openProjects.has(p.id);
+    const wrap = document.createElement('div');
+    wrap.className = 'session-item';
+
+    const head = document.createElement('button');
+    head.className = 'session-link' + (p.id === _activeProjectId ? ' active' : '');
+    head.style.textAlign = 'left';
+    head.textContent = (open ? '▾ ' : '▸ ') + p.name + ' (' + p.chats.length + ')';
+    head.title = 'Chats in “' + p.name + '” — its notes are added to every chat here';
+    head.onclick = () => {
+      if (open) _openProjects.delete(p.id); else _openProjects.add(p.id);
+      renderProjects();
+    };
+    wrap.appendChild(head);
+
+    const edit = document.createElement('button');
+    edit.className = 'session-del';
+    edit.textContent = '✎';
+    edit.title = 'Rename / edit notes';
+    edit.onclick = (e) => { e.stopPropagation(); openProjectDialog(p); };
+    wrap.appendChild(edit);
+
+    const del = document.createElement('button');
+    del.className = 'session-del';
+    del.textContent = '✕';
+    del.title = 'Delete project (its chats are kept, just ungrouped)';
+    del.onclick = async (e) => {
+      e.stopPropagation();
+      if (!confirm('Delete project “' + p.name + '”? Its chats are kept, just ungrouped.')) return;
+      await fetch('/api/ai/projects/' + p.id, { method: 'DELETE' });
+      if (_activeProjectId === p.id) setActiveProject(null);
+      await Promise.all([loadProjects(), loadSessions()]);
+    };
+    wrap.appendChild(del);
+
+    el.appendChild(wrap);
+
+    if (!open) continue;
+    if (!p.chats.length) {
+      const none = document.createElement('div');
+      none.style.cssText = 'padding:.15rem .4rem;opacity:.75';
+      none.textContent = 'No chats';
+      el.appendChild(none);
+    }
+    for (const c of p.chats) {
+      const item = document.createElement('div');
+      item.className = 'session-item';
+      const link = document.createElement('button');
+      link.className = 'session-link' + (c.id === currentSessionId ? ' active' : '');
+      link.textContent = c.title;
+      link.title = c.title;
+      link.onclick = () => loadSession(c.id, link);
+      const del2 = document.createElement('button');
+      del2.className = 'session-del';
+      del2.textContent = '✕';
+      del2.title = 'Delete chat';
+      del2.onclick = (e) => { e.stopPropagation(); deleteSession(c.id, item); };
+      item.appendChild(link);
+      item.appendChild(del2);
+      el.appendChild(item);
+    }
+    const nb = document.createElement('button');
+    nb.className = 'new-chat-btn';
+    nb.textContent = '+ New chat here';
+    nb.onclick = () => newChatInProject(p);
+    el.appendChild(nb);
+  }
+}
+
+function newChatInProject(p) {
+  newChat();
+  setActiveProject(p.id);
+  document.getElementById('ai-messages').innerHTML = '';
+  addMessage('assistant', 'New chat in “' + p.name + '” — its notes ride along in every message.', false);
+}
+
+let _projectDialogId = null;
+function openProjectDialog(p) {
+  _projectDialogId = p ? p.id : null;
+  document.getElementById('project-dialog-title').textContent = p ? 'Edit project' : 'New project';
+  document.getElementById('project-name-input').value = p ? p.name : '';
+  document.getElementById('project-notes-input').value = p ? (p.notes || '') : '';
+  const ov = document.getElementById('project-dialog-overlay');
+  ov.style.display = 'flex';
+  document.getElementById('project-name-input').focus();
+}
+
+function closeProjectDialog() {
+  document.getElementById('project-dialog-overlay').style.display = 'none';
+}
+
+async function saveProjectDialog() {
+  const name = document.getElementById('project-name-input').value.trim();
+  const notes = document.getElementById('project-notes-input').value;
+  closeProjectDialog();
+  try {
+    if (_projectDialogId) {
+      await fetch('/api/ai/projects/' + _projectDialogId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, notes }),
+      });
+    } else {
+      const r = await fetch('/api/ai/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, notes }),
+      });
+      const d = await r.json();
+      _activeProjectId = d.id;
+    }
+  } catch(_) {}
+  loadProjects();
+}
+
+let _moveSessionId = null;
+function openProjectMove(sessionId) {
+  _moveSessionId = sessionId;
+  const list = document.getElementById('project-move-list');
+  list.innerHTML = '';
+  const mk = (label, pid) => {
+    const b = document.createElement('button');
+    b.className = 'new-chat-btn';
+    b.style.margin = '0';
+    b.textContent = label;
+    b.onclick = async () => {
+      const sid = _moveSessionId;
+      closeProjectMove();
+      try {
+        await fetch('/api/ai/sessions/' + sid + '/project', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ project_id: pid }),
+        });
+      } catch(_) { return; }
+      if (sid === currentSessionId) setActiveProject(pid);
+      await Promise.all([loadProjects(), loadSessions()]);
+    };
+    list.appendChild(b);
+  };
+  for (const p of _projects) mk(p.name, p.id);
+  mk('No project (remove from project)', null);
+  document.getElementById('project-move-overlay').style.display = 'flex';
+}
+
+function closeProjectMove() {
+  document.getElementById('project-move-overlay').style.display = 'none';
+}
+
 loadSessions(true);
+loadProjects();
 
 // ── Mobile sidebar drawer ────────────────────────────────────────────────────
 // Below 700px .ai-sidebar (History/New/Save/Compact/Clear, plus Quick
@@ -1267,7 +1481,8 @@ async function buildChatMessagesWithContext(extraUserMsg, signal) {
     ...base.slice(-1),
   ] : base;
 
-  const presetSystem = _chatPresetSystemExtra ? WORLD_SYSTEM + '\n\n' + _chatPresetSystemExtra : WORLD_SYSTEM;
+  let presetSystem = _chatPresetSystemExtra ? WORLD_SYSTEM + '\n\n' + _chatPresetSystemExtra : WORLD_SYSTEM;
+  if (_activeProjectNotes) presetSystem += '\n\nProject notes:\n' + _activeProjectNotes;
   return { messages: messagesWithCtx, system: presetSystem };
 }
 

@@ -61,7 +61,7 @@ from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded,
 from . import groups as _groups_mod
 from . import scope as _scope_mod
 from . import map_folders as _map_folders
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, EntityVoiceHint, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, VideoJob, DiceRoll, CharacterSheet, TrustedDevice, EntityRelation, VaultChunk, AiInstruction, CharacterJournalEntry, CharacterPref, CharacterLog, CharacterShare, WorldHandout, CharacterCompanion, CharacterKeepsake, SessionPlan, SessionPlanSlot, SessionPlanVote, MediaTitle, MediaRenameLog, MediaRenameRun, MapProp, PlayerGroup
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, EntityVoiceHint, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, VideoJob, DiceRoll, CharacterSheet, TrustedDevice, EntityRelation, VaultChunk, AiInstruction, AiProject, CharacterJournalEntry, CharacterPref, CharacterLog, CharacterShare, WorldHandout, CharacterCompanion, CharacterKeepsake, SessionPlan, SessionPlanSlot, SessionPlanVote, MediaTitle, MediaRenameLog, MediaRenameRun, MapProp, PlayerGroup
 from .routers.ai import router as ai_router
 from .routers.ai_tasks import router as ai_tasks_router
 from .routers.live_jobs import router as live_jobs_router
@@ -1860,7 +1860,7 @@ _WORLD_DELETE_MODELS = (
     WorldCalendar, CalendarEvent, CalendarDayIcon, ImageAlbum, AudioClip, AudioAlbum,
     VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset,
     AudioJob, ImageJob, ChatJob, VideoJob, EntityTemplate, SheetTemplate, DiceRoll, CharacterSheet,
-    EntityRelation, VaultChunk, AiInstruction, EntityVoiceHint, CharacterJournalEntry,
+    EntityRelation, VaultChunk, AiInstruction, EntityVoiceHint, AiProject, CharacterJournalEntry,
     CharacterPref, CharacterLog, CharacterShare, WorldHandout, CharacterCompanion, CharacterKeepsake,
     SessionPlan, SessionPlanSlot, SessionPlanVote, MediaTitle, MediaRenameLog, MediaRenameRun, MapProp, PlayerGroup,
 )
