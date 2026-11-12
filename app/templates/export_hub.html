@@ -112,7 +112,7 @@
     <a href="/export/training.ndtrain" class="btn-primary">⬇ Download training bundle</a>
   </div>
 
-  <div class="export-option" id="studio-card">
+  <div class="export-option" id="studio-card" data-world="{{ world.slug if world else '' }}">
     <h2>🦥 Training data for Unsloth Studio <span class="export-tag">optional</span></h2>
     <p>
       Downloads <strong>{{ world.name if world else 'the world' }}</strong> as a ready dataset for the <em>Train</em> page of Unsloth Studio / Unsloth Desktop:
@@ -124,6 +124,11 @@
       Not available here: this works only in the Python-free image.
     </div>
     <div id="studio-body" style="display:none">
+      <div style="margin-bottom:.4rem"><strong>Worlds in the file</strong>
+        <span style="font-size:.8rem;color:var(--text-dim)">(tick several to combine them: every example carries its own world's name, so one model can learn them all and still tell them apart)</span><br>
+        {% for w in worlds %}<label style="display:inline-block;margin-right:1rem"><input type="checkbox" class="studio-world" value="{{ w.slug }}" {% if world and w.id == world.id %}checked{% endif %}> {{ w.name }}</label>{% endfor %}
+        <a href="#" id="studio-allworlds" style="font-size:.85rem">all</a> · <a href="#" id="studio-oneworld" style="font-size:.85rem">only this one</a>
+      </div>
       <label style="display:block"><input type="checkbox" id="studio-book" checked> Include the world book (as answers)</label>
       <label style="display:block"><input type="checkbox" id="studio-teacher" checked> Include the examples this world's AI model wrote (when there are any)</label>
       <label style="display:block">Keep <select id="studio-test"><option>0</option><option selected>10</option><option>20</option><option>30</option></select> % of the questions out of training as <code>eval.jsonl</code></label>

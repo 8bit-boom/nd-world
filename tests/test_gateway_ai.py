@@ -3344,3 +3344,70 @@ def test_chat_attachments_reach_the_backend_as_pythons_do(client, seed, studio):
             a, b = json.dumps(out[0][2], indent=1).splitlines(), json.dumps(out[1][2], indent=1).splitlines()
             raise AssertionError(path + "\n" + "\n".join(list(difflib.unified_diff(a, b, "python", "gateway", lineterm="", n=0))[:20]))
         assert path.endswith("compact") or any("image_url" in json.dumps(m) for q in out[0][2] for m in q.get("messages", [])), path
+
+
+def test_python_free_unsloth_studio_export_follows_the_chosen_world_and_can_hold_all(client, seed):
+    """The export is of the world named in the address (`w`) or else the active-world cookie, never the same data for two worlds: different worlds give
+    different files (and file names), the answer may not be cached by anything (private, no-store), and `worlds_all=1` puts every world in one file
+    with each example speaking of its own world."""
+    import io
+    import zipfile
+    from app.database import SessionLocal
+    from app.models import Entity
+    from .test_gateway_golden import _python_free_gateway
+    db = SessionLocal()
+    try:
+        for w, tag in ((seed.world_a.id, "Alpha"), (seed.world_b.id, "Beta")):
+            db.add_all([Entity(world_id=w, kind="location", name=f"{tag} Place {i}", summary=f"{tag} place {i}.", visible_to_players=True,
+                               body=f"# {tag} Place {i}\n\n{tag} body text number {i}.") for i in range(6)])
+        db.commit()
+        names = {seed.world_a.slug: seed.world_a.name, seed.world_b.slug: seed.world_b.name}
+    finally:
+        db.close()
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        def train(resp):
+            return zipfile.ZipFile(io.BytesIO(resp.content)).read("train.jsonl").decode("utf-8")
+        a, b = seed.world_a.slug, seed.world_b.slug
+        # by the cookie ...
+        g.cookies.set("active_world", a)
+        ra = g.get("/export/unsloth-studio.zip")
+        g.cookies.set("active_world", b)
+        rb = g.get("/export/unsloth-studio.zip")
+        assert "Alpha Place" in train(ra) and "Beta Place" not in train(ra) and "Beta Place" in train(rb) and "Alpha Place" not in train(rb)
+        assert ra.headers["content-disposition"].endswith(f'{a}-unsloth-studio.zip"') and rb.headers["content-disposition"].endswith(f'{b}-unsloth-studio.zip"')
+        # ... and by the address, whatever the cookie says
+        g.cookies.set("active_world", a)
+        rw = g.get(f"/export/unsloth-studio.zip?w={b}")
+        assert train(rw) == train(rb) and "Alpha Place" not in train(rw)
+        # nothing may keep an answer that depends on who asks and which world
+        for r in (ra, rb, g.get(f"/export/unsloth-studio.zip?w={a}&info=1")):
+            assert r.headers["cache-control"] == "private, no-store" and "cookie" in r.headers["vary"].lower()
+        # the named worlds combined in one file (a subset works, one name is that world alone, an unknown name is nothing)
+        r_two = g.get(f"/export/unsloth-studio.zip?w={a}&worlds={a},{b}&test=0")
+        assert r_two.headers["content-disposition"].endswith('2-worlds-unsloth-studio.zip"') and "Alpha Place" in train(r_two) and "Beta Place" in train(r_two)
+        assert len(train(r_two).splitlines()) > len(train(ra).splitlines()) and len(train(r_two).splitlines()) > len(train(rb).splitlines())
+        r_one = g.get(f"/export/unsloth-studio.zip?w={a}&worlds={b}")
+        assert r_one.headers["content-disposition"].endswith(f'{b}-unsloth-studio.zip"') and "Alpha Place" not in train(r_one) and train(r_one) == train(rb)
+        assert g.get(f"/export/unsloth-studio.zip?w={a}&worlds=no-such-world").status_code == 422
+        assert 'class="studio-world"' in g.get("/export").text
+        # every world in one file
+        r_all = g.get(f"/export/unsloth-studio.zip?w={a}&worlds_all=1&test=0")
+        assert r_all.headers["content-disposition"].endswith('all-worlds-unsloth-studio.zip"')
+        rows = [json.loads(l) for l in train(r_all).splitlines()]
+        assert "Alpha Place" in train(r_all) and "Beta Place" in train(r_all)
+        sys_of = lambda text: [r["messages"][0]["content"] for r in rows if text in json.dumps(r)]
+        assert all(f'"{names[a]}"' in s for s in sys_of("Alpha Place")) and all(f'"{names[b]}"' in s for s in sys_of("Beta Place"))
+        info = g.get(f"/export/unsloth-studio.zip?w={a}&worlds_all=1&info=1").json()
+        assert info["worlds"] >= 2 and info["rows"] > g.get(f"/export/unsloth-studio.zip?w={a}&info=1").json()["rows"]
+        assert "holds " in zipfile.ZipFile(io.BytesIO(r_all.content)).read("README.md").decode("utf-8")
+        assert 'data-world="' in g.get("/export").text
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+        db = SessionLocal()
+        try:
+            db.query(Entity).filter(Entity.name.like("Alpha Place%") | Entity.name.like("Beta Place%")).delete(synchronize_session=False)
+            db.commit()
+        finally:
+            db.close()
