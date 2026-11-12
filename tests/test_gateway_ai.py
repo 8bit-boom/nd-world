@@ -3082,7 +3082,7 @@ def test_python_free_unsloth_studio_export_is_chatml_with_a_readme(client, seed)
         assert r.status_code == 200 and r.headers["content-type"] == "application/zip"
         assert r.headers["content-disposition"] == f'attachment; filename="{seed.world_a.slug}-unsloth-studio.zip"'
         z = zipfile.ZipFile(io.BytesIO(r.content))
-        assert sorted(z.namelist()) == ["README.md", "eval.jsonl", "train.jsonl"]
+        assert sorted(z.namelist()) == ["README.md", "eval.jsonl", "studio-settings.yaml", "train.jsonl"]
         train = [json.loads(l) for l in z.read("train.jsonl").decode("utf-8").splitlines()]
         evalr = [json.loads(l) for l in z.read("eval.jsonl").decode("utf-8").splitlines()]
         assert len(train) == info["rows"] and len(evalr) == info["eval"]
@@ -3095,12 +3095,12 @@ def test_python_free_unsloth_studio_export_is_chatml_with_a_readme(client, seed)
         assert any("GM secret" in row["messages"][-1]["content"] and "under the well" in row["messages"][-1]["content"] for row in train), "secrets are kept, labelled"
         assert not any(row["messages"][1]["content"].startswith("Tell me what the lore says about") for row in evalr), "the eval file holds questions only"
         readme = z.read("README.md").decode("utf-8")
-        assert "chatml" in readme and "Train on Completions" in readme and "GM secrets" in readme and world_name in readme
+        assert "chatml" in readme and "Assistant completions only" in readme and "Load YAML" in readme and "GM secrets" in readme and world_name in readme
         # the same world gives the same bytes
         assert g.get("/export/unsloth-studio.zip").content == r.content
         # options: no world book, no eval
         z2 = zipfile.ZipFile(io.BytesIO(g.get("/export/unsloth-studio.zip?world_book=0&test=0").content))
-        assert sorted(z2.namelist()) == ["README.md", "train.jsonl"]
+        assert sorted(z2.namelist()) == ["README.md", "studio-settings.yaml", "train.jsonl"]
         rows2 = [json.loads(l) for l in z2.read("train.jsonl").decode("utf-8").splitlines()]
         assert not any(x["messages"][1]["content"].startswith("Tell me what the lore says about") for x in rows2) and len(rows2) > info["chats"]
         # the Export & Backup page carries the card
@@ -3408,6 +3408,66 @@ def test_python_free_unsloth_studio_export_follows_the_chosen_world_and_can_hold
         db = SessionLocal()
         try:
             db.query(Entity).filter(Entity.name.like("Alpha Place%") | Entity.name.like("Beta Place%")).delete(synchronize_session=False)
+            db.commit()
+        finally:
+            db.close()
+
+
+def test_python_free_unsloth_studio_export_has_a_settings_file_and_limits_for_length_and_evaluation(client, seed):
+    """The zip carries `studio-settings.yaml` in the shape Unsloth Studio's own "Save YAML" writes (so "Load YAML" takes it) with values worked out from the
+    data, and a README with the full settings; examples over `max_tokens` are left out (counted, not silent) and `eval_limit` caps the evaluation file."""
+    import io
+    import zipfile
+    import yaml
+    from app.database import SessionLocal
+    from app.models import Entity
+    from .test_gateway_golden import _python_free_gateway
+    db = SessionLocal()
+    try:
+        w = seed.world_a.id
+        db.add_all([Entity(world_id=w, kind="location", name=f"Limit Place {i}", summary=f"Limit place {i}.", visible_to_players=True,
+                           body=f"# Limit Place {i}\n\n" + " ".join(f"Limit place {i} has a long history, part {j}, with many details." for j in range(60 if i < 4 else 3))) for i in range(14)])
+        db.commit()
+    finally:
+        db.close()
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        def get(q, info=False):
+            r = g.get(f"/export/unsloth-studio.zip?{q}{'&info=1' if info else ''}")
+            return r.json() if info else zipfile.ZipFile(io.BytesIO(r.content))
+        all_rows = get("max_tokens=0&eval_limit=0&test=30", info=True)
+        capped = get("max_tokens=200&eval_limit=0&test=30", info=True)
+        assert all_rows["skipped_long"] == 0 and capped["skipped_long"] > 0 and capped["rows"] < all_rows["rows"], (all_rows, capped)
+        assert capped["longest_tokens"] <= 200 < all_rows["longest_tokens"] and capped["context"] <= all_rows["context"]
+        # the evaluation file: at most the limit, an even sample of what was held out
+        limited = get("max_tokens=0&eval_limit=2&test=30", info=True)
+        assert limited["eval"] == 2 and limited["eval_total"] == all_rows["eval_total"] > 2
+        z = get("max_tokens=0&eval_limit=2&test=30")
+        assert len(z.read("eval.jsonl").decode().splitlines()) == 2
+        # the settings file: Studio's own keys, our values
+        cfg = yaml.safe_load(z.read("studio-settings.yaml"))
+        assert set(cfg) == {"training", "lora", "logging"}
+        assert set(cfg["training"]) == {"max_seq_length", "num_epochs", "learning_rate", "embedding_learning_rate", "batch_size", "gradient_accumulation_steps", "warmup_steps",
+            "max_steps", "save_steps", "eval_steps", "early_stopping_patience", "weight_decay", "random_seed", "packing", "train_on_completions", "gradient_checkpointing",
+            "offload_layers", "offload_vram_gb", "offload_vram_gb_per_device", "prefetch_depth", "optim", "lr_scheduler_type"}
+        assert set(cfg["lora"]) == {"lora_r", "lora_alpha", "lora_dropout", "target_modules", "use_rslora", "use_loftq", "use_dora"}
+        t = cfg["training"]
+        assert t["packing"] is False and t["train_on_completions"] is True and t["max_steps"] == 0 and t["gradient_checkpointing"] == "unsloth" and t["optim"] == "adamw_8bit"
+        assert t["max_seq_length"] == limited["context"] and (t["max_seq_length"] & (t["max_seq_length"] - 1)) == 0 and 2048 <= t["max_seq_length"] <= 32768
+        assert t["batch_size"] * t["gradient_accumulation_steps"] == 8 and t["num_epochs"] >= 1 and t["save_steps"] >= 50 and t["warmup_steps"] >= 5
+        assert cfg["lora"]["target_modules"] == ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"] and cfg["lora"]["lora_alpha"] == 2 * cfg["lora"]["lora_r"]
+        # the README says it all: the table, the Load YAML step, the model advice, what was left out
+        readme = z.read("README.md").decode("utf-8")
+        for needle in ("Load YAML", "studio-settings.yaml", "Context Length", "Save Steps", "Enable packing", "Assistant completions only", "Choosing the model", f"**{t['max_seq_length']}**"):
+            assert needle in readme, needle
+        zc = get("max_tokens=200&eval_limit=2&test=30")
+        assert "were left out" in zc.read("README.md").decode("utf-8") and "even sample" in zc.read("README.md").decode("utf-8")
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+        db = SessionLocal()
+        try:
+            db.query(Entity).filter(Entity.name.like("Limit Place%")).delete(synchronize_session=False)
             db.commit()
         finally:
             db.close()

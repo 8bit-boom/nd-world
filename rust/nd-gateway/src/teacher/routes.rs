@@ -130,12 +130,17 @@ fn query_num(uri: &Uri, key: &str, default: u8) -> u8 {
     uri.query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix(&format!("{key}=")))).and_then(|v| v.parse::<u8>().ok()).map(|n| n.min(30)).unwrap_or(default)
 }
 
-/// `GET /export/unsloth-studio.zip?w=<world slug>&world_book=1&teacher=1&test=10[&worlds=a,b,c | &worlds_all=1][&info=1]`: the world's training examples as chatml JSONL for the Train page of
+fn query_count(uri: &Uri, key: &str, default: usize) -> usize {
+    uri.query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix(&format!("{key}=")))).and_then(|v| v.parse::<usize>().ok()).map(|n| n.min(1_000_000)).unwrap_or(default)
+}
+
+/// `GET /export/unsloth-studio.zip?w=<world slug>&world_book=1&teacher=1&test=10[&worlds=a,b,c | &worlds_all=1][&max_tokens=8192][&eval_limit=300][&info=1]`: the world's training examples as chatml JSONL for the Train page of
 /// Unsloth Studio / Unsloth Desktop, zipped with a README (`info=1`: only the counts, as JSON; `worlds=a,b` or `worlds_all=1`: several worlds (or every world of the server) combined in one file; `w` picks the world like everywhere else in nd-world). GM only, for the active world; answered here only
 /// without Python (no Python counterpart: the hybrid image answers "Not available here").
 pub fn studio(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
     let (db, world) = gm_world(cfg, "GET", uri, headers)?;
-    let opts = super::studio::Options { world_book: query_flag(uri, "world_book", true), teacher: query_flag(uri, "teacher", true), test_percent: query_num(uri, "test", 10) };
+    let opts = super::studio::Options { world_book: query_flag(uri, "world_book", true), teacher: query_flag(uri, "teacher", true), test_percent: query_num(uri, "test", 10),
+                                          max_tokens: query_count(uri, "max_tokens", 8192), eval_limit: query_count(uri, "eval_limit", 300) };
     let db_dir = cfg.db_path.parent()?.to_path_buf();
     let build_one = |w: &Map<String, Value>| -> Result<super::studio::Built, String> {
         let wid = w.get("id").and_then(|v| v.as_i64()).ok_or("no world")?;
@@ -164,6 +169,7 @@ pub fn studio(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<B
             Err(e) => return Some(no_store(detail(StatusCode::UNPROCESSABLE_ENTITY, &e))),
         }
     };
+    let built = super::studio::finish(built, opts.eval_limit);
     if query_flag(uri, "info", false) {
         return Some(no_store(reply(StatusCode::OK, super::studio::summary(&built))));
     }
