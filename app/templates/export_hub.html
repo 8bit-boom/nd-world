@@ -112,6 +112,27 @@
     <a href="/export/training.ndtrain" class="btn-primary">⬇ Download training bundle</a>
   </div>
 
+  <div class="export-option" id="studio-card">
+    <h2>🦥 Training data for Unsloth Studio <span class="export-tag">optional</span></h2>
+    <p>
+      Downloads <strong>{{ world.name if world else 'the world' }}</strong> as a ready dataset for the <em>Train</em> page of Unsloth Studio / Unsloth Desktop:
+      <code>train.jsonl</code> (and <code>eval.jsonl</code>) in the <em>chatml</em> format plus a README with the settings to choose.
+      Questions and answers are made from your entries, rules, sessions, quests and tables; the long world-book texts become answers to
+      "Tell me what the lore says about …". For editing the examples, several worlds in one model and a test page, use the training bundle with ND Lore Forge instead.
+    </p>
+    <div id="studio-unavailable" style="display:none;font-size:.85rem;color:var(--text-dim)">
+      Not available here: this works only in the Python-free image.
+    </div>
+    <div id="studio-body" style="display:none">
+      <label style="display:block"><input type="checkbox" id="studio-book" checked> Include the world book (as answers)</label>
+      <label style="display:block"><input type="checkbox" id="studio-teacher" checked> Include the examples this world's AI model wrote (when there are any)</label>
+      <label style="display:block">Keep <select id="studio-test"><option>0</option><option selected>10</option><option>20</option><option>30</option></select> % of the questions out of training as <code>eval.jsonl</code></label>
+      <div id="studio-counts" style="margin-top:.4rem;font-size:.85rem;color:var(--text-dim)"></div>
+      <div style="margin-top:.6rem"><a class="btn-primary" id="studio-download" href="#" download>Download for Unsloth Studio</a></div>
+      <p style="font-size:.8rem;color:var(--text-dim);margin-top:.5rem">The data contains GM secrets, and a model trained on it will repeat them. Keep that model away from players.</p>
+    </div>
+  </div>
+
   <div class="export-option" id="teacher-card" data-world="{{ world.slug if world else '' }}">
     <h2>🧪 Better training examples <span class="export-tag">optional, for ND Lore Forge</span></h2>
     <p>
@@ -190,5 +211,6 @@
 .export-tag { font-size: .68rem; font-weight: normal; color: var(--neon); border: 1px solid var(--neon); border-radius: 10px; padding: .1rem .5rem; }
 </style>
 <script src="/static/js/file-dropzone.js?v={{ asset_v('js/file-dropzone.js') }}"></script>
+<script src="/static/js/studio-export.js?v={{ asset_v('js/studio-export.js') }}" defer></script>
 <script src="/static/js/teacher-examples.js?v={{ asset_v('js/teacher-examples.js') }}" defer></script>
 {% endblock %}

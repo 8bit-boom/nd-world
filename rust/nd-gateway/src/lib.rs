@@ -444,6 +444,12 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
+    if req.method() == axum::http::Method::GET && config::python_free() && req.uri().path() == "/export/unsloth-studio.zip" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || teacher::routes::studio(&cfg, &uri, &headers)).await {
+            return resp;
+        }
+    }
     if req.method() == axum::http::Method::GET && config::python_free() && req.uri().path() == "/export/teacher/status" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || teacher::routes::status(&cfg, &uri, &headers)).await {
