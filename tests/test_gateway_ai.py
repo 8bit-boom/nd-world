@@ -3039,6 +3039,87 @@ def test_python_free_teacher_examples_stop_resume_failures_and_a_restart(client,
             db.close()
 
 
+def test_python_free_unsloth_studio_export_is_chatml_with_a_readme(client, seed):
+    """Without Python: GET /export/unsloth-studio.zip is the world's training data for the Train page of Unsloth Studio - chatml JSONL (every line only
+    {"messages": [...]}, ending in an assistant turn, the world's name in the system message), the world book as answers, a README, an eval file that
+    only holds questions, the same bytes twice, options that leave things out, and GM secrets labelled. A player and a visitor are refused; the hybrid
+    server has no such route (no Python counterpart)."""
+    import io
+    import zipfile
+    from app.database import SessionLocal
+    from app.models import Entity, World
+    from .test_gateway_golden import _python_free_gateway
+    import httpx
+    long = lambda t: f"# {t}\n\n" + "\n\n".join(f"{t} has a long history, part {i}, with many details about how it works and who it affects in the town." for i in range(8))
+    w = seed.world_a.id
+    names = [f"Studio Place {i}" for i in range(12)]
+    db = SessionLocal()
+    try:
+        db.add_all([Entity(world_id=w, kind="location", name=n, summary=f"{n} in short.", visible_to_players=True, body=long(n) + ("\n\n[gmonly]The vault is under the well.[/gmonly]" if i == 0 else ""))
+                    for i, n in enumerate(names)])
+        world = db.query(World).get(w)
+        orig_rules = world.rules_md
+        world.rules_md = "# Rules\n\n## Dice pool\n\n" + "\n\n".join(f"Dice pool rule {i}: roll d6s equal to the skill and count the sixes as successes." for i in range(6))
+        db.commit()
+        world_name = world.name
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        assert gm.get("/export/unsloth-studio.zip").status_code in (404, 405, 501)
+        visitor = httpx.Client(base_url=url, timeout=30, follow_redirects=False)
+        assert visitor.get("/export/unsloth-studio.zip").status_code != 200
+        player = httpx.Client(base_url=url, timeout=30, follow_redirects=False)
+        assert player.post("/login", data={"email": seed.player_a.email, "password": PLAYER_PASSWORD, "next": "/"}).status_code in (302, 303)
+        player.cookies.set("active_world", seed.world_a.slug)
+        assert player.get("/export/unsloth-studio.zip").status_code != 200
+        # the counts for the page
+        info = g.get("/export/unsloth-studio.zip?info=1").json()
+        assert info["rows"] > 30 and info["chats"] > 10 and info["world_book"] > 5 and info["eval"] >= 1 and info["teacher"] == 0, info
+        # the file
+        r = g.get("/export/unsloth-studio.zip")
+        assert r.status_code == 200 and r.headers["content-type"] == "application/zip"
+        assert r.headers["content-disposition"] == f'attachment; filename="{seed.world_a.slug}-unsloth-studio.zip"'
+        z = zipfile.ZipFile(io.BytesIO(r.content))
+        assert sorted(z.namelist()) == ["README.md", "eval.jsonl", "train.jsonl"]
+        train = [json.loads(l) for l in z.read("train.jsonl").decode("utf-8").splitlines()]
+        evalr = [json.loads(l) for l in z.read("eval.jsonl").decode("utf-8").splitlines()]
+        assert len(train) == info["rows"] and len(evalr) == info["eval"]
+        for row in train + evalr:
+            assert list(row) == ["messages"] and row["messages"][-1]["role"] == "assistant" and row["messages"][0]["role"] == "system"
+            assert all(isinstance(m["content"], str) and m["content"] for m in row["messages"])
+        assert all(f'"{world_name}"' in row["messages"][0]["content"] for row in train)
+        book = [row for row in train if row["messages"][1]["content"].startswith("Tell me what the lore says about")]
+        assert len(book) == info["world_book"] and any("Studio Place 3" in row["messages"][1]["content"] for row in book)
+        assert any("GM secret" in row["messages"][-1]["content"] and "under the well" in row["messages"][-1]["content"] for row in train), "secrets are kept, labelled"
+        assert not any(row["messages"][1]["content"].startswith("Tell me what the lore says about") for row in evalr), "the eval file holds questions only"
+        readme = z.read("README.md").decode("utf-8")
+        assert "chatml" in readme and "Train on Completions" in readme and "GM secrets" in readme and world_name in readme
+        # the same world gives the same bytes
+        assert g.get("/export/unsloth-studio.zip").content == r.content
+        # options: no world book, no eval
+        z2 = zipfile.ZipFile(io.BytesIO(g.get("/export/unsloth-studio.zip?world_book=0&test=0").content))
+        assert sorted(z2.namelist()) == ["README.md", "train.jsonl"]
+        rows2 = [json.loads(l) for l in z2.read("train.jsonl").decode("utf-8").splitlines()]
+        assert not any(x["messages"][1]["content"].startswith("Tell me what the lore says about") for x in rows2) and len(rows2) > info["chats"]
+        # the Export & Backup page carries the card
+        page = g.get("/export").text
+        assert 'id="studio-card"' in page and "studio-export.js" in page
+        assert 'id="studio-card"' in gm.get("/export").text
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+        db = SessionLocal()
+        try:
+            db.query(Entity).filter(Entity.world_id == w, Entity.name.in_(names)).delete(synchronize_session=False)
+            world = db.query(World).get(w)
+            world.rules_md = orig_rules
+            db.commit()
+        finally:
+            db.close()
+
+
 def test_knowledge_sync_suggest_and_test_chat_are_pythons(client, seed, studio, tmp_path):
     """POST /api/knowledge/sync, /suggest-relations and GET /api/ai/test-chat from Python and from the gateway on the same vault: the same summary,
     the same chunks (with their embeddings) and edges, the same requests to the backend, the same suggestions."""

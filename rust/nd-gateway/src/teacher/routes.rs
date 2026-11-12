@@ -121,3 +121,40 @@ pub async fn post(cfg: Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::B
         _ => None,
     }
 }
+
+fn query_flag(uri: &Uri, key: &str, default: bool) -> bool {
+    uri.query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix(&format!("{key}=")))).map(|v| matches!(v, "1" | "true" | "on" | "yes")).unwrap_or(default)
+}
+
+fn query_num(uri: &Uri, key: &str, default: u8) -> u8 {
+    uri.query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix(&format!("{key}=")))).and_then(|v| v.parse::<u8>().ok()).map(|n| n.min(30)).unwrap_or(default)
+}
+
+/// `GET /export/unsloth-studio.zip?world_book=1&teacher=1&test=10[&info=1]`: the world's training examples as chatml JSONL for the Train page of
+/// Unsloth Studio / Unsloth Desktop, zipped with a README (`info=1`: only the counts, as JSON). GM only, for the active world; answered here only
+/// without Python (no Python counterpart: the hybrid image answers "Not available here").
+pub fn studio(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, world) = gm_world(cfg, "GET", uri, headers)?;
+    let wid = world.get("id")?.as_i64()?;
+    let slug = world.get("slug").and_then(|v| v.as_str())?.to_string();
+    let members = crate::export::training_members(&db, &world)?;
+    let teacher = gen::read_examples(&gen::world_dir(cfg.db_path.parent()?, wid));
+    let opts = super::studio::Options { world_book: query_flag(uri, "world_book", true), teacher: query_flag(uri, "teacher", true), test_percent: query_num(uri, "test", 10) };
+    let built = match super::studio::build(&members, &teacher, &opts) {
+        Ok(b) => b,
+        Err(e) => return Some(detail(StatusCode::UNPROCESSABLE_ENTITY, &e)),
+    };
+    if query_flag(uri, "info", false) {
+        return Some(reply(StatusCode::OK, super::studio::summary(&built)));
+    }
+    let build = nd_render::build_info();
+    let build = build.get_attr("build").ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_else(|| "dev".to_string());
+    let zip = super::studio::zip(&built, &build)?;
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/zip")
+        .header(header::CONTENT_DISPOSITION, format!("attachment; filename=\"{slug}-unsloth-studio.zip\""))
+        .header("x-nd-served-by", "gateway")
+        .body(Body::from(zip))
+        .ok()
+}
