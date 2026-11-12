@@ -204,7 +204,14 @@ pub(crate) fn load_custom_kinds(world: &Map<String, Value>) -> Vec<Value> {
 }
 
 /// `GET /worlds/<id>/edit` (app/main.py `world_edit_form`): the settings form with the world's invites, members and AI instruction files
-fn world_edit_page(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers: &HeaderMap) -> Option<Response<Body>> {
+fn world_edit_page(pages: &Pages, db: &Connection, p: PageCtx, id: i64, headers: &HeaderMap) -> Option<Response<Body>> {
+    world_edit_page_with(pages, db, p, id, headers, Map::new())
+}
+
+/// The same page with more values in its context (`reset_password_user_id` / `reset_password_value`: the one-time reveal after a password reset)
+pub(crate) fn world_edit_page_with(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers: &HeaderMap, extra: Map<String, Value>) -> Option<Response<Body>> {
+    let reveal = extra.contains_key("reset_password_value");
+    p.ctx.extend(extra);
     let Some(w) = row(db, "SELECT * FROM worlds WHERE id = ?1", id) else { return Some(refusal(404)) };
     let rows = |sql: &str| -> Option<Vec<Map<String, Value>>> {
         let mut st = db.prepare_cached(sql).ok()?;
@@ -239,9 +246,13 @@ fn world_edit_page(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, head
     p.ctx.insert("edit_world".into(), Value::Object(w));
     p.ctx.insert("invites".into(), json!(invites));
     p.ctx.insert("members".into(), Value::Array(members));
-    p.ctx.insert("ai_instructions".into(), json!(instructions));
-    p.ctx.insert("viewer_is_gm".into(), json!(p.is_gm));
-    p.ctx.insert("max_characters_cap".into(), json!(20));
+    // the password-reset reveal (app/main.py `member_reset_password`) renders this template without the edit form's own extras (the instruction files, the
+    // GM flag and the character cap are undefined there); the theme pickers come from the context processor in both
+    if !reveal {
+        p.ctx.insert("ai_instructions".into(), json!(instructions));
+        p.ctx.insert("viewer_is_gm".into(), json!(p.is_gm));
+        p.ctx.insert("max_characters_cap".into(), json!(20));
+    }
     // the context processor's theme picker values (app/templating.py): the presets in Python's order and the picker's two groups
     let d = nd_render::app::data();
     let mut presets = Map::new();
@@ -257,6 +268,41 @@ fn world_edit_page(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, head
     p.ctx.insert("genre_preset_keys".into(), d.get("genre_preset_keys")?.clone());
     p.ctx.insert("game_preset_keys".into(), d.get("game_preset_keys")?.clone());
     render_with(pages, "world_edit.html", p.ctx, headers)
+}
+
+/// `POST /worlds/<id>/members/<user>/reset-password` (app/main.py `member_reset_password`, GM only): a fresh temporary password for a locked-out member,
+/// shown once on the world's settings page in this very response (a redirect could only carry it in a URL). Their sessions and trusted devices end.
+pub fn member_reset_password(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use base64::Engine;
+    let rest = uri.path().strip_prefix("/worlds/")?.strip_suffix("/reset-password")?;
+    let (wid, uid) = rest.split_once("/members/")?;
+    let num = |d: &str| (!d.is_empty() && d.len() < 16 && d.bytes().all(|b| b.is_ascii_digit()) && !(d.len() > 1 && d.starts_with('0'))).then(|| d.parse::<i64>().ok()).flatten();
+    let (wid, uid) = (num(wid)?, num(uid)?);
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "POST", uri, headers, now)?;
+    if !p.is_gm {
+        return None; // the auth gate's 403: Python's
+    }
+    if db.query_row("SELECT 1 FROM world_memberships WHERE world_id = ?1 AND user_id = ?2", [wid, uid], |_| Ok(())).is_err() {
+        return Some(refusal(404));
+    }
+    let Some(target) = row(&db, "SELECT * FROM users WHERE id = ?1", uid) else { return Some(refusal(404)) };
+    let version = target.get("session_version").and_then(|v| v.as_i64()).unwrap_or(0);
+    let mut raw = [0u8; 12];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut raw);
+    let temp = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
+    db.execute_batch("BEGIN IMMEDIATE").ok()?;
+    let done = crate::orm::update(&db, "users", uid, &[("password_hash", rusqlite::types::Value::Text(crate::account::hash_password_pub(&temp))), ("session_version", rusqlite::types::Value::Integer(version + 1))])
+        .is_some() && db.execute("DELETE FROM trusted_devices WHERE user_id = ?1", [uid]).is_ok();
+    if !done || db.execute_batch("COMMIT").is_err() {
+        let _ = db.execute_batch("ROLLBACK");
+        return None;
+    }
+    let mut extra = Map::new();
+    extra.insert("reset_password_user_id".into(), json!(uid));
+    extra.insert("reset_password_value".into(), json!(temp));
+    world_edit_page_with(pages, &db, p, wid, headers, extra)
 }
 
 /// `GET /worlds/<id>/kinds/edit` (app/routers/kinds_admin.py `kinds_edit_form`)

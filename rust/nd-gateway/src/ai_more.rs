@@ -17,7 +17,7 @@ pub type Fut = Pin<Box<dyn Future<Output = Response<Body>> + Send>>;
 
 /// The paths this module serves
 pub fn serves(path: &str) -> bool {
-    matches!(path, "/boards/generate-mystery" | "/calendar/ai-day" | "/calendar/ai-design")
+    matches!(path, "/boards/generate-mystery" | "/calendar/ai-day" | "/calendar/ai-design" | "/api/knowledge/sync" | "/api/knowledge/suggest-relations" | "/api/ai/benchmark" | "/api/ai/unload" | "/api/ai/pull" | "/api/ai/imagegen/models/download")
         || (path.starts_with("/combat/") && path.ends_with("/ai-tactics"))
         || (path.starts_with("/parties/") && path.ends_with("/ai-insights"))
         || path == "/tables/generate-ai"
@@ -34,6 +34,9 @@ pub fn plan(cfg: &Config, db: &rusqlite::Connection, p: &PageCtx, path: &str, he
     let cfg = Arc::new(cfg.clone());
     Some(match path {
         "/boards/generate-mystery" => mystery_plan(cfg, db, p, headers, body),
+        "/api/knowledge/sync" | "/api/knowledge/suggest-relations" => crate::knowledge::plan(&cfg, db, p, path, body),
+        "/api/ai/imagegen/models/download" => crate::knowledge::swarm_download_plan(db, p, body),
+        "/api/ai/benchmark" | "/api/ai/unload" | "/api/ai/pull" => crate::knowledge::ollama_plan(db, p, path, body),
         _ if path.starts_with("/combat/") => tactics_plan(db, p, path),
         _ if path.starts_with("/parties/") => insights_plan(db, p, path),
         "/tables/generate-ai" => table_plan(cfg, db, p, headers, body),

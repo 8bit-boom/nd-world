@@ -26,6 +26,7 @@ pub mod stt;
 pub mod tasks;
 pub mod tts;
 pub mod ai_more;
+pub mod knowledge;
 pub mod runners;
 pub mod map_layout;
 pub mod mcp;
@@ -44,6 +45,7 @@ pub mod form;
 pub mod gallery;
 pub mod home;
 pub mod hub;
+pub mod bulk_edit;
 pub mod importer;
 pub mod settings_overrides;
 pub mod studio;
@@ -66,6 +68,8 @@ pub mod markup;
 pub mod layout;
 pub mod live;
 pub mod map_folders;
+pub mod props;
+pub mod uvtt;
 pub mod maps;
 pub mod orm;
 pub mod media;
@@ -224,6 +228,29 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
     }
     if req.method() == axum::http::Method::POST && req.uri().path() == "/api/dice/roll" && app.cfg.rust_routes.iter().any(|r| r == "dice_roll") {
         return writes::dice_roll(app.cfg.clone(), &app.proxy, req, peer).await;
+    }
+    if req.method() == axum::http::Method::POST && req.uri().path().starts_with("/worlds/") && req.uri().path().ends_with("/reset-password") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 16).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), parts.uri.clone(), parts.headers.clone());
+        if let Ok(Some(resp)) = page_blocking(move || idpages::member_reset_password(&pages_, &cfg, &uri, &headers)).await {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
+    }
+    if req.method() == axum::http::Method::POST && req.uri().path() == "/api/dice/record" && app.cfg.rust_routes.iter().any(|r| r == "dice_roll") {
+        // the 3D tray's roll (app/routers/dice.py `api_dice_record`)
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        let (cfg, uri, headers, b) = (app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || writes::dice_record_blocking(&cfg, &uri, &headers, &b)).await {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
     }
     if req.method() == axum::http::Method::POST && req.uri().path() == "/dice" && app.cfg.rust_routes.iter().any(|r| r == "dice_roll") {
         // the dice page's form (app/routers/dice.py `dice_roll_form`): a roll that is stored answers with the redirect
@@ -421,6 +448,27 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         }
         return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
     }
+    if req.method() == axum::http::Method::POST && req.uri().path() == "/api/import/convert-images" && app.cfg.rust_routes.iter().any(|r| r == "writes") {
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        if let Some(resp) = importer::convert_images(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
+    }
+    if req.method() == axum::http::Method::POST && matches!(req.uri().path(), "/api/bulk-edit/preview" | "/api/bulk-edit/apply") && app.cfg.rust_routes.iter().any(|r| r == "writes") {
+        let apply = req.uri().path().ends_with("/apply");
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        if let Some(resp) = bulk_edit::handle(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone(), apply).await {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
+    }
     if req.method() == axum::http::Method::POST && req.uri().path() == "/api/import/detect" && app.cfg.rust_routes.iter().any(|r| r == "writes") {
         // the importer's read-only sniff (app/routers/importer.py)
         let (parts, body) = req.into_parts();
@@ -503,11 +551,10 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
     }
     if req.method() == axum::http::Method::GET && req.uri().path().starts_with("/boards/") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
-        // /boards/<slug>/export stays Python's: board_export.html fills a dict with `.update()`, which MiniJinja's values cannot do
         let f = if uri.path().ends_with("/notes") {
             Some(boards::board_notes as fn(&pages::Pages, &config::Config, &axum::http::Uri, &axum::http::HeaderMap) -> Option<Response<Body>>)
         } else if uri.path().ends_with("/export") {
-            None
+            Some(boards::board_export as fn(&pages::Pages, &config::Config, &axum::http::Uri, &axum::http::HeaderMap) -> Option<Response<Body>>)
         } else {
             Some(boards::board_view as fn(&pages::Pages, &config::Config, &axum::http::Uri, &axum::http::HeaderMap) -> Option<Response<Body>>)
         };
@@ -734,6 +781,18 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         }
         return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
     }
+    if matches!((req.method(), req.uri().path()), (&axum::http::Method::POST, "/api/ai/imagegen/restart" | "/api/ai/imagegen/update" | "/api/ai/imagegen/free-memory") | (&axum::http::Method::DELETE, "/api/ai/imagegen/models/downloaded"))
+        && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        let (cfg, m, uri, headers) = (app.cfg.clone(), req.method().clone(), req.uri().clone(), req.headers().clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || knowledge::swarm_local(&cfg, &m, &uri, &headers)).await {
+            return resp;
+        }
+    }
+    if req.method() == axum::http::Method::GET && req.uri().path() == "/api/ai/test-chat" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        if let Some(resp) = knowledge::test_chat(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await {
+            return resp;
+        }
+    }
     if req.method() == axum::http::Method::GET && req.uri().path() == "/api/kiy/inspirations" && config::python_free() {
         // public web fetches, random and live: answered here only where there is no Python to do it
         if let Some(resp) = edits::json_response(&kiy::inspirations().await) {
@@ -822,7 +881,7 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         }
         return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
     }
-    if req.method() == axum::http::Method::DELETE && (req.uri().path().starts_with("/api/ai/chat/jobs/") || req.uri().path().starts_with("/api/ai/imagegen/model-templates/custom/")) && app.cfg.rust_routes.iter().any(|r| r == "ai") {
+    if req.method() == axum::http::Method::DELETE && (req.uri().path().starts_with("/api/ai/chat/jobs/") || req.uri().path().starts_with("/api/ai/imagegen/model-templates/custom/") || req.uri().path().starts_with("/api/ai/prompt-presets/")) && app.cfg.rust_routes.iter().any(|r| r == "ai") {
         let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || apis::delete(&cfg, &uri, &headers)).await {
             return resp;

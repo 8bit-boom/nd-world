@@ -1,6 +1,7 @@
 """The Chronicler through the gateway (rust/nd-gateway/src/ai.rs) against Python's, with a fake Unsloth Studio backend both talk to:
 the same system prompt and request reach the backend, and the same SSE stream comes back."""
 import json
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -33,6 +34,7 @@ class _Fake:
         self.speech = (200, self.wav, "audio/wav")   # the text-to-speech answer: (status, body, content type)
         self.delay = 0                  # seconds before that answer
         self.reply_seq = None           # answers to give in turn first (then `reply`)
+        self.embed_fail = False
         self.reject_thinking = None     # an error message: a 400 for any request asking for Thinking
         fake = self
 
@@ -123,6 +125,21 @@ class _Fake:
                     else:
                         status, reply = 200, {"ok": True}
                     body = json.dumps(reply).encode()
+                    self.send_response(status)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if self.path == "/v1/embeddings":
+                    if fake.embed_fail:
+                        body = json.dumps({"error": {"message": "embed exploded"}}).encode()
+                        status = 500
+                    else:
+                        import hashlib as _h
+                        seed_bytes = _h.sha256(json.dumps(req["input"]).encode()).digest()
+                        body = json.dumps({"model": req.get("model"), "data": [{"index": 0, "embedding": [b / 255.0 - 0.3 for b in seed_bytes[:6]]}]}).encode()
+                        status = 200
                     self.send_response(status)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(body)))
@@ -325,10 +342,9 @@ def test_ai_stream_is_pythons(client, seed, studio):
             assert out[0][0] == 200, (i, out[0][:2])
             assert out[0][:3] == out[1][:3], (i, out[0][1], out[1][1], json.dumps(out[0][2])[:2000], json.dumps(out[1][2])[:2000])
             assert out[1][3] == "gateway", i
-        # what stays Python's: a refused player, a picture, a string option
+        # what stays Python's: a refused player, a string option (a picture is the gateway's now)
         _set_world(seed.world_a.id, players_can_use_ai_chat=False)
-        for d, body in ((player, {"messages": msgs}), (gm, {"messages": [{"role": "user", "content": "x", "attachments": [{"kind": "image", "url": "/uploads/a.png"}]}]}),
-                        (gm, {"messages": msgs, "options": {"temperature": "0.5"}})):
+        for d, body in ((player, {"messages": msgs}), (gm, {"messages": msgs, "options": {"temperature": "0.5"}})):
             assert _stream(_via(d, base), body)[2] != "gateway", body
     finally:
         _set_world(seed.world_a.id, players_can_use_ai_chat=False)
@@ -598,8 +614,7 @@ def test_background_chat_job_is_pythons(client, seed, studio):
     player = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
     r, d = _via(player, base).post("/api/ai/chat/jobs", json={"messages": msgs}), player.post("/api/ai/chat/jobs", json={"messages": msgs})
     assert (r.status_code, r.text) == (d.status_code, d.text)
-    for body in ({"messages": [{"role": "user", "content": "x", "attachments": [{"kind": "image", "url": "/u/a.png"}]}]},
-                 {"messages": msgs, "options": {"temperature": "0.2"}}):
+    for body in ({"messages": msgs, "options": {"temperature": "0.2"}},):
         assert _via(gm, base).post("/api/ai/chat/jobs", json=body).headers.get("x-nd-served-by") != "gateway", body
 
 
@@ -3005,9 +3020,11 @@ def test_python_free_teacher_examples_stop_resume_failures_and_a_restart(client,
         g.post("/export/teacher/clear", json={})
         import shutil
         shutil.rmtree(data_dir / "cache", ignore_errors=True)
-        assert g.post("/export/teacher/start", json={"kinds": ["t_deeper"]}).status_code == 202
+        # the model picked on the page is the one the run reports
+        assert g.post("/export/teacher/start", json={"kinds": ["t_deeper"], "model": "zzother-model"}).status_code == 202
         st = _wait_teacher(g, timeout=120)
         assert st["state"]["status"] == "error" and "keeps failing" in st["state"]["text"], st
+        assert st["state"]["model"] == "zzother-model", st["state"]
     finally:
         proc.terminate()
         proc.wait(timeout=10)
@@ -3101,3 +3118,229 @@ def test_python_free_unsloth_studio_export_is_chatml_with_a_readme(client, seed)
             db.commit()
         finally:
             db.close()
+
+
+def test_knowledge_sync_suggest_and_test_chat_are_pythons(client, seed, studio, tmp_path):
+    """POST /api/knowledge/sync, /suggest-relations and GET /api/ai/test-chat from Python and from the gateway on the same vault: the same summary,
+    the same chunks (with their embeddings) and edges, the same requests to the backend, the same suggestions."""
+    from app.database import SessionLocal
+    from app.models import Entity, EntityRelation, VaultChunk, World
+    base = str(client.base_url)
+    w = seed.world_a.id
+    vault = tmp_path / "vault"
+    (vault / "sub").mkdir(parents=True)
+    (vault / ".obsidian").mkdir()
+    (vault / "node_modules").mkdir()
+    (vault / "Dockside.md").write_text("---\ntitle: Dockside\ntags: [port, rough]\nlocated_in: [[Vane's Reach]]\nowner:\n  - [[Rusty Anchor]]\n  - \"[[Vane]]\"\nkind: place\n---\n"
+                                       "Intro text about the docks, see [[Vane|the builder]].\n\n## Tides\nThey rise. [[Rusty Anchor#Rooms]]\n\n### Deep\nDark water.\n", encoding="utf-8")
+    (vault / "bob.md").write_text("# Rusty Anchor\nA tavern in [[Dockside]]. Run by [[Nobody Known]].\n", encoding="utf-8")
+    (vault / "orphan.md").write_text("No headings, no entity. [[Dockside]]\n", encoding="utf-8")
+    (vault / "sub" / "Vane.MD").write_text("---\naliases: [The Builder]\nally_of: [[Dockside]]\n---\n# Vane\nBuilds. Hates [[Rusty Anchor]].\n\n\n", encoding="utf-8")
+    (vault / "sub" / "bad.md").write_bytes(b"# Caf\xc3\xa9 \xff\xfe note\nSome text\n")
+    (vault / "sub" / "empty.md").write_text("\n", encoding="utf-8")
+    (vault / ".obsidian" / "skip.md").write_text("# no\n")
+    (vault / "node_modules" / "skip.md").write_text("# no\n")
+    (vault / "readme.txt").write_text("not a note")
+    db = SessionLocal()
+    try:
+        for n in ("Dockside", "Rusty Anchor", "Vane", "Vane's Reach"):
+            db.add(Entity(world_id=w, kind="location", name=n, summary="x", visible_to_players=True))
+        db.get(World, w).obsidian_vault_path = str(vault)
+        db.commit()
+    finally:
+        db.close()
+
+    def state():
+        d = SessionLocal()
+        try:
+            return ([(c.source_path, c.heading, c.text, c.embedding) for c in d.query(VaultChunk).filter(VaultChunk.world_id == w).order_by(VaultChunk.id)],
+                    [(r.source_id, r.target_id, r.relation, r.source_path) for r in d.query(EntityRelation).filter(EntityRelation.world_id == w).order_by(EntityRelation.id)])
+        finally:
+            d.close()
+
+    try:
+        gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+        g = _via(gm, base)
+        for c in (gm, g):          # a fresh connection each time: a kept-alive one the server dropped while a slow sync ran would reset
+            c.headers["Connection"] = "close"
+        out = []
+        for side in (gm, g):
+            studio.requests.clear()
+            r = side.post("/api/knowledge/sync")
+            out.append((r.status_code, r.json() if r.status_code == 200 else r.text, state(), [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+        assert out[0][0] == 200, out[0]
+        assert out[0][:4] == out[1][:4], (out[0], out[1])
+        assert out[1][4] == "gateway"
+        assert out[0][2][0] and out[0][2][1]
+        # a backend that is down: every chunk failing is an error and the index stays
+        studio.embed_fail = True
+        for side in (gm, g):
+            before = state()
+            r = side.post("/api/knowledge/sync")
+            assert r.status_code == 500 and state() == before
+        studio.embed_fail = False
+        # suggestions
+        names = [("Dockside", "Rusty Anchor", "contains"), ("Vane", "Dockside", "works_at"), ("Vane", "Vane", "self"), ("Nobody", "Vane", "x"), ("Rusty Anchor", "Vane's Reach", "near")]
+        studio.reply = {"choices": [{"message": {"role": "assistant", "content": json.dumps({"relations": [{"source": a, "target": b, "relation": c} for a, b, c in names]})}}]}
+        res = []
+        for side in (gm, g):
+            studio.requests.clear()
+            r = side.post("/api/knowledge/suggest-relations", json={"model": "  studio "})
+            res.append((r.status_code, r.text, [q["body"] for q in studio.requests]))
+        assert res[0][0] == 200 and res[0] == res[1], (res[0][:2], res[1][:2])
+        studio.reply = {"choices": [{"message": {"role": "assistant", "content": "not json"}}]}
+        res = [(side.post("/api/knowledge/suggest-relations", content=b"junk").text) for side in (gm, g)]
+        assert res[0] == res[1]
+        # the probe
+        studio.reply = {"choices": [{"message": {"role": "assistant", "content": "OK"}}]}
+        for q in ("", "?model=stud"):
+            a, b = gm.get("/api/ai/test-chat" + q), g.get("/api/ai/test-chat" + q)
+            assert (a.status_code, a.json()) == (b.status_code, b.json()), (a.text, b.text)
+            assert b.headers.get("x-nd-served-by") == "gateway"
+        # no vault path / a missing directory
+        d = SessionLocal()
+        try:
+            d.get(World, w).obsidian_vault_path = ""
+            d.commit()
+        finally:
+            d.close()
+        a, b = gm.post("/api/knowledge/sync"), g.post("/api/knowledge/sync")
+        assert (a.status_code, a.json()) == (b.status_code, b.json()) and a.status_code == 400
+        d = SessionLocal()
+        try:
+            d.get(World, w).obsidian_vault_path = str(tmp_path / "nope")
+            d.commit()
+        finally:
+            d.close()
+        for path in ("/api/knowledge/sync", "/api/knowledge/suggest-relations"):
+            a, b = gm.post(path), g.post(path)
+            assert (a.status_code, a.json()) == (b.status_code, b.json()) and a.status_code == 400
+    finally:
+        d = SessionLocal()
+        try:
+            d.get(World, w).obsidian_vault_path = None
+            d.query(VaultChunk).filter(VaultChunk.world_id == w).delete()
+            d.query(EntityRelation).filter(EntityRelation.world_id == w).delete()
+            d.commit()
+        finally:
+            d.close()
+
+
+def test_ollama_and_swarmui_routes_without_those_backends_are_pythons(client, seed, studio):
+    """On the Unsloth backend: unload / pull / benchmark, the GGUF upload trio and its status poll, and (with no SwarmUI configured) restart / update /
+    free-memory / deleting a downloaded model answer as Python does."""
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    g = _via(gm, base)
+    studio.reply = {"choices": [{"message": {"role": "assistant", "content": "A street."}}], "usage": {"completion_tokens": 12, "prompt_tokens": 9}}
+
+    def settled(side, iid, with_code=False):
+        for _ in range(100):             # Python's import runs as a background task: wait until it has finished
+            r = side.get(f"/api/ai/ollama/upload/status/{iid}")
+            if r.status_code != 200 or r.json().get("status") not in ("queued", "reassembling"):
+                break
+            __import__("time").sleep(0.05)
+        return (r.status_code, r.json()) if with_code else r.json()
+
+    def both(method, url, **kw):
+        a, b = getattr(gm, method)(url, **kw), getattr(g, method)(url, **kw)
+        return a, b
+
+    for body in ({"model_id": "m"}, {"model_id": "  "}, {"model_id": ""}, {}):
+        a, b = both("post", "/api/ai/unload", json=body)
+        assert (a.status_code, a.text) == (b.status_code, b.text), body
+    a, b = both("post", "/api/ai/pull", json={"model_id": "hf.co/x/y:z"})
+    assert (a.status_code, a.text, a.headers["content-type"]) == (b.status_code, b.text, b.headers["content-type"])
+    assert b.headers.get("x-nd-served-by") == "gateway"
+    studio.requests.clear()
+    a, b = both("post", "/api/ai/benchmark", json={})
+    assert a.status_code == b.status_code == 200
+    ja, jb = a.json(), b.json()
+    assert set(ja) == set(jb) and ja["model"] == jb["model"] and ja["eval_count"] == jb["eval_count"] == 12 and ja["prompt_eval_count"] == jb["prompt_eval_count"] == 9
+    assert studio.requests[0]["body"] == studio.requests[1]["body"]
+    studio.status = 500
+    a, b = both("post", "/api/ai/benchmark", json={"model": "other"})
+    studio.status = 200
+    assert (a.status_code, a.text) == (b.status_code, b.text)
+    # the GGUF upload on Studio: taken, then an import that ends in Studio's advice
+    for name, model in (("m.gguf", "mine"), ("m.gguf", " "), ("m.bin", "mine")):
+        outs = []
+        for side in (gm, g):
+            r = side.post("/api/ai/ollama/upload/direct", files={"file": (name, b"GGUFxxxx", "application/octet-stream")}, data={"model_name": model})
+            body = r.json()
+            iid = body.pop("import_id", None)
+            st = settled(side, iid, True) if iid else None
+            again = side.get(f"/api/ai/ollama/upload/status/{iid}") if iid else None
+            outs.append((r.status_code, body, st, again and (again.status_code, again.json())))
+        assert outs[0] == outs[1], (name, model, outs)
+    for side in (gm, g):
+        assert side.get("/api/ai/ollama/upload/status/nope").status_code == 404
+    res = []
+    for side in (gm, g):
+        uid = os.urandom(16).hex()
+        out = []
+        for i in range(2):
+            out.append(side.post("/api/ai/ollama/upload/chunk", files={"file": ("c", b"abc", "application/octet-stream")}, data={"upload_id": uid, "chunk_index": str(i)}).json())
+        bad = side.post("/api/ai/ollama/upload/complete", data={"upload_id": uid, "filename": "m.gguf", "total_chunks": "3", "model_name": "mm"})
+        wrong = side.post("/api/ai/ollama/upload/complete", data={"upload_id": uid, "filename": "m.txt", "total_chunks": "2", "model_name": "mm"})
+        done = side.post("/api/ai/ollama/upload/complete", data={"upload_id": uid, "filename": "m.gguf", "total_chunks": "2", "model_name": "mm"})
+        iid = done.json().pop("import_id", None)
+        res.append((out, bad.status_code, bad.json(), wrong.status_code, wrong.json(), done.status_code, done.json().get("status", done.text), settled(side, iid)))
+    assert res[0] == res[1], res
+    assert res[0][6] == "queued", res[0]
+    # SwarmUI is not configured here
+    for url in ("/api/ai/imagegen/restart", "/api/ai/imagegen/update", "/api/ai/imagegen/free-memory"):
+        a, b = both("post", url)
+        assert (a.status_code, a.json()) == (b.status_code, b.json()) == (200, {"ok": False}), url
+        assert b.headers.get("x-nd-served-by") == "gateway"
+    for q in ("", "?filename=", "?filename=nothing-here.safetensors", "?subfolder=..&filename=x", "?subfolder=%2Fetc&filename=passwd"):
+        a, b = both("delete", "/api/ai/imagegen/models/downloaded" + q)
+        assert (a.status_code, a.json()) == (b.status_code, b.json()), q
+
+
+def test_chat_attachments_reach_the_backend_as_pythons_do(client, seed, studio):
+    """POST /api/ai/stream, /chat/compact and /chat with image (a pasted picture), audio (with and without a transcript, wav and not) and document
+    attachments: the same messages reach the backend from the gateway as from Python."""
+    import base64
+    import io
+    from pathlib import Path
+    from PIL import Image
+    base = str(client.base_url)
+    up = Path(os.environ["DB_PATH"]).parent / "uploads" / "ai_attachments"
+    up.mkdir(parents=True, exist_ok=True)
+    png, jpg = io.BytesIO(), io.BytesIO()
+    Image.new("RGB", (8, 8), (200, 10, 10)).save(png, "PNG")
+    Image.new("RGB", (8, 8), (10, 10, 200)).save(jpg, "JPEG")
+    (up / "t_pic.png").write_bytes(png.getvalue())
+    (up / "t_pic.jpg").write_bytes(jpg.getvalue())
+    (up / "t_clip.wav").write_bytes(b"RIFFxxxxWAVEfmt ")
+    (up / "t_clip.mp3").write_bytes(b"ID3xxxx")
+    att = lambda kind, name, text="", url=None: {"kind": kind, "url": url or f"/uploads/ai_attachments/{name}", "name": name, "text": text}  # noqa: E731
+    messages = [
+        {"role": "user", "content": "describe image", "attachments": [att("image", "t_pic.png"), att("image", "t_pic.jpg"), att("image", "gone.png")]},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "", "attachments": [att("image", "t_pic.png")]},
+        {"role": "user", "content": "listen", "attachments": [att("audio", "t_clip.wav"), att("audio", "t_clip.mp3"), att("audio", "t_clip.mp3", "said hello"),
+                                                              att("audio", "t_clip.wav", "wav words"), att("audio", "", url="/uploads/ai_attachments/missing.wav")]},
+        {"role": "user", "content": "read", "attachments": [att("document", "notes.txt", "line one\nline two"), att("document", "empty.txt", ""), att("video", "v.mp4"),
+                                                            att("image", "x", url="https://example.com/x.png"), att("image", "esc", url="/uploads/../world.db")]},
+    ]
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    g = _via(gm, base)
+    studio.script = [_delta(content="Hello"), {"choices": [{"delta": {}, "finish_reason": "stop"}]}]
+    studio.reply = {"choices": [{"message": {"role": "assistant", "content": "A summary."}}]}
+    for path, body in (("/api/ai/stream", {"messages": messages, "system": "s", "model": "", "surface": "chat", "think": False}),
+                       ("/api/ai/chat/compact", {"messages": messages, "system": "", "model": "", "think": False}),
+                       ("/api/ai/chat", {"messages": messages, "system": "s", "model": ""})):
+        out = []
+        for side in (gm, g):
+            studio.requests.clear()
+            r = side.post(path, json=body)
+            out.append((r.status_code, r.text if path != "/api/ai/stream" else r.text, [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+        assert out[0][0] == 200, (path, out[0][:2])
+        assert out[1][3] == "gateway", path
+        if out[0][2] != out[1][2]:
+            import difflib
+            a, b = json.dumps(out[0][2], indent=1).splitlines(), json.dumps(out[1][2], indent=1).splitlines()
+            raise AssertionError(path + "\n" + "\n".join(list(difflib.unified_diff(a, b, "python", "gateway", lineterm="", n=0))[:20]))
+        assert path.endswith("compact") or any("image_url" in json.dumps(m) for q in out[0][2] for m in q.get("messages", [])), path

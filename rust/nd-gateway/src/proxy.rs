@@ -38,6 +38,8 @@ pub fn not_in_this_image_pub(method: &Method, path: &str, headers: &HeaderMap) -
 }
 
 fn not_in_this_image(method: &Method, path: &str, headers: &HeaderMap) -> Response<Body> {
+    // every refusal of the Python-free image is logged (the test agents and `docker logs` read these), not only the write dispatcher's DECLINE lines
+    eprintln!("DECLINE {} {} (not in this image)", method.as_str(), path);
     let wants_json = path.starts_with("/api/") || path.starts_with("/mcp") || headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()).is_some_and(|a| a.contains("json") && !a.contains("html"));
     // a write the gateway declined is almost always input it could not accept (a refusal Python words in detail): a generic 400, not a 501
     if matches!(*method, Method::POST | Method::PUT | Method::PATCH | Method::DELETE) {

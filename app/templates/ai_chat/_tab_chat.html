@@ -95,6 +95,12 @@
     </div>
 
     <div style="border-top:1px solid var(--border);padding-top:.75rem">
+      <div class="ai-section-label">Projects</div>
+      <button class="new-chat-btn" onclick="openProjectDialog(null)">+ New project</button>
+      <div id="project-list" class="session-list" style="font-size:.78rem;color:var(--text-dim);margin-top:.3rem"></div>
+    </div>
+
+    <div style="border-top:1px solid var(--border);padding-top:.75rem">
       <div class="ai-section-label">History</div>
       <button class="new-chat-btn" onclick="newChat()">+ New chat</button>
       <div id="session-list" class="session-list" style="font-size:.78rem;color:var(--text-dim)"></div>
@@ -209,6 +215,37 @@
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1.5rem 2rem;text-align:center;max-width:320px">
     <div style="font-size:1.1rem;margin-bottom:.5rem">🗜 Compacting conversation…</div>
     <div id="compact-dialog-status" style="font-size:.8rem;color:var(--text-dim)">Summarizing older turns…</div>
+  </div>
+</div>
+
+<!-- Project editor — create/rename a project and edit the notes that every
+     chat in it gets appended to its system prompt (ai-chat-core.js, same
+     channel as chat-preset system extras). Hidden by default. -->
+<div id="project-dialog-overlay" role="dialog" aria-modal="true" aria-label="Edit project"
+     style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;align-items:center;justify-content:center">
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1.25rem;max-width:420px;width:92%">
+    <div id="project-dialog-title" style="font-size:1rem;margin-bottom:.75rem">New project</div>
+    <input id="project-name-input" placeholder="Project name" maxlength="128"
+           style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:.45rem;margin-bottom:.6rem">
+    <textarea id="project-notes-input" rows="6" placeholder="Notes for the AI — added to every chat in this project (rules, tone, ongoing plans…)"
+              style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:.45rem;font-family:inherit;resize:vertical"></textarea>
+    <div style="display:flex;gap:.5rem;justify-content:flex-end;margin-top:.75rem">
+      <button class="new-chat-btn" style="margin:0" onclick="closeProjectDialog()">Cancel</button>
+      <button class="save-chat-btn" style="margin:0" onclick="saveProjectDialog()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Move-to-project chooser — one button per project plus "No project".
+     Hidden by default; openProjectMove(sessionId) fills and shows it. -->
+<div id="project-move-overlay" role="dialog" aria-modal="true" aria-label="Move chat to a project"
+     style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;align-items:center;justify-content:center">
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1.25rem;min-width:240px;max-width:420px">
+    <div style="font-size:1rem;margin-bottom:.75rem">Move chat to…</div>
+    <div id="project-move-list" style="display:flex;flex-direction:column;gap:.4rem;max-height:50vh;overflow:auto"></div>
+    <div style="display:flex;justify-content:flex-end;margin-top:.75rem">
+      <button class="new-chat-btn" style="margin:0" onclick="closeProjectMove()">Cancel</button>
+    </div>
   </div>
 </div>
 

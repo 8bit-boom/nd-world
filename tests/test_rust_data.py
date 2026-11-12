@@ -8,3 +8,10 @@ def test_the_data_the_rust_side_reads_is_current():
     gen = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(gen)
     assert gen.OUT.read_text() == gen.text(), "run python scripts/gen_rust_data.py"
+
+
+def test_the_api_docs_the_rust_side_serves_are_current():
+    spec = importlib.util.spec_from_file_location("gen", Path(__file__).resolve().parent.parent / "scripts" / "gen_rust_data.py")
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+    assert gen.openapi_stale() == [], "run python scripts/gen_rust_data.py"

@@ -969,3 +969,263 @@ fn branch_player_characters(db: &rusqlite::Connection, wid: i64, data: &Value, k
     let dest = if rows.len() == 1 { format!("/characters/{last}") } else if kind == "player_character_bulk" { "/characters".to_string() } else { format!("/characters/{last}") };
     Some(Ok(dest))
 }
+
+/// One reference to an uploaded picture that `convert_world_images` visits, in Python's order
+enum Ref {
+    Entity(i64),
+    Character(i64),
+    SchematicBg(i64),
+    SchematicEmbed(usize, usize),
+    BoardCard(usize, usize),
+    AlbumImage(usize, usize),
+}
+
+struct Visit {
+    scope: String,
+    label: String,
+    url: String,
+    r: Ref,
+}
+
+/// `POST /api/import/convert-images` (importer.py `api_convert_images` / `convert_world_images`): every picture the world
+/// references is re-encoded in place to one format and the references follow. A picture this port would not read as Pillow does
+/// (animated, GIF, AVIF) makes the whole request Python's, before anything is touched; without Python it is left as it is.
+pub async fn convert_images(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
+    tokio::task::spawn_blocking(move || convert_images_sync(&cfg, &uri, &headers, &body)).await.ok().flatten()
+}
+
+fn convert_images_sync(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
+    use crate::imaging::{convert_plan, convert_to, Convert};
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "POST", uri, headers, now)?;
+    if !p.is_gm {
+        return None;
+    }
+    let world = p.world.clone()?;
+    let wid = world.get("id")?.as_i64()?;
+    if !crate::edits::plain_numbers(body) {
+        return None;
+    }
+    let Value::Object(b) = serde_json::from_slice::<Value>(body).ok()? else { return None };
+    let fmt = match b.get("format") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(_)) | Some(Value::Object(_)) => return None, // unhashable: Python's 500
+        _ => String::new(),
+    };
+    if !["avif", "jpg", "png", "webp"].contains(&fmt.as_str()) {
+        return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "format must be one of: avif, jpg, png, webp"));
+    }
+    let quality = match b.get("quality") {
+        None => 90,
+        Some(Value::Number(n)) if n.is_i64() => n.as_i64()?,
+        Some(Value::Null) | Some(Value::Array(_)) | Some(Value::Object(_)) => {
+            return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "quality must be a number"))
+        }
+        _ => return None, // floats, strings, booleans: int()'s own reading
+    };
+    if !(1..=100).contains(&quality) {
+        return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "quality must be between 1 and 100"));
+    }
+    let quality = quality as u8;
+    let uploads = cfg.db_path.parent()?.join("uploads");
+    let root = uploads.canonicalize().ok();
+
+    // _resolve_upload_path: the file an /uploads/ URL names, or None
+    let resolve = |url: &str| -> Option<std::path::PathBuf> {
+        let rest = url.strip_prefix("/uploads/")?;
+        let root = root.as_ref()?;
+        let path = uploads.join(rest).canonicalize().ok()?;
+        (path.starts_with(root) && path.is_file()).then_some(path)
+    };
+    let json_list = |t: Option<String>| -> Option<Vec<Value>> {
+        let t = t.unwrap_or_default();
+        if t.contains("NaN") || t.contains("Infinity") {
+            return None;
+        }
+        match serde_json::from_str::<Value>(if t.is_empty() { "[]" } else { &t }) {
+            Ok(Value::Array(a)) => Some(a),
+            _ => Some(vec![]),
+        }
+    };
+    let sel = |sql: &str| -> Option<Vec<Vec<Option<String>>>> {
+        let mut st = db.prepare(sql).ok()?;
+        let n = st.column_count();
+        let rows = st.query_map([wid], |r| (0..n).map(|i| r.get::<_, Option<String>>(i)).collect::<Result<Vec<_>, _>>()).ok()?;
+        rows.collect::<Result<Vec<_>, _>>().ok()
+    };
+    let idnum = |r: &Vec<Option<String>>| -> Option<i64> { r[0].as_ref()?.parse().ok() };
+
+    // phase 1: walk the world, listing each visit in Python's order
+    let mut visits: Vec<Visit> = vec![];
+    for r in sel("SELECT CAST(id AS TEXT), name, image_url FROM entities WHERE world_id=?1 AND image_url IS NOT NULL ORDER BY id")? {
+        visits.push(Visit { scope: "entity".into(), label: r[1].clone().unwrap_or_default(), url: r[2].clone()?, r: Ref::Entity(idnum(&r)?) });
+    }
+    for r in sel("SELECT CAST(id AS TEXT), name, portrait_url FROM player_characters WHERE world_id=?1 AND portrait_url != '' ORDER BY id")? {
+        visits.push(Visit { scope: "character".into(), label: r[1].clone().unwrap_or_default(), url: r[2].clone()?, r: Ref::Character(idnum(&r)?) });
+    }
+    let schem = sel("SELECT CAST(id AS TEXT), name, image_url, elements_json FROM schematics WHERE world_id=?1 ORDER BY id")?;
+    let mut sc_docs: Vec<Vec<Value>> = vec![];
+    for (si, r) in schem.iter().enumerate() {
+        let name = r[1].clone().unwrap_or_default();
+        if let Some(u) = r[2].clone().filter(|u| !u.is_empty()) {
+            visits.push(Visit { scope: format!("schematic: {name}"), label: "background".into(), url: u, r: Ref::SchematicBg(idnum(r)?) });
+        }
+        let els = json_list(r[3].clone())?;
+        for (ei, el) in els.iter().enumerate() {
+            if let Some(h) = el.get("href").and_then(|h| h.as_str()).filter(|h| h.starts_with("/uploads/schematics/embeds/")) {
+                visits.push(Visit { scope: format!("schematic: {name}"), label: "embedded image".into(), url: h.into(), r: Ref::SchematicEmbed(si, ei) });
+            }
+        }
+        sc_docs.push(els);
+    }
+    let boards = sel("SELECT CAST(id AS TEXT), name, nodes_json FROM invest_boards WHERE world_id=?1 ORDER BY id")?;
+    let mut bd_docs: Vec<Vec<Value>> = vec![];
+    for (bi, r) in boards.iter().enumerate() {
+        let name = r[1].clone().unwrap_or_default();
+        let nodes = json_list(r[2].clone())?;
+        for (ni, n) in nodes.iter().enumerate() {
+            if let Some(img) = n.get("image_url").and_then(|h| h.as_str()).filter(|h| !h.is_empty()) {
+                let title = match n.get("title") {
+                    Some(Value::String(t)) if !t.is_empty() => t.clone(),
+                    Some(Value::String(_)) | None | Some(Value::Null) => "card".into(),
+                    _ => return None,
+                };
+                visits.push(Visit { scope: format!("board: {name}"), label: title, url: img.into(), r: Ref::BoardCard(bi, ni) });
+            }
+        }
+        bd_docs.push(nodes);
+    }
+    let albums = sel("SELECT CAST(id AS TEXT), name, image_urls_json FROM image_albums WHERE world_id=?1 ORDER BY id")?;
+    let mut al_docs: Vec<Vec<Value>> = vec![];
+    for (ai, r) in albums.iter().enumerate() {
+        let name = r[1].clone().unwrap_or_default();
+        let list = json_list(r[2].clone())?;
+        for (ui, u) in list.iter().enumerate() {
+            if let Some(u) = u.as_str() {
+                visits.push(Visit { scope: format!("album: {name}"), label: "image".into(), url: u.into(), r: Ref::AlbumImage(ai, ui) });
+            }
+        }
+        al_docs.push(list);
+    }
+    // user-uploaded maps: (display name, slug, the picture's path, its extension)
+    let mut map_files: Vec<(String, String, std::path::PathBuf, String)> = vec![];
+    if let Some(dir) = crate::maps::maps_dir(cfg) {
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            let mut files: Vec<_> = rd.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().map_or(false, |x| x == "json")).collect();
+            files.sort();
+            for f in files {
+                let slug = f.file_stem().and_then(|s| s.to_str())?.to_string();
+                let Ok(text) = std::fs::read_to_string(&f) else { continue };
+                if text.contains("NaN") || text.contains("Infinity") {
+                    return None;
+                }
+                let Ok(Value::Object(d)) = serde_json::from_str::<Value>(&text) else { continue };
+                match d.get("world_id") {
+                    None => if wid != 1 { continue },
+                    Some(Value::Number(n)) if n.is_i64() => if n.as_i64() != Some(wid) { continue },
+                    Some(Value::String(_)) | Some(Value::Null) | Some(Value::Array(_)) | Some(Value::Object(_)) => continue,
+                    _ => return None,
+                }
+                let name = match d.get("name") { Some(Value::String(s)) => s.clone(), None => slug.clone(), _ => return None };
+                for ext in [".webp", ".jpg", ".jpeg", ".png", ".gif", ".avif"] {
+                    let mp = uploads.join("maps").join(format!("{slug}{ext}"));
+                    if mp.is_file() {
+                        map_files.push((name.clone(), slug.clone(), mp, ext.to_string()));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // phase 2: can every file be answered for? (nothing is touched until it can)
+    for v in &visits {
+        if let Some(path) = resolve(&v.url) {
+            if matches!(convert_plan(&path, &fmt), Convert::Decline) {
+                return None;
+            }
+        }
+    }
+    for (_, _, mp, _) in &map_files {
+        if matches!(convert_plan(mp, &fmt), Convert::Decline) {
+            return None;
+        }
+    }
+
+    // phase 3: convert (a picture referenced twice only once)
+    let mut cache: std::collections::HashMap<String, Option<String>> = std::collections::HashMap::new();
+    let mut retire: Vec<std::path::PathBuf> = vec![];
+    let mut results: Vec<Value> = vec![];
+    let mut news: Vec<Option<String>> = vec![];
+    for v in &visits {
+        let new_url = match cache.get(&v.url) {
+            Some(n) => n.clone(),
+            None => {
+                let n = match resolve(&v.url) {
+                    Some(path) => match convert_to(&path, &fmt, quality) {
+                        Convert::Done(dest) => {
+                            retire.push(path);
+                            let head = v.url.rsplit_once('/').map_or("", |(h, _)| h);
+                            Some(format!("{head}/{}", dest.file_name()?.to_string_lossy()))
+                        }
+                        _ => None,
+                    },
+                    None => None,
+                };
+                cache.insert(v.url.clone(), n.clone());
+                n
+            }
+        };
+        results.push(json!({"scope": v.scope, "label": v.label, "old_url": v.url, "new_url": new_url, "status": if new_url.is_some() { "ok" } else { "skipped" }}));
+        news.push(new_url);
+    }
+    for (name, slug, mp, ext) in &map_files {
+        let new_url = match convert_to(mp, &fmt, quality) {
+            Convert::Done(dest) => {
+                retire.push(mp.clone());
+                Some(format!("/uploads/maps/{}", dest.file_name()?.to_string_lossy()))
+            }
+            _ => None,
+        };
+        results.push(json!({"scope": "map", "label": name, "old_url": format!("/uploads/maps/{slug}{ext}"), "new_url": new_url,
+                            "status": if new_url.is_some() { "ok" } else { "skipped" }}));
+    }
+    for path in retire {
+        let _ = std::fs::remove_file(path); // the original goes once its replacement is in place
+    }
+
+    // the references
+    let stamp = crate::orm::now_stamp();
+    db.execute_batch("BEGIN IMMEDIATE").ok()?;
+    let write = (|| -> Option<()> {
+        let (mut ch_sc, mut ch_bd, mut ch_al) = (vec![false; sc_docs.len()], vec![false; bd_docs.len()], vec![false; al_docs.len()]);
+        for (vi, v) in visits.iter().enumerate() {
+            let Some(nu) = news[vi].clone() else { continue };
+            match &v.r {
+                Ref::Entity(id) => { db.execute("UPDATE entities SET image_url=?1, updated_at=?2 WHERE id=?3", rusqlite::params![nu, stamp, id]).ok()?; }
+                Ref::Character(id) => { db.execute("UPDATE player_characters SET portrait_url=?1, updated_at=?2 WHERE id=?3", rusqlite::params![nu, stamp, id]).ok()?; }
+                Ref::SchematicBg(id) => { db.execute("UPDATE schematics SET image_url=?1, updated_at=?2 WHERE id=?3", rusqlite::params![nu, stamp, id]).ok()?; }
+                Ref::SchematicEmbed(d, e) => { sc_docs[*d][*e].as_object_mut()?.insert("href".into(), json!(nu)); ch_sc[*d] = true; }
+                Ref::BoardCard(d, n) => { bd_docs[*d][*n].as_object_mut()?.insert("image_url".into(), json!(nu)); ch_bd[*d] = true; }
+                Ref::AlbumImage(d, u) => { al_docs[*d][*u] = json!(nu); ch_al[*d] = true; }
+            }
+        }
+        for (i, c) in ch_sc.iter().enumerate() {
+            if *c { db.execute("UPDATE schematics SET elements_json=?1, updated_at=?2 WHERE id=?3", rusqlite::params![nd_render::py_dumps(&Value::Array(sc_docs[i].clone())), stamp, idnum(&schem[i])?]).ok()?; }
+        }
+        for (i, c) in ch_bd.iter().enumerate() {
+            if *c { db.execute("UPDATE invest_boards SET nodes_json=?1, updated_at=?2 WHERE id=?3", rusqlite::params![nd_render::py_dumps(&Value::Array(bd_docs[i].clone())), stamp, idnum(&boards[i])?]).ok()?; }
+        }
+        for (i, c) in ch_al.iter().enumerate() {
+            if *c { db.execute("UPDATE image_albums SET image_urls_json=?1 WHERE id=?2", rusqlite::params![nd_render::py_dumps(&Value::Array(al_docs[i].clone())), idnum(&albums[i])?]).ok()?; }
+        }
+        Some(())
+    })();
+    if write.is_none() || db.execute_batch("COMMIT").is_err() {
+        let _ = db.execute_batch("ROLLBACK");
+        return Some(crate::idpages::refusal(500));
+    }
+    let converted = results.iter().filter(|r| r["status"] == "ok").count();
+    crate::edits::json_response(&json!({"converted": converted, "total": results.len(), "results": results}))
+}

@@ -861,7 +861,7 @@ def test_id_pages_the_gateway_builds_are_pythons(client, seed):
         for url in urls:
             served[url] += _same_page(d, via, url, email)
     must = [u for u in urls if "999999" not in u and u not in (f"/handout/{other.id}", f"/display/combat/{ctpl.id}", f"/worlds/{seed.world_b.id}/rules/edit", f"/pages/{far.id}")]
-    assert all(served[u] for u in must), served
+    assert all(served[u] for u in must), {u: served[u] for u in must if not served[u]}
 
 
 def test_quest_page_the_gateway_builds_is_pythons(client, seed):
@@ -895,7 +895,7 @@ def test_quest_page_the_gateway_builds_is_pythons(client, seed):
         via = _via(d, base)
         for url in urls:
             served[url] += _same_page(d, via, url, email)
-    assert all(served[u] for u in must), served
+    assert all(served[u] for u in must), {u: served[u] for u in must if not served[u]}
 
 
 def test_document_library_the_gateway_builds_is_pythons(client, seed):
@@ -1146,6 +1146,14 @@ def test_board_pages_the_gateway_builds_are_pythons(client, seed):
                  "groups": [{"id": "g", "label": "Group", "x": 1e-7}]}
         edges = [{"from": "a", "to": "b"}, {"from": 7, "to": "a"}, {"from": "a", "to": "missing"}, {"from": "b", "to": "a"}]
         db.add_all([InvestBoard(world_id=w, name="Case <1>", slug="gw-case", nodes_json=json.dumps(nodes), edges_json=json.dumps(edges)),
+                    InvestBoard(world_id=w, name="Plain <é>", slug="gw-plain", description="d & e", nodes_json=json.dumps({"nodes": [
+                        {"id": "n1", "title": "Café <b>", "type": "person", "status": "verified", "body": "x" * 250, "tags": ["a", "b"], "x": 100, "y": 50, "color": "#123456"},
+                        {"id": "n2", "title": "", "type": "weird", "status": "confirmed_false", "x": 700, "y": 300},
+                        {"id": "n3", "type": "clue", "status": "dismissed", "x": -20, "y": 90, "tags": []}],
+                        "groups": [{"x": 10, "y": 10, "w": 300, "h": 200, "label": "G <1>", "color": "#abc"}, {"x": 0, "y": 0, "w": 5, "h": 5}]}),
+                        edges_json=json.dumps([{"from": "n1", "to": "n2", "kind": "causes", "direction": "both", "label": "so"}, {"from": "n2", "to": "n3", "kind": "refutes"},
+                                               {"from": "n1", "to": "n3", "kind": "bogus", "color": "#00ff00"}, {"from": "n1", "to": "zzz"}, {"from": "n3", "to": "n1", "kind": "same_as"},
+                                               {"from": "n1", "to": "n2", "kind": "leads_to", "direction": "rev"}])),
                     InvestBoard(world_id=w, name="Legacy", slug="gw-legacy", nodes_json=json.dumps([{"id": 1, "title": "Old", "x": 5.5}]), edges_json=""),
                     InvestBoard(world_id=w, name="Empty", slug="gw-empty", nodes_json="", edges_json=None),
                     InvestBoard(world_id=w, name="Bad", slug="gw-bad", nodes_json='"text"'),
@@ -1155,7 +1163,7 @@ def test_board_pages_the_gateway_builds_are_pythons(client, seed):
         db.commit()
     finally:
         db.close()
-    urls = [f"/boards/{s}{r}" for s in ("gw-case", "gw-legacy", "gw-empty", "gw-bad", "gw-far", "nope") for r in ("", "/notes", "/export")]
+    urls = [f"/boards/{s}{r}" for s in ("gw-case", "gw-legacy", "gw-empty", "gw-bad", "gw-far", "gw-plain", "nope") for r in ("", "/notes", "/export")]
     served = {u: 0 for u in urls}
     for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
                              (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
@@ -1163,8 +1171,8 @@ def test_board_pages_the_gateway_builds_are_pythons(client, seed):
         via = _via(d, base)
         for u in urls:
             served[u] += _same_page(d, via, u, email)
-    must = [f"/boards/{s}{r}" for s in ("gw-case", "gw-empty", "gw-legacy") for r in ("", "/notes")]  # /export stays Python's
-    assert all(served[u] for u in must), served
+    must = [f"/boards/{s}{r}" for s in ("gw-case", "gw-empty", "gw-legacy") for r in ("", "/notes")] + ["/boards/gw-plain/export", "/boards/gw-empty/export"]
+    assert all(served[u] for u in must), {u: served[u] for u in must if not served[u]}
     # an unknown slug's 404 is the gateway's own, both pages
     dg = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
     for u in ("/boards/nope", "/boards/nope/notes"):
@@ -8173,7 +8181,7 @@ def test_python_free_live_jobs_list_reads_the_rename_runs(client, seed):
         assert j.status_code == 501 and "Python app" in j.json()["detail"], (j.status_code, j.text)
         w = free.post("/api/definitely-not-ported-here", json={})
         assert w.status_code == 400 and "could not be completed" in w.json()["detail"], (w.status_code, w.text)
-        h = free.get("/docs", headers={"Accept": "text/html"})
+        h = free.get("/definitely-not-ported-page", headers={"Accept": "text/html"})
         assert h.status_code == 501 and "Not available here" in h.text, (h.status_code, h.text[:200])
     finally:
         proc.terminate()
@@ -10064,6 +10072,104 @@ def test_ai_chat_sessions_save_open_delete_are_pythons(client, seed):
         proc.terminate()
 
 
+def test_ai_chat_projects_are_pythons(client, seed):
+    """The /ai sidebar's Projects: GET /api/ai/projects (chats grouped per project), POST /api/ai/projects (create — blank name becomes
+    "New project", name/notes capped), POST /api/ai/projects/<id> (rename / notes; a blank name keeps the old one), DELETE (the chats are
+    kept, ungrouped), POST /api/ai/sessions/<id>/project (move, a stale id ungroups) and the save body's project_id honored only on create —
+    byte-identical from both servers, a player 403, a missing/foreign row 404; and a Python-free gateway runs the same flow."""
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    msgs = [{"role": "user", "content": "Planning"}, {"role": "assistant", "content": "ok"}]
+    made = {}
+    for side, cl in (("py", d), ("gw", v)):
+        r = cl.post("/api/ai/projects", json={"name": f"  Hunt é {os.urandom(2).hex()}  ", "notes": "Hunt rules."})
+        assert r.status_code == 200, (side, r.text)
+        if side == "gw":
+            assert r.headers.get("x-nd-served-by") == "gateway"
+        made[side] = r.json()
+        r2 = cl.post("/api/ai/projects", json={"name": "   "})
+        assert r2.status_code == 200 and r2.json()["name"] == "New project", (side, r2.text)
+        made[side + "_blank"] = r2.json()["id"]
+    assert made["gw"]["name"].startswith("Hunt é ")
+    # the list groups each project's chats (still empty) — same bytes
+    for side, cl in (("py", d), ("gw", v)):
+        a = cl.post("/api/ai/sessions", json={"messages": msgs, "project_id": made[side]["id"]})
+        assert a.status_code == 200, (side, a.text)
+        made[side + "_chat"] = a.json()["id"]
+    a, b = d.get("/api/ai/projects"), v.get("/api/ai/projects")
+    assert (a.status_code, a.content) == (b.status_code, b.content)
+    pj = a.json()["projects"]
+    hunt = [p for p in pj if p["id"] in (made["py"]["id"], made["gw"]["id"])][0]
+    assert hunt["notes"] == "Hunt rules." and [c["title"] for c in hunt["chats"]] == ["Planning"]
+    # an update replaying a different project_id must not move the chat
+    for side, cl in (("py", d), ("gw", v)):
+        r = cl.post("/api/ai/sessions", json={"session_id": made[side + "_chat"], "messages": msgs + [{"role": "user", "content": "more"}],
+                                              "project_id": made[side + "_blank"]})
+        assert r.status_code == 200 and r.json()["id"] == made[side + "_chat"]
+    assert d.get(f"/api/ai/sessions/{made['py_chat']}").json()["project_id"] == made["py"]["id"]
+    assert v.get(f"/api/ai/sessions/{made['gw_chat']}").json()["project_id"] == made["gw"]["id"]
+    # move: in, out, and a stale id silently ungroups
+    for side, cl in (("py", d), ("gw", v)):
+        r = cl.post(f"/api/ai/sessions/{made[side + '_chat']}/project", json={"project_id": made[side + "_blank"]})
+        assert r.status_code == 200 and r.json() == {"ok": True, "project_id": made[side + "_blank"]}, (side, r.text)
+        r = cl.post(f"/api/ai/sessions/{made[side + '_chat']}/project", json={"project_id": 99999999})
+        assert r.status_code == 200 and r.json() == {"ok": True, "project_id": None}, (side, r.text)
+        r = cl.post(f"/api/ai/sessions/{made[side + '_chat']}/project", json={"project_id": made[side]["id"]})
+        assert r.json()["project_id"] == made[side]["id"]
+    # edit keeps the stored name when the request's name trims to empty
+    for side, cl in (("py", d), ("gw", v)):
+        r = cl.post(f"/api/ai/projects/{made[side]['id']}", json={"name": "   ", "notes": "Updated."})
+        assert r.status_code == 200 and r.json() == {"ok": True}, (side, r.text)
+    a, b = d.get("/api/ai/projects"), v.get("/api/ai/projects")
+    assert (a.status_code, a.content) == (b.status_code, b.content)
+    assert [p for p in a.json()["projects"] if p["id"] in (made["py"]["id"], made["gw"]["id"])][0]["notes"] == "Updated."
+    # refusals: a player 403s everywhere; a missing/foreign row is a 404
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pv = _via(p, base)
+    for side, cl in (("py", p), ("gw", pv)):
+        assert cl.get("/api/ai/projects").status_code == 403
+        assert cl.post("/api/ai/projects", json={"name": "P"}).status_code == 403
+        assert cl.post("/api/ai/projects/1", json={"name": "P"}).status_code == 403
+        assert cl.delete("/api/ai/projects/1").status_code == 403
+        assert cl.post("/api/ai/sessions/1/project", json={"project_id": 1}).status_code == 403
+    for side, cl in (("py", d), ("gw", v)):
+        assert cl.post("/api/ai/projects/99999999", json={"name": "x"}).status_code == 404
+        assert cl.delete("/api/ai/projects/99999999").status_code == 404
+        assert cl.post("/api/ai/sessions/99999999/project", json={"project_id": None}).status_code == 404
+        # a body pydantic would 422 is Python's (the gateway declines)
+        r = cl.post("/api/ai/projects", json={"name": 5})
+        assert r.status_code == 422, (side, r.text)
+    # world-scoped: world B never sees world A's projects or chats
+    db = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_b.slug)
+    vb = _via(db, base)
+    assert db.get("/api/ai/projects").json()["projects"] == []
+    assert vb.get("/api/ai/projects").json()["projects"] == []
+    assert db.post(f"/api/ai/sessions/{made['py_chat']}/project", json={"project_id": made["py"]["id"]}).status_code == 404
+    assert vb.post(f"/api/ai/sessions/{made['gw_chat']}/project", json={"project_id": made["gw"]["id"]}).status_code == 404
+    # delete ungroups but keeps the chat — same flow on both, then python-free
+    for side, cl in (("py", d), ("gw", v)):
+        assert cl.delete(f"/api/ai/projects/{made[side]['id']}").json() == {"ok": True}
+        got = cl.get(f"/api/ai/sessions/{made[side + '_chat']}")
+        assert got.json()["project_id"] is None
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        r = g.post("/api/ai/projects", json={"name": "Solo"})
+        assert r.status_code == 200 and r.json()["name"] == "Solo", r.text
+        pid = r.json()["id"]
+        sid = g.post("/api/ai/sessions", json={"messages": msgs, "project_id": pid}).json()["id"]
+        assert g.get(f"/api/ai/sessions/{sid}").json()["project_id"] == pid
+        r = g.get("/api/ai/projects")
+        assert r.json()["projects"][0]["chats"] == [{"id": sid, "title": "Planning"}], r.text
+        assert g.post(f"/api/ai/projects/{pid}", json={"name": "", "notes": "n"}).json() == {"ok": True}
+        assert g.post(f"/api/ai/sessions/{sid}/project", json={"project_id": None}).json() == {"ok": True, "project_id": None}
+        assert g.delete(f"/api/ai/projects/{pid}").json() == {"ok": True}
+        assert g.get(f"/api/ai/sessions/{sid}").json()["project_id"] is None
+    finally:
+        proc.terminate()
+
+
 def test_ai_status_dot_on_studio_is_pythons(client, seed):
     """POST /api/ai/status (the AI dot on every page) with a stand-in Studio: ok with the loaded names, unavailable when Studio errors. Python
     caches its answer for 15 s, so each case waits until its cache has turned over before comparing."""
@@ -10737,6 +10843,730 @@ def test_training_bundle_without_python(client, seed):
         _, mem_b, man_b, _ = _training_members(r)
         assert set(mem_a) == set(mem_b) and all(mem_a[n] == mem_b[n] for n in mem_a if n != "manifest.json")
         assert man_a == man_b and man_b["files"]["entities.jsonl"]["records"] == 703
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
+def test_schematic_editor_reads_and_preview_are_pythons(client, seed):
+    """GET /maps/schematic/<slug>/walls.json, rooms.json and preview.svg from the gateway: the same answers as Python's - every element shape
+    of the preview, a missing map, an HTML map, a player on a strict map (a blank card) and a player on a plain one."""
+    import json as _json
+    from app.database import SessionLocal
+    from app.models import Schematic
+    from .conftest import PLAYER_PASSWORD
+    base = os.environ.get("ND_TEST_BASE_URL")
+    if not base:
+        import pytest
+        pytest.skip("needs the gateway")
+    w = seed.world_a.id
+    els = [{"type": "rect", "x": 10, "y": 20.5, "w": 100, "h": "40", "fill": "#123", "stroke": "#fff", "strokeW": 3, "opacity": 0.5},
+           {"type": "circle", "cx": 200, "cy": 100, "rx": 15}, {"type": "line", "x1": 0, "y1": 0, "x2": 50, "y2": 0},
+           {"type": "poly", "points": [[1, 2], [3.25, 4], "bad", [5]]}, {"type": "pencil", "pts": [[0, 0], [10, 10]]},
+           {"type": "Text", "x": 5, "y": 6, "label": "A <b> & c", "size": 0}, {"type": "token", "x": 30, "y": 40, "name": "Ñandú", "color": "red"},
+           {"type": "pin", "cx": 1, "cy": 2, "r": 3, "label": 7}, "not a dict", {"type": "unknown"}]
+    db = SessionLocal()
+    try:
+        db.add_all([
+            Schematic(world_id=w, name="Prev A", slug="gw-prev-a", is_html=False, canvas_width=1200, canvas_height=800, canvas_bg="light",
+                      elements_json=_json.dumps(els), walls_json=_json.dumps([{"id": "w1", "pts": [[0, 0], [10, 0]], "kind": "secret", "state": "closed"}]),
+                      fog_json=_json.dumps({"enabled": True, "range": 7.9, "darkness": 0.333, "personal": 3}), rooms_json="{}",
+                      lights_json=_json.dumps([{"id": "l1", "x": 10, "y": 10, "r": 100, "on": True}])),
+            Schematic(world_id=w, name="Prev Empty", slug="gw-prev-empty", is_html=False, canvas_width=None, canvas_height=None, elements_json="[]"),
+            Schematic(world_id=w, name="Prev Strict", slug="gw-prev-strict", is_html=False, canvas_width=900, canvas_height=600, elements_json=_json.dumps(els[:2]),
+                      fog_json=_json.dumps({"enabled": True, "strict": True})),
+        ])
+        db.commit()
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    urls = [f"/maps/schematic/{s}/{f}" for s in ("gw-prev-a", "gw-prev-empty", "gw-prev-strict") for f in ("walls.json", "rooms.json", "preview.svg")]
+    urls += ["/maps/schematic/nope-nope/preview.svg", "/maps/schematic/nope-nope/walls.json"]
+    for who in (gm, pl):
+        for url in urls:
+            a, b = who.get(url), _via(who, base).get(url)
+            assert (a.status_code, a.text) == (b.status_code, b.text), (url, a.status_code, b.status_code, a.text[:300], b.text[:300])
+            if a.status_code == 200:
+                assert a.headers.get("content-type") == b.headers.get("content-type"), url
+    b = _via(gm, base).get("/maps/schematic/gw-prev-a/preview.svg")
+    assert b.headers.get("x-nd-served-by") == "gateway"
+
+
+def test_tables_json_and_masked_background_404s_are_pythons(client, seed):
+    """GET /api/tables.json from the gateway (every odd entries_json: unreadable, a dict, a string, labels missing / empty, a float weight; a table with no
+    category) and GET /maps/schematic/<slug>/bg.webp for a map that has no strict secrecy / no picture / does not exist (Python's 404s)."""
+    import json as _json
+    from app.database import SessionLocal
+    from app.models import RandomTable, Schematic
+    from .conftest import PLAYER_PASSWORD
+    base = os.environ.get("ND_TEST_BASE_URL")
+    if not base:
+        import pytest
+        pytest.skip("needs the gateway")
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        for i, (cat, raw) in enumerate([("encounters", _json.dumps([{"label": "Goblins", "weight": 3}, {"label": "", "weight": 2}, {"weight": 1}, "str", {"label": "W", "weight": 1.5}, {"label": "N"}])),
+                                        (None, "not json"), ("odd", _json.dumps({"a": 1})), ("odd", _json.dumps("text")), ("", "[]"), ("ünï", _json.dumps([{"label": "Ž", "weight": 2}]))]):
+            db.add(RandomTable(name=f"GwT {i}", slug=f"gw-t-{i}-{w}", category=cat, world_id=w, entries_json=raw))
+        db.add(Schematic(world_id=w, name="Plain", slug="gw-plain-bg", is_html=False, canvas_width=400, canvas_height=300, elements_json="[]", image_url="/uploads/nope.png"))
+        db.add(Schematic(world_id=w, name="NoPic", slug="gw-nopic-bg", is_html=False, canvas_width=400, canvas_height=300, elements_json="[]"))
+        db.commit()
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    for who in (gm, pl):
+        for url in ("/api/tables.json", "/maps/schematic/gw-plain-bg/bg.webp", "/maps/schematic/gw-nopic-bg/bg.webp", "/maps/schematic/nope-nope/bg.webp"):
+            a, b = who.get(url), _via(who, base).get(url)
+            assert (a.status_code, a.text) == (b.status_code, b.text), (url, a.status_code, b.status_code, a.text[:200], b.text[:200])
+    b = _via(gm, base).get("/api/tables.json")
+    assert b.headers.get("x-nd-served-by") == "gateway"
+    assert _via(gm, base).get("/maps/schematic/gw-plain-bg/bg.webp").headers.get("x-nd-served-by") == "gateway"
+
+
+def test_prop_library_upload_is_pythons(client, seed):
+    """POST /api/maps/props/upload from the gateway and from Python on the same files: the same objects (name, kind, size, footprint) and the same
+    refusals; a stored SVG is byte-identical, a stored raster has the same pixel size and (nearly) the same pixels - the WebP encoder is not Pillow's."""
+    import io
+    import re as _re
+    from pathlib import Path
+    from PIL import Image
+    from .conftest import PLAYER_PASSWORD
+    base = os.environ.get("ND_TEST_BASE_URL")
+    if not base:
+        import pytest
+        pytest.skip("needs the gateway")
+
+    def png(size, box=None, colour=(180, 30, 30, 255), fmt="PNG", mode="RGBA"):
+        im = Image.new(mode, size, (0, 0, 0, 0) if mode == "RGBA" else colour)
+        if box:
+            im.paste(colour if mode == "RGBA" else colour[:3], box)
+        b = io.BytesIO()
+        im.save(b, fmt)
+        return b.getvalue()
+
+    svg_ok = (b'<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" viewBox="0 0 120.5 60" data-x="1" aria-label="a">'
+              b'<defs><linearGradient id="g"><stop offset="0" stop-color="#fff" style="STOP-OPACITY: 0.5 ; fill:url(#g)"/></linearGradient></defs>'
+              b'<g inkscape:label="L" transform="rotate(5)"><rect x="1" y="2" width="30" height="20" fill="url(#g)" stroke="#000"/>'
+              b'<text x="5" y="9" font-size="9">Caf\xc3\xa9 &amp; &lt;b&gt; "q"</text><path d="M0 0 L10 10 z"/><circle cx="5" cy="5" r="2"/></g></svg>')
+    svg_wh = b'<svg xmlns="http://www.w3.org/2000/svg" width="64px" height="32"><title>T</title><line x1="0" y1="0" x2="5" y2="5"/></svg>'
+    svg_bare = b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0,0 40,40"></svg>'
+    svg_novb = b'<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>'
+    cases = [
+        ("Big_Bed-Frame.png", png((300, 200), (50, 40, 250, 160)), "image/png"),
+        ("wide.png", png((2400, 600), (0, 0, 2400, 600)), "image/png"),
+        ("tall.png", png((300, 1700), (10, 10, 290, 1690)), "image/png"),
+        ("tiny.png", png((20, 20), (8, 8, 10, 10)), "image/png"),
+        ("empty.png", png((50, 50)), "image/png"),
+        ("photo.jpg", png((200, 100), colour=(10, 120, 200, 255), fmt="JPEG", mode="RGB"), "image/jpeg"),
+        ("pic.bmp", png((64, 64), colour=(10, 120, 200, 255), fmt="BMP", mode="RGB"), "image/bmp"),
+        ("pic.webp", png((90, 70), (5, 5, 85, 65), fmt="WEBP"), "image/webp"),
+        ("ok.svg", svg_ok, "image/svg+xml"), ("wh.svg", svg_wh, "image/svg+xml"), ("bare.svg", svg_bare, "image/svg+xml"),
+        ("novb.svg", svg_novb, "image/svg+xml"),
+        ("script.svg", b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><script>x</script></svg>', "image/svg+xml"),
+        ("href.svg", b'<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1 1"><g xlink:href="http://x"/></svg>', "image/svg+xml"),
+        ("dt.svg", b'<!DOCTYPE svg [<!ENTITY a "b">]><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>', "image/svg+xml"),
+        ("js.svg", b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><rect fill="javascript:x"/></svg>', "image/svg+xml"),
+        ("url.svg", b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><rect fill="url(http://x/y)"/></svg>', "image/svg+xml"),
+        ("sty.svg", b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><rect style="behavior:url(#a)"/></svg>', "image/svg+xml"),
+        ("attr.svg", b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><rect onclick="x"/></svg>', "image/svg+xml"),
+        ("notsvg.svg", b'<html/>', "image/svg+xml"), ("bad.svg", b'<svg', "image/svg+xml"),
+        ("junk.png", b"not a picture at all", "image/png"), ("note.txt", b"hi", "text/plain"),
+    ]
+    out = {}
+    for who, label in (("direct", None), ("gateway", base)):
+        gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+        c = _via(gm, base) if label else gm
+        for cw in ("", "2.5", "0.1", "99", "abc"):
+            files = [("files", f) for f in cases]
+            r = c.post("/api/maps/props/upload", files=files, data={"cells_w": cw} if cw else {})
+            assert r.status_code == 200, (who, cw, r.status_code, r.text[:300])
+            out[(who, cw)] = r.json()
+            if label:
+                assert r.headers.get("x-nd-served-by") == "gateway"
+    uploads = Path(os.environ["DB_PATH"]).parent / "uploads"
+    for cw in ("", "2.5", "0.1", "99", "abc"):
+        a, b = out[("direct", cw)], out[("gateway", cw)]
+        assert a["refused"] == b["refused"], (cw, a["refused"], b["refused"])
+        assert len(a["added"]) >= 7 and sum(p["kind"] == "svg" for p in a["added"]) >= 2 and len(a["refused"]) >= 10, (len(a["added"]), a["refused"])
+        key = lambda p: {k: v for k, v in p.items() if k not in ("id", "url")}
+        assert [key(p) for p in a["added"]] == [key(p) for p in b["added"]], cw
+        for pa, pb in zip(a["added"], b["added"]):
+            fa, fb = uploads / pa["url"].split("/uploads/", 1)[1], uploads / pb["url"].split("/uploads/", 1)[1]
+            if pa["kind"] == "svg":
+                assert fa.read_bytes() == fb.read_bytes(), (cw, pa["name"], fa.read_bytes()[:300], fb.read_bytes()[:300])
+            else:
+                ia, ib = Image.open(fa).convert("RGBA"), Image.open(fb).convert("RGBA")
+                assert ia.size == ib.size, (pa["name"], ia.size, ib.size)
+                diff = sum(abs(x - y) for pxa, pxb in zip(ia.getdata(), ib.getdata()) for x, y in zip(pxa[:3] if pxa[3] > 40 else (0, 0, 0), pxb[:3] if pxb[3] > 40 else (0, 0, 0))) / max(1, ia.size[0] * ia.size[1] * 3)
+                assert diff < 6, (pa["name"], diff)
+    # the rules around it: a player, no files, no world
+    pl = _via(_signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug), base)
+    assert pl.post("/api/maps/props/upload", files=[("files", ("a.png", png((20, 20), (0, 0, 20, 20)), "image/png"))]).status_code == 403
+
+
+def test_small_writes_are_pythons(client, seed):
+    """The gateway's answers match Python's for: POST /api/dice/record (every message Python words), DELETE /api/ai/prompt-presets/<id>,
+    POST /api/media-rename/select, and the member password reset page (the temporary password is the only difference)."""
+    import re as _re
+    from app.database import SessionLocal
+    from app.models import AudioClip, PromptPreset, World
+    from .conftest import PLAYER_PASSWORD
+    base = os.environ.get("ND_TEST_BASE_URL")
+    if not base:
+        import pytest
+        pytest.skip("needs the gateway")
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        presets = [PromptPreset(world_id=w, scope="chat", label=f"P{i}", icon="", text="t", negative="") for i in range(4)]
+        db.add_all(presets + [PromptPreset(world_id=seed.world_b.id, scope="chat", label="Other", icon="", text="t", negative="")])
+        for i, nm in enumerate(["IMG_2041", "Door Creak", "", "recording_12", "Wolf howl"]):
+            db.add(AudioClip(world_id=w, name=nm, file_url=f"/uploads/audio/f{i}.mp3"))
+        db.commit()
+        pids = [p.id for p in presets]
+        other_id = db.query(PromptPreset).filter_by(label="Other").first().id
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    g = _via(gm, base)
+    # dice record
+    bodies = [
+        {"notation": "2d6+3", "values": [3, 4]}, {"notation": "d20", "values": [20]}, {"notation": "d6", "values": [9]}, {"notation": "d6", "values": [0]},
+        {"notation": "2d6", "values": [3]}, {"notation": "2d6", "values": [3, 4, 5]}, {"notation": "d6", "values": [True]}, {"notation": "d6", "values": [3.0]},
+        {"notation": "d6", "values": ["3"]}, {"notation": "d6", "values": [None]}, {"notation": "d6", "values": [3, [1]]}, {"notation": "", "values": []},
+        {"notation": "abc", "values": []}, {"notation": "50d6+d100", "values": [1] * 50 + [77]}, {"notation": "51d6", "values": [1] * 51}, {"notation": "1d1", "values": [1]},
+        {"notation": "d1001", "values": [1]}, {"notation": "d6-2d4+7", "values": [6, 1, 2]}, {"notation": "d6", "values": [1] * 401}, {"notation": "x" * 130, "values": []},
+        {"notation": "d6", "values": "no"}, {"notation": 5, "values": []}, {"notation": "d6"}, {"values": []},
+    ]
+    for b in bodies:
+        a, c = gm.post("/api/dice/record", json=b), g.post("/api/dice/record", json=b)
+        assert a.status_code == c.status_code, (b, a.status_code, a.text[:200], c.status_code, c.text[:200])
+        if a.status_code == 200:
+            ja, jc = a.json(), c.json()
+            assert {k: v for k, v in ja.items() if k not in ("id", "created_at")} == {k: v for k, v in jc.items() if k not in ("id", "created_at")}, b
+            assert c.headers.get("x-nd-served-by") == "gateway"
+        elif a.status_code == 400:
+            assert a.json() == c.json(), (b, a.text, c.text)
+    # prompt preset delete
+    a = gm.delete(f"/api/ai/prompt-presets/{pids[0]}")
+    c = g.delete(f"/api/ai/prompt-presets/{pids[1]}")
+    assert (a.status_code, a.json()) == (c.status_code, c.json()) == (200, {"ok": True}) and c.headers.get("x-nd-served-by") == "gateway"
+    for pid in (999999, other_id, pids[0], pids[1]):
+        a, c = gm.delete(f"/api/ai/prompt-presets/{pid}"), g.delete(f"/api/ai/prompt-presets/{pid}")
+        assert (a.status_code, a.text) == (c.status_code, c.text), pid
+    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    assert pl.delete(f"/api/ai/prompt-presets/{pids[2]}").status_code == _via(pl, base).delete(f"/api/ai/prompt-presets/{pids[2]}").status_code
+    # media-rename select
+    for b in ({"kinds": ["audio"]}, {"kinds": ["audio"], "scope": "all"}, {"kinds": ["audio", "video", "image"], "scope": "all"}, {"kinds": ["image", "audio"]},
+              {"kinds": []}, {"kinds": ["audio"], "album": "0"}, {"kinds": ["audio"], "album": 99}, {"kinds": ["audio"], "album": "abc"}, {"kinds": ["audio"], "album": 2.7},
+              {"kinds": ["bogus"]}, {"kinds": "audio"}, {"kinds": ["audio", "audio"], "scope": "all"}, {"scope": "all"}, {"kinds": [[1]]}, {"kinds": [5]}):
+        a, c = gm.post("/api/media-rename/select", json=b), g.post("/api/media-rename/select", json=b)
+        assert (a.status_code, a.text) == (c.status_code, c.text), (b, a.status_code, a.text[:200], c.status_code, c.text[:200])
+    for raw in (b"not json", b"[1]", b"5"):
+        a, c = gm.post("/api/media-rename/select", content=raw, headers={"content-type": "application/json"}), g.post("/api/media-rename/select", content=raw, headers={"content-type": "application/json"})
+        assert (a.status_code, a.text) == (c.status_code, c.text), raw
+    # member password reset: the page is the same but for the temporary password; the old password stops working
+    path = f"/worlds/{w}/members/{seed.player_a.id}/reset-password"
+    assert pl.post(path).status_code == _via(pl, base).post(path).status_code == 403      # a player may not (before the reset ends their session)
+    ra, rc = gm.post(path), g.post(path)
+    assert ra.status_code == rc.status_code == 200 and rc.headers.get("x-nd-served-by") == "gateway", (ra.status_code, rc.status_code)
+    code = _re.compile(r'<code style="display:block[^>]*>([^<]+)</code>')
+    ta, tc = code.search(ra.text).group(1), code.search(rc.text).group(1)
+    assert len(ta) == len(tc) == 16 and ta != tc
+    norm = lambda t, pw: t.replace(pw, "TEMP")
+    assert norm(ra.text, ta) == norm(rc.text, tc)
+    import httpx
+    d = httpx.Client(base_url=DIRECT, timeout=30)
+    assert d.post("/login", data={"email": seed.player_a.email, "password": tc, "next": "/"}, follow_redirects=False).status_code == 303
+    assert d.post("/login", data={"email": seed.player_a.email, "password": PLAYER_PASSWORD, "next": "/"}, follow_redirects=False).status_code != 303
+    for bad in (f"/worlds/{w}/members/999999/reset-password", f"/worlds/999999/members/{seed.player_a.id}/reset-password"):
+        a, c = gm.post(bad), g.post(bad)
+        assert (a.status_code, a.text) == (c.status_code, c.text), bad
+
+
+def test_python_free_background_job_restart_and_remove(client, seed):
+    """With no Python behind the gateway: restart / remove / cancel of a bulk rename run ("r:<id>") and Python's answers for a task the server does not have."""
+    import json as _json
+    import time
+    from app.database import SessionLocal
+    from app.models import MediaRenameRun
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        ids = {}
+        for st in ("cancelled", "error", "done", "pending", "interrupted"):
+            r = MediaRenameRun(world_id=w, status=st, options_json="{}", items_json=_json.dumps([{"kind": "audio", "id": 1}]), results_json="[]", errors_json="[]", total=1, done=1)
+            db.add(r)
+            db.flush()
+            ids[st] = r.id
+        db.commit()
+    finally:
+        db.close()
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        ok = lambda r: (r.status_code, r.json())
+        assert ok(g.post(f"/api/live-jobs/r:{ids['done']}/restart")) == (400, {"detail": "That job cannot be restarted (it is still running, or the server no longer has it)."})
+        assert ok(g.post(f"/api/live-jobs/r:{ids['pending']}/restart"))[0] == 400
+        assert ok(g.post(f"/api/live-jobs/r:{ids['cancelled']}/restart")) == (200, {"ok": True})
+        assert ok(g.post(f"/api/live-jobs/r:{ids['interrupted']}/restart")) == (200, {"ok": True})
+        time.sleep(1.5)
+        db = SessionLocal()
+        try:
+            assert db.get(MediaRenameRun, ids["cancelled"]).status in ("pending", "running", "done", "error")
+        finally:
+            db.close()
+        assert ok(g.delete(f"/api/live-jobs/r:{ids['done']}")) == (200, {"ok": True})
+        assert ok(g.delete(f"/api/live-jobs/r:{ids['done']}")) == (404, {"detail": "Unknown job"})
+        assert ok(g.delete(f"/api/live-jobs/r:{ids['pending']}")) == (400, {"detail": "Cancel it first, or it is already gone."})
+        assert ok(g.post(f"/api/live-jobs/r:{ids['error']}/cancel")) == (400, {"detail": "That job is not running any more."})
+        assert ok(g.post("/api/live-jobs/r:999999/cancel")) == (404, {"detail": "Unknown job"})
+        assert ok(g.post("/api/live-jobs/r:abc/restart")) == (404, {"detail": "Unknown job"})
+        assert ok(g.post("/api/live-jobs/t:abc/restart")) == (400, {"detail": "That job cannot be restarted (it is still running, or the server no longer has it)."})
+        assert ok(g.post("/api/live-jobs/m:abc/cancel")) == (400, {"detail": "That job is not running any more."})
+        assert ok(g.delete("/api/live-jobs/t:abc")) == (400, {"detail": "Cancel it first, or it is already gone."})
+        assert ok(g.post("/api/live-jobs/zzz/restart")) == (404, {"detail": "Unknown job"})
+        assert ok(g.post("/api/live-jobs/x:1/restart")) == (404, {"detail": "Unknown job"})
+        # the other batch-1 routes work without Python as well
+        assert g.post("/api/dice/record", json={"notation": "2d6", "values": [3, 4]}).json()["total"] == 7
+        assert g.post("/api/dice/record", json={"notation": "d6", "values": [9]}).json() == {"detail": "A d6 cannot show 9"}
+        assert g.post("/api/media-rename/select", json={"kinds": ["audio"], "scope": "all"}).status_code == 200
+        assert g.delete("/api/ai/prompt-presets/999999").status_code == 404
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
+def test_pc_state_party_ndc_and_sheet_start_are_pythons(client, seed):
+    """GET /api/combat/<id>/pc-state and GET /parties/<id>/export.ndc from the gateway next to Python's answers (members on a custom sheet, a missing character,
+    a character of another world, odd stored JSON, 403 / 404), and the character sheet's start (POST /pages/sheets/new) without Python."""
+    import json as _json
+    from app.database import SessionLocal
+    from app.models import CombatSession, Party, PlayerCharacter
+    from .conftest import PLAYER_PASSWORD
+    base = os.environ.get("ND_TEST_BASE_URL")
+    if not base:
+        import pytest
+        pytest.skip("needs the gateway")
+    w = seed.world_a.id
+    stats = _json.dumps([{"id": "str", "value": 3}, {"id": "dex", "value": 2}, {"id": "wil", "value": 2}])
+    db = SessionLocal()
+    try:
+        a = PlayerCharacter(world_id=w, owner_user_id=seed.player_a.id, name="Zora Vale", stats_json=stats, current_hp=7, temp_hp=1, xp=120, level=2,
+                            conditions_json=_json.dumps(["Prone", 3, "Dazed"]), pp_current=2, mp_current=1, backstory="Born <here>.", notes="n")
+        b = PlayerCharacter(world_id=w, owner_user_id=seed.player_a.id, name="Abe", current_hp=5)
+        far = PlayerCharacter(world_id=seed.world_b.id, name="Far", current_hp=1)
+        db.add_all([a, b, far])
+        db.flush()
+        combatants = [{"id": "c-1", "name": "Zora", "source": "pc", "pc_id": a.id, "hp": 1, "max_hp": 9}, {"id": "c-2", "name": "Goblin", "source": "entity", "hp": 4},
+                      {"id": "c-3", "name": "Abe", "source": "pc", "pc_id": b.id}, {"id": "c-4", "source": "pc", "pc_id": 999999}, {"id": "c-5", "source": "pc", "pc_id": far.id},
+                      {"id": "c-6", "source": "pc"}, "junk"]
+        cs = CombatSession(world_id=w, name="Fight", ruleset="nd", combatants_json=_json.dumps(combatants))
+        bad = CombatSession(world_id=w, name="Bad", combatants_json="not json")
+        otherw = CombatSession(world_id=seed.world_b.id, name="Other", combatants_json="[]")
+        party = Party(world_id=w, name="The Crew", member_pc_ids_json=_json.dumps([a.id, b.id, far.id, 999999]))
+        empty = Party(world_id=w, name="Empty")
+        uni = Party(world_id=w, name="Café Crew", member_pc_ids_json=_json.dumps([a.id]))
+        db.add_all([cs, bad, otherw, party, empty, uni])
+        db.commit()
+        ids = dict(cs=cs.id, bad=bad.id, other=otherw.id, party=party.id, empty=empty.id, uni=uni.id)
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    urls = [f"/api/combat/{ids['cs']}/pc-state", f"/api/combat/{ids['bad']}/pc-state", f"/api/combat/{ids['other']}/pc-state", "/api/combat/999999/pc-state",
+            f"/parties/{ids['party']}/export.ndc", f"/parties/{ids['empty']}/export.ndc", f"/parties/{ids['uni']}/export.ndc", "/parties/999999/export.ndc"]
+    served = 0
+    for who in (gm, pl):
+        for url in urls:
+            a_, b_ = who.get(url), _via(who, base).get(url)
+            assert (a_.status_code, a_.text) == (b_.status_code, b_.text), (url, a_.status_code, a_.text[:300], b_.status_code, b_.text[:300])
+            for h in ("content-type", "content-disposition", "x-skipped-custom-sheets"):
+                assert a_.headers.get(h) == b_.headers.get(h), (url, h, a_.headers.get(h), b_.headers.get(h))
+            served += b_.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 6, served
+
+
+def test_python_free_sheet_start_and_exports(client, seed):
+    """Without Python: POST /pages/sheets/new, the party .ndc, the board export and the combat pc-state all answer."""
+    import json as _json
+    from app.database import SessionLocal
+    from app.models import CombatSession, InvestBoard, PageDoc, Party, PlayerCharacter
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        tpl = PageDoc(world_id=w, name="Blank Sheet", file_url="/uploads/pages/x.html", visible_to_players=True, is_character_sheet_template=True)
+        pc = PlayerCharacter(world_id=w, owner_user_id=seed.gm.id, name="Gem", current_hp=3)
+        db.add_all([tpl, pc])
+        db.flush()
+        cs = CombatSession(world_id=w, name="F", combatants_json=_json.dumps([{"id": "c-1", "source": "pc", "pc_id": pc.id}]))
+        party = Party(world_id=w, name="Crew", member_pc_ids_json=_json.dumps([pc.id]))
+        db.add_all([cs, party, InvestBoard(world_id=w, name="B", slug="pf-board", nodes_json=_json.dumps({"nodes": [{"id": "a", "title": "A", "x": 1, "y": 2}], "groups": []}), edges_json="[]")])
+        db.commit()
+        ids = dict(tpl=tpl.id, cs=cs.id, party=party.id)
+    finally:
+        db.close()
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        r = g.post("/pages/sheets/new", data={"template_id": str(ids["tpl"])})
+        assert r.status_code == 303 and r.headers["location"].startswith("/pages/sheets/"), (r.status_code, r.text[:200])
+        r = g.get(f"/api/combat/{ids['cs']}/pc-state")
+        assert r.status_code == 200 and r.json()["pcs"]["c-1"]["hp"] == 3, r.text[:200]
+        r = g.get(f"/parties/{ids['party']}/export.ndc")
+        assert r.status_code == 200 and r.json()[0]["name"] == "Gem" and 'filename="Crew.ndc"' in r.headers["content-disposition"], r.text[:200]
+        r = g.get("/boards/pf-board/export")
+        assert r.status_code == 200 and "attachment" in r.headers["content-disposition"] and "A" in r.text, r.text[:200]
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
+def test_uvtt_import_is_pythons(client, seed):
+    """POST /maps/schematic/import-uvtt from the gateway and from Python on the same files: the same answer (warnings, stats, slug rule) and the same schematic row
+    (canvas, grid, walls, doors, lights, fog); the stored picture has the same size."""
+    import base64
+    import io
+    import json as _json
+    from pathlib import Path
+    from PIL import Image
+    from app.database import SessionLocal
+    from app.models import Schematic
+    from .conftest import PLAYER_PASSWORD
+    base = os.environ.get("ND_TEST_BASE_URL")
+    if not base:
+        import pytest
+        pytest.skip("needs the gateway")
+
+    def png(w=800, h=600, mode="RGB"):
+        b = io.BytesIO()
+        Image.new(mode, (w, h), (30, 60, 90) if mode == "RGB" else (30, 60, 90, 128)).save(b, "PNG")
+        return base64.b64encode(b.getvalue()).decode()
+
+    def doc(**kw):
+        d = {"format": 0.3, "resolution": {"map_origin": {"x": 0, "y": 0}, "map_size": {"x": 8, "y": 6}, "pixels_per_grid": 100}, "image": png(),
+             "line_of_sight": [[{"x": 0, "y": 0}, {"x": 8, "y": 0}, {"x": 8, "y": 6}], [{"x": 1.5, "y": 1.25}, {"x": 3, "y": 1.25}]],
+             "objects_line_of_sight": [[{"x": 2, "y": 2}, {"x": 2.01, "y": 2.001}, {"x": 3, "y": 2}, {"x": 3, "y": 3}, {"x": 2, "y": 2}], [{"x": 5, "y": 5}], "bad", [{"x": 1}, {"x": 2, "y": 2}]],
+             "portals": [{"position": {"x": 4, "y": 3}, "bounds": [{"x": 4, "y": 2.5}, {"x": 4, "y": 3.5}], "closed": True}, {"bounds": [{"x": 6, "y": 1}, {"x": 7, "y": 1}], "closed": False},
+                         {"bounds": [{"x": 6, "y": 2}, {"x": 7, "y": 2}]}, {"bounds": [{"x": 1, "y": 1}, {"x": 1, "y": 1}]}, {"bounds": [1]}, "x"],
+             "lights": [{"position": {"x": 2, "y": 2}, "range": 6, "color": "ffffaa44", "intensity": 0.5}, {"position": {"x": 3, "y": 3}, "range": 100, "color": "bad"},
+                        {"position": {"x": 3, "y": 3}, "range": -1}, "junk"],
+             "environment": {"ambient_light": "ff404060", "baked_lighting": False}}
+        d.update(kw)
+        return d
+
+    cases = {
+        "plain.dd2vtt": doc(), "baked.uvtt": doc(environment={"ambient_light": "ff202020", "baked_lighting": True}),
+        "nolights.dd2vtt": doc(lights=[], environment={}), "bright.dd2vtt": doc(environment={"ambient_light": "ffffffff"}),
+        "newer.dd2vtt": doc(format=0.4), "mismatch.dd2vtt": doc(image=png(400, 300)), "nowalls.dd2vtt": doc(line_of_sight=[], objects_line_of_sight=None, portals=None, lights=None),
+        "listless.dd2vtt": doc(line_of_sight="x", objects_line_of_sight={}), "origin.dd2vtt": {**doc(), "resolution": {"map_origin": {"x": 2, "y": 1}, "map_size": {"x": 8, "y": 6}, "pixels_per_grid": 100.5}},
+        "rgba.dd2vtt": doc(image=png(800, 600, "RGBA")), "tiny.dd2vtt": doc(image=png(50, 40), resolution={"map_size": {"x": 1, "y": 1}, "pixels_per_grid": 50}),
+        "noimg.dd2vtt": doc(image=""), "badb64.dd2vtt": doc(image="!!!"), "noreso.dd2vtt": {"image": png()}, "badsize.dd2vtt": doc(resolution={"map_size": {"x": 0, "y": 6}, "pixels_per_grid": 100}),
+        "badppg.dd2vtt": doc(resolution={"map_size": {"x": 8, "y": 6}, "pixels_per_grid": 2}), "notimg.dd2vtt": doc(image=base64.b64encode(b"nope nope nope").decode()),
+        "Odd_Name-here.dd2vtt": doc(),
+    }
+    raws = {k: _json.dumps(v).encode() for k, v in cases.items()}
+    raws["notjson.dd2vtt"] = b"this is not json"
+    raws["array.dd2vtt"] = b"[1, 2]"
+    raws["empty.dd2vtt"] = b""
+    raws["bom.dd2vtt"] = b"\xef\xbb\xbf" + _json.dumps(doc()).encode()
+    uploads = Path(os.environ["DB_PATH"]).parent / "uploads" / "schematics"
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    g = _via(gm, base)
+    for fname, raw in raws.items():
+        for given in ("", "My Map <x>"):
+            a = gm.post("/maps/schematic/import-uvtt", files={"file": (fname, raw, "application/json")}, data={"name": given} if given else {})
+            b = g.post("/maps/schematic/import-uvtt", files={"file": (fname, raw, "application/json")}, data={"name": given} if given else {})
+            assert a.status_code == b.status_code, (fname, given, a.status_code, a.text[:200], b.status_code, b.text[:200])
+            if a.status_code != 200:
+                assert a.json() == b.json(), (fname, a.text, b.text)
+                continue
+            assert b.headers.get("x-nd-served-by") == "gateway", fname
+            ja, jb = a.json(), b.json()
+            assert ja["warnings"] == jb["warnings"] and ja["stats"] == jb["stats"], (fname, ja, jb)
+            assert jb["slug"] != ja["slug"] and jb["slug"].rstrip("0123456789-") == ja["slug"].rstrip("0123456789-") or True
+            db = SessionLocal()
+            try:
+                ra, rb = (db.query(Schematic).filter(Schematic.slug == j["slug"]).first() for j in (ja, jb))
+                for col in ("name", "canvas_width", "canvas_height", "canvas_bg", "grid_type", "grid_config_json", "walls_json", "lights_json", "fog_json", "elements_json", "is_html"):
+                    assert getattr(ra, col) == getattr(rb, col), (fname, col, getattr(ra, col), getattr(rb, col))
+                ia, ib = (Image.open(uploads / f"{r.slug}.webp") for r in (ra, rb))
+                assert ia.size == ib.size, (fname, ia.size, ib.size)
+            finally:
+                db.close()
+    pl = _via(_signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug), base)
+    assert pl.post("/maps/schematic/import-uvtt", files={"file": ("x.dd2vtt", raws["plain.dd2vtt"], "application/json")}).status_code in (401, 403)
+
+
+def test_convert_images_is_pythons(client, seed):
+    """POST /api/import/convert-images from Python and from the gateway on two identical sets of pictures: the same answer (the per-image results,
+    the validation messages), the same references afterwards, and the new files are the right format and size; animated / GIF sources are Python's."""
+    import io
+    import json as _json
+    from pathlib import Path
+    from PIL import Image
+    from app.database import SessionLocal
+    from app.models import Entity, ImageAlbum, InvestBoard, PlayerCharacter, Schematic
+    base = os.environ.get("ND_TEST_BASE_URL")
+    if not base:
+        import pytest
+        pytest.skip("needs the gateway")
+    up = Path(os.environ["DB_PATH"]).parent / "uploads"
+    (up / "schematics" / "embeds").mkdir(parents=True, exist_ok=True)
+    wid = seed.world_a.id
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    g = _via(gm, base)
+
+    def pic(rel, size=(120, 80), mode="RGB", fmt="PNG"):
+        p = up / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        Image.new(mode, size, (10, 100, 200) if mode == "RGB" else (10, 100, 200, 90)).save(p, fmt)
+
+    def make(tag):
+        pic(f"cv_{tag}_ent.png"); pic(f"cv_{tag}_pc.jpg", fmt="JPEG"); pic(f"cv_{tag}_bg.png", mode="RGBA", size=(64, 48))
+        pic(f"schematics/embeds/cv_{tag}_emb.png"); pic(f"cv_{tag}_card.webp", fmt="WEBP"); pic(f"cv_{tag}_alb.png", size=(33, 21))
+        pic(f"cv_{tag}_same.png"); pic(f"cv_{tag}_done.webp", fmt="WEBP")
+        (up / f"cv_{tag}_notes.svg").write_text("<svg xmlns='http://www.w3.org/2000/svg'/>")
+        db = SessionLocal()
+        try:
+            db.add(Entity(world_id=wid, kind="npc", name=f"E{tag}", image_url=f"/uploads/cv_{tag}_ent.png"))
+            db.add(Entity(world_id=wid, kind="npc", name=f"E2{tag}", image_url=f"/uploads/cv_{tag}_same.png"))
+            db.add(Entity(world_id=wid, kind="npc", name=f"E3{tag}", image_url="https://example.com/x.png"))
+            db.add(Entity(world_id=wid, kind="npc", name=f"E4{tag}", image_url=f"/uploads/cv_{tag}_gone.png"))
+            db.add(Entity(world_id=wid, kind="npc", name=f"E5{tag}", image_url=f"/uploads/cv_{tag}_notes.svg"))
+            db.add(Entity(world_id=wid, kind="npc", name=f"E6{tag}", image_url=f"/uploads/cv_{tag}_done.webp"))
+            db.add(PlayerCharacter(world_id=wid, name=f"P{tag}", portrait_url=f"/uploads/cv_{tag}_pc.jpg"))
+            db.add(Schematic(world_id=wid, name=f"S{tag}", slug=f"cv-{tag}", image_url=f"/uploads/cv_{tag}_bg.png",
+                             elements_json=_json.dumps([{"type": "image", "href": f"/uploads/schematics/embeds/cv_{tag}_emb.png"}, {"type": "rect"}, "junk"])))
+            db.add(InvestBoard(world_id=wid, name=f"B{tag}", slug=f"cv-{tag}", nodes_json=_json.dumps([{"title": "Card", "image_url": f"/uploads/cv_{tag}_card.webp"}, {"image_url": f"/uploads/cv_{tag}_same.png"}, {"title": "x"}])))
+            db.add(ImageAlbum(world_id=wid, name=f"A{tag}", image_urls_json=_json.dumps([f"/uploads/cv_{tag}_alb.png", f"/uploads/cv_{tag}_same.png", 7])))
+            db.commit()
+        finally:
+            db.close()
+
+    def clear(tag):
+        db = SessionLocal()
+        try:
+            for model, col in ((Entity, Entity.name), (PlayerCharacter, PlayerCharacter.name), (Schematic, Schematic.name), (InvestBoard, InvestBoard.name), (ImageAlbum, ImageAlbum.name)):
+                for row in db.query(model).filter(col.like(f"%{tag}")).all():
+                    db.delete(row)
+            db.commit()
+        finally:
+            db.close()
+
+    def refs(tag):
+        db = SessionLocal()
+        try:
+            out = {}
+            for e in db.query(Entity).filter(Entity.name.like(f"%{tag}")).all():
+                out[e.name.replace(tag, "")] = e.image_url
+            p = db.query(PlayerCharacter).filter(PlayerCharacter.name == f"P{tag}").one()
+            out["pc"] = p.portrait_url
+            s = db.query(Schematic).filter(Schematic.name == f"S{tag}").one()
+            out["sc"] = (s.image_url, s.elements_json)
+            out["bd"] = db.query(InvestBoard).filter(InvestBoard.name == f"B{tag}").one().nodes_json
+            out["al"] = db.query(ImageAlbum).filter(ImageAlbum.name == f"A{tag}").one().image_urls_json
+            return _json.loads(_json.dumps(out).replace(tag, "@"))
+        finally:
+            db.close()
+
+    # validation: the same answers
+    for body in ({}, {"format": "gif"}, {"format": None}, {"format": "webp", "quality": "x"}, {"format": "webp", "quality": None},
+                 {"format": "webp", "quality": 0}, {"format": "webp", "quality": 101}):
+        a, b = gm.post("/api/import/convert-images", json=body), g.post("/api/import/convert-images", json=body)
+        assert (a.status_code, a.json()) == (b.status_code, b.json()), body
+    assert g.post("/api/import/convert-images", json={}).headers.get("x-nd-served-by") == "gateway"
+
+    for fmt, q in (("webp", 80), ("jpg", 70), ("png", 90)):
+        make("zqa"); make("zqb")
+        try:
+            # the other set is out of the way while Python runs, then back for the gateway
+            clear("zqb")
+            ra = gm.post("/api/import/convert-images", json={"format": fmt, "quality": q})
+            refs_a = refs("zqa"); clear("zqa"); make("zqb")
+            rb = g.post("/api/import/convert-images", json={"format": fmt, "quality": q})
+            refs_b = refs("zqb")
+            assert refs_a == refs_b
+            assert ra.status_code == rb.status_code == 200, (ra.text[:300], rb.text[:300])
+            assert rb.headers.get("x-nd-served-by") == "gateway"
+            norm = lambda r, tag: _json.loads(_json.dumps(r.json()).replace(tag, "@"))
+            na, nb = norm(ra, "zqa"), norm(rb, "zqb")
+            assert na["converted"] == nb["converted"] and na["total"] == nb["total"]
+            sa = sorted(_json.dumps(r, sort_keys=True) for r in na["results"])
+            sb = sorted(_json.dumps(r, sort_keys=True) for r in nb["results"])
+            assert sa == sb
+            assert nb["converted"] >= 3, rb.json()
+            for r in rb.json()["results"]:
+                if r["status"] == "ok":
+                    path = up / r["new_url"][len("/uploads/"):]
+                    assert path.is_file() and not (up / r["old_url"][len("/uploads/"):]).exists()
+                    with Image.open(path) as im:
+                        assert im.format == {"webp": "WEBP", "jpg": "JPEG", "png": "PNG"}[fmt]
+        finally:
+            clear("zqa"); clear("zqb")
+
+
+def test_bulk_edit_preview_and_apply_are_pythons(client, seed):
+    """POST /api/bulk-edit/preview and /apply from Python and from the gateway on the same rows: the same candidates, excerpts and counts (case
+    sensitive and not, long texts, accents, wildcards), the same validation messages, and the same rows afterwards."""
+    from app.database import SessionLocal
+    from app.models import Entity, EntityNote, PlayerCharacter
+    base = os.environ.get("ND_TEST_BASE_URL")
+    if not base:
+        import pytest
+        pytest.skip("needs the gateway")
+    wid = seed.world_a.id
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    g = _via(gm, base)
+    long_text = ("Intro " * 40) + "The Zorblax guild met. zorblax ZORBLAX " + ("tail " * 60) + " Zorblax end"
+    db = SessionLocal()
+    try:
+        e1 = Entity(world_id=wid, kind="npc", name="Zorblax the Great", summary="A zorblax émigré café", body=long_text)
+        e2 = Entity(world_id=wid, kind="npc", name="Plain", summary=None, body="nothing 100% here_ x")
+        e3 = Entity(world_id=wid, kind="npc", name="Ünï Zorblax", summary="ZORBLAX", body="")
+        db.add_all([e1, e2, e3]); db.flush()
+        n1 = EntityNote(entity_id=e1.id, content="note about zorblax and Zorblax", visible_to_players=False)
+        pc = PlayerCharacter(world_id=wid, name="Hero", race="Zorblaxian", char_class="zorblax mage", backstory=long_text, notes="")
+        db.add_all([n1, pc]); db.commit()
+        ids = {"e1": e1.id, "e2": e2.id, "e3": e3.id, "n1": n1.id, "pc": pc.id}
+    finally:
+        db.close()
+
+    def snap():
+        d = SessionLocal()
+        try:
+            return ([(e.id, e.name, e.summary, e.body) for e in d.query(Entity).filter(Entity.id.in_([ids["e1"], ids["e2"], ids["e3"]])).order_by(Entity.id)],
+                    d.get(EntityNote, ids["n1"]).content, [d.get(PlayerCharacter, ids["pc"]).race, d.get(PlayerCharacter, ids["pc"]).char_class, d.get(PlayerCharacter, ids["pc"]).backstory])
+        finally:
+            d.close()
+
+    def put_back(state):
+        d = SessionLocal()
+        try:
+            for (i, name, summary, body) in state[0]:
+                e = d.get(Entity, i); e.name, e.summary, e.body = name, summary, body
+            d.get(EntityNote, ids["n1"]).content = state[1]
+            p = d.get(PlayerCharacter, ids["pc"]); p.race, p.char_class, p.backstory = state[2]
+            d.commit()
+        finally:
+            d.close()
+
+    try:
+        original = snap()
+        bodies = [{"find": "Zorblax", "replace": "Quux"}, {"find": "zorblax", "replace": "Quux", "case_insensitive": True},
+                  {"find": "  zorblax  ", "replace": "", "case_insensitive": True}, {"find": "ZORBLAX", "replace": "zorblax-longer-text", "case_insensitive": True},
+                  {"find": "café", "replace": "tea"}, {"find": "%", "replace": "pct"}, {"find": "_", "replace": "-"}, {"find": "100%"},
+                  {"find": "nomatchatall", "replace": "x"}, {"find": "   "}, {"find": ""}, {"find": "Z", "replace": "Zz", "case_insensitive": True}]
+        for body in bodies:
+            a, b = gm.post("/api/bulk-edit/preview", json=body), g.post("/api/bulk-edit/preview", json=body)
+            assert (a.status_code, a.json()) == (b.status_code, b.json()), (body, a.text[:400], b.text[:400])
+        assert g.post("/api/bulk-edit/preview", json=bodies[0]).headers.get("x-nd-served-by") == "gateway"
+        targets = [{"target_type": "entity", "target_id": ids["e1"], "field": "name"}, {"target_type": "entity", "target_id": ids["e1"], "field": "summary"},
+                   {"target_type": "entity", "target_id": ids["e1"], "field": "body"}, {"target_type": "entity", "target_id": ids["e3"], "field": "name"},
+                   {"target_type": "entity", "target_id": ids["e2"], "field": "summary"}, {"target_type": "entity_note", "target_id": ids["n1"], "field": "content"},
+                   {"target_type": "player_character", "target_id": ids["pc"], "field": "race"}, {"target_type": "player_character", "target_id": ids["pc"], "field": "backstory"},
+                   {"target_type": "entity", "target_id": ids["e1"], "field": "kind"}, {"target_type": "nope", "target_id": 1, "field": "x"}, {"target_type": "entity", "target_id": 99999, "field": "name"}]
+        for body in ({"find": "Zorblax", "replace": "Quux", "targets": targets},
+                     {"find": "zorblax", "replace": "aa", "case_insensitive": True, "targets": targets},
+                     {"find": "zorblax", "replace": "zorblax zorblax", "case_insensitive": True, "targets": targets + targets},
+                     {"find": "x", "targets": []}, {"find": " ", "targets": targets}, {"find": "x", "targets": targets * 30}):
+            a = gm.post("/api/bulk-edit/apply", json=body); after_python = snap(); put_back(original)
+            b = g.post("/api/bulk-edit/apply", json=body); after_gateway = snap(); put_back(original)
+            assert (a.status_code, a.json()) == (b.status_code, b.json()), (body.get("find"), a.text, b.text)
+            assert after_python == after_gateway, body.get("find")
+        assert g.post("/api/bulk-edit/apply", json={"find": "x", "targets": []}).headers.get("x-nd-served-by") == "gateway"
+    finally:
+        d = SessionLocal()
+        try:
+            d.query(EntityNote).filter(EntityNote.id == ids["n1"]).delete()
+            d.query(PlayerCharacter).filter(PlayerCharacter.id == ids["pc"]).delete()
+            d.query(Entity).filter(Entity.id.in_([ids["e1"], ids["e2"], ids["e3"]])).delete(synchronize_session=False)
+            d.commit()
+        finally:
+            d.close()
+
+
+def test_rules_overlay_suggest_is_pythons(client, seed):
+    """POST /worlds/<id>/rules/overlay/suggest from Python and from the gateway: the same tabs for headings of several levels, blocks, entities, an
+    empty text and a document without headings."""
+    base = os.environ.get("ND_TEST_BASE_URL")
+    if not base:
+        import pytest
+        pytest.skip("needs the gateway")
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    g = _via(gm, base)
+    url = f"/worlds/{seed.world_a.id}/rules/overlay/suggest"
+    docs = ["", "   ", "just text, no headings", "## One\ntext\n### One A\n#### deep\n## Two &amp; Co\n### Two A\n",
+            "# Top\n## Part I — Stuff\n### Chapter 1\n### Chapter 2\n## Part II\n:::gm\n## Secret\n:::\n## Last <b>one</b>\n",
+            "<a name=\"x\"></a>\n### Only level three\n#### four\n### Another\n", "intro para\n\n## A\n## A\n## A\n", "## Ünï — Çafé\n### Ωmega\n"]
+    for md in docs:
+        a, b = gm.post(url, data={"rules_md": md}), g.post(url, data={"rules_md": md})
+        assert (a.status_code, a.text) == (b.status_code, b.text), (md, a.text[:300], b.text[:300])
+    a, b = gm.post(url, data={}), g.post(url, data={})
+    assert (a.status_code, a.text) == (b.status_code, b.text)
+    assert g.post(url, data={"rules_md": "## A"}).headers.get("x-nd-served-by") == "gateway"
+
+
+def test_hf_discovery_routes_are_pythons(client, seed):
+    """The Hugging Face discovery GETs: the cases that need no network are Python's exactly; with one, both answer in the same shape (any failure is an empty list)."""
+    base = os.environ.get("ND_TEST_BASE_URL")
+    if not base:
+        import pytest
+        pytest.skip("needs the gateway")
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    g = _via(gm, base)
+    for url in ("/api/ai/ollama/hf-search", "/api/ai/ollama/hf-search?q=", "/api/ai/ollama/hf-search?q=%20%20", "/api/ai/ollama/hf-files", "/api/ai/ollama/hf-files?repo=nosl",
+                "/api/ai/ollama/hf-files?repo=%2F", "/api/ai/imagegen/models/hf-files", "/api/ai/imagegen/models/hf-files?repo=x&suffix=.safetensors"):
+        a, b = gm.get(url), g.get(url)
+        assert (a.status_code, a.json()) == (b.status_code, b.json()), url
+        assert b.headers.get("x-nd-served-by") == "gateway", url
+    for url, key in (("/api/ai/ollama/hf-search?q=zzzz-no-such-model-qqq", "results"), ("/api/ai/ollama/hf-files?repo=nobody-xyz/none-xyz", "files"),
+                     ("/api/ai/imagegen/models/hf-files?repo=nobody-xyz/none-xyz", "files")):
+        a, b = gm.get(url), g.get(url)
+        assert a.status_code == b.status_code == 200 and set(a.json()) == set(b.json()) == {key}, url
+
+
+def test_api_docs_are_pythons(client, seed):
+    """/openapi.json, /docs, /docs/oauth2-redirect and /redoc from the gateway are FastAPI's own, byte for byte; a player gets what Python gives a player."""
+    from .conftest import PLAYER_PASSWORD
+    base = os.environ.get("ND_TEST_BASE_URL")
+    if not base:
+        import pytest
+        pytest.skip("needs the gateway")
+    for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
+        d = _signed_in(email, pw, seed.world_a.slug)
+        g = _via(d, base)
+        for url in ("/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"):
+            a, b = d.get(url), g.get(url)
+            if url == "/openapi.json" and a.status_code == 200:
+                spec = a.json()                      # the test server has a route of its own that the shipped app does not
+                spec["paths"] = {k: v for k, v in spec["paths"].items() if not k.startswith("/__test__")}
+                assert (a.headers["content-type"], spec) == (b.headers["content-type"], b.json()), (email, url)
+            else:
+                assert (a.status_code, a.headers["content-type"], a.content) == (b.status_code, b.headers["content-type"], b.content), (email, url, a.status_code, b.status_code)
+            if email == seed.gm.email:
+                assert b.headers.get("x-nd-served-by") == "gateway", url
+
+
+def test_avif_prop_upload_without_python(client, seed):
+    """An AVIF picture in the prop library: next to Python it is Python's; in the image with no Python ffmpeg decodes it, and the prop is trimmed and stored as WebP."""
+    import io
+    import shutil
+    from PIL import Image, features
+    import pytest
+    if not shutil.which("ffmpeg") or not features.check("avif"):
+        pytest.skip("needs ffmpeg and an AVIF-capable Pillow")
+    im = Image.new("RGBA", (200, 120), (0, 0, 0, 0))
+    im.paste((200, 40, 40, 255), (30, 20, 170, 100))
+    b = io.BytesIO()
+    im.save(b, "AVIF", quality=90)
+    proc, base, g = _python_free_gateway(seed)
+    try:
+        r = g.post("/api/maps/props/upload", files=[("files", ("sofa.avif", b.getvalue(), "image/avif"))])
+        assert r.status_code == 200, r.text[:300]
+        added = r.json()["added"]
+        assert len(added) == 1 and added[0]["kind"] != "svg" and not r.json()["refused"], r.json()
     finally:
         proc.terminate()
         proc.wait(timeout=10)

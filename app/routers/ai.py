@@ -30,7 +30,7 @@ from .. import retrieval as _retrieval
 from ..constants import KINDS
 from ..database import get_app_settings, get_db
 from ..deps import get_world_ctx, can_edit_content, check_llm_cooldown, world_can_view_section
-from ..models import AudioJob, ChatJob, ChatSession, Entity, ImageJob, PromptPreset, User, World, entity_player_access
+from ..models import AiProject, AudioJob, ChatJob, ChatSession, Entity, ImageJob, PromptPreset, User, World, entity_player_access
 from ..rendering import strip_gm_only as _strip_gm_only
 from ..uploads import (
     copy_upload_bounded, unique_upload_filename, reassemble_upload_chunks, save_upload_chunk,
@@ -939,6 +939,11 @@ def api_world_summary_clear(request: Request, db=Depends(get_db), active_world: 
 class ChatSessionSaveBody(BaseModel):
     session_id: Optional[int] = None
     messages: List[ChatMessage]
+    # Which project the chat belongs to (the /ai sidebar's Projects section).
+    # Honored ONLY when the save creates a new row — an existing chat moves
+    # between projects through /sessions/{id}/project, so a stale client
+    # replaying an old save can never yank a chat the user already moved.
+    project_id: Optional[int] = None
 
 
 def _chat_session_title(messages: List[ChatMessage]) -> str:
@@ -960,7 +965,7 @@ def api_chat_sessions_list(request: Request, db=Depends(get_db), active_world: s
         .order_by(ChatSession.updated_at.desc())
         .all()
     )
-    return {"sessions": [{"id": s.id, "title": s.title} for s in sessions]}
+    return {"sessions": [{"id": s.id, "title": s.title, "project_id": s.project_id} for s in sessions]}
 
 
 @router.post("/sessions")
@@ -986,6 +991,7 @@ def api_chat_sessions_save(
         session = ChatSession(
             world_id=world.id, user_id=user.id if user else None,
             surface="chat", title=_chat_session_title(body.messages),
+            project_id=_chat_project_id(db, world, body.project_id),
         )
         db.add(session)
     session.messages_json = _json.dumps([m.model_dump() for m in body.messages])
@@ -1006,7 +1012,129 @@ def api_chat_session_get(session_id: int, request: Request, db=Depends(get_db), 
     ).first()
     if not session:
         raise HTTPException(404)
-    return {"id": session.id, "messages": _json.loads(session.messages_json or "[]")}
+    return {"id": session.id, "project_id": session.project_id,
+            "messages": _json.loads(session.messages_json or "[]")}
+
+
+# ── Projects (the /ai sidebar's Projects section — named groups of chats ────
+# with free-form notes that ride into every chat's system prompt client-side,
+# the way chat-preset system extras already do). Deleting a project only
+# ungroups its chats; the chats themselves are never touched here.
+
+_PROJECT_NAME_MAX = 128   # the column's limit
+_PROJECT_NOTES_MAX = 16000  # generous room; it rides in every system prompt
+
+
+def _chat_project_id(db: Session, world: World, project_id: Optional[int]) -> Optional[int]:
+    """Validates a client-supplied project id for THIS world — a foreign
+    world's (or nonexistent) project id silently ungroups rather than 400s,
+    because a save must never fail over a sidebar stale by one click."""
+    if not project_id:
+        return None
+    row = db.query(AiProject).filter(AiProject.id == project_id, AiProject.world_id == world.id).first()
+    return row.id if row else None
+
+
+class ChatProjectBody(BaseModel):
+    name: str = ""
+    notes: str = ""
+
+
+@router.get("/projects")
+def api_chat_projects_list(request: Request, db=Depends(get_db), active_world: str = Cookie(None)):
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    projects = (
+        db.query(AiProject)
+        .filter(AiProject.world_id == world.id)
+        .order_by(AiProject.created_at.desc(), AiProject.id.desc())
+        .all()
+    )
+    chats = (
+        db.query(ChatSession)
+        .filter(ChatSession.world_id == world.id, ChatSession.surface == "chat",
+                ChatSession.project_id.isnot(None))
+        .order_by(ChatSession.updated_at.desc())
+        .all()
+    )
+    by_project: dict = {}
+    for c in chats:
+        by_project.setdefault(c.project_id, []).append({"id": c.id, "title": c.title})
+    return {"projects": [
+        {"id": p.id, "name": p.name, "notes": p.notes or "",
+         "chats": by_project.get(p.id, [])}
+        for p in projects
+    ]}
+
+
+@router.post("/projects")
+def api_chat_project_create(body: ChatProjectBody, request: Request, db=Depends(get_db), active_world: str = Cookie(None)):
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    name = (body.name or "").strip()[:_PROJECT_NAME_MAX] or "New project"
+    project = AiProject(world_id=world.id, name=name, notes=(body.notes or "")[:_PROJECT_NOTES_MAX])
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+    return {"id": project.id, "name": project.name}
+
+
+@router.post("/projects/{project_id}")
+def api_chat_project_edit(project_id: int, body: ChatProjectBody, request: Request, db=Depends(get_db), active_world: str = Cookie(None)):
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    project = db.query(AiProject).filter(AiProject.id == project_id, AiProject.world_id == world.id).first()
+    if not project:
+        raise HTTPException(404)
+    project.name = (body.name or "").strip()[:_PROJECT_NAME_MAX] or project.name or "New project"
+    project.notes = (body.notes or "")[:_PROJECT_NOTES_MAX]
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/projects/{project_id}")
+def api_chat_project_delete(project_id: int, request: Request, db=Depends(get_db), active_world: str = Cookie(None)):
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    project = db.query(AiProject).filter(AiProject.id == project_id, AiProject.world_id == world.id).first()
+    if not project:
+        raise HTTPException(404)
+    # Ungroup, never delete: a project is an arrangement, the chats are content.
+    db.query(ChatSession).filter(
+        ChatSession.project_id == project_id, ChatSession.world_id == world.id,
+    ).update({ChatSession.project_id: None}, synchronize_session=False)
+    db.delete(project)
+    db.commit()
+    return {"ok": True}
+
+
+class ChatProjectMoveBody(BaseModel):
+    project_id: Optional[int] = None
+
+
+@router.post("/sessions/{session_id}/project")
+def api_chat_session_move(session_id: int, body: ChatProjectMoveBody, request: Request, db=Depends(get_db), active_world: str = Cookie(None)):
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    session = db.query(ChatSession).filter(
+        ChatSession.id == session_id, ChatSession.world_id == world.id,
+        ChatSession.surface == "chat",  # never move another surface's rows by id
+    ).first()
+    if not session:
+        raise HTTPException(404)
+    session.project_id = _chat_project_id(db, world, body.project_id)
+    db.commit()
+    return {"ok": True, "project_id": session.project_id}
 
 
 @router.delete("/sessions/{session_id}")

@@ -1993,25 +1993,30 @@ pub fn schematic_masked_background(_pages: &Pages, cfg: &Config, uri: &Uri, head
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
     let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
     let w = p.world.as_ref()?;
-    let sc = db.query_row("SELECT * FROM schematics WHERE slug = ?1 LIMIT 1", [slug], |r| crate::layout::row_map(r)).ok()?;
+    let Ok(sc) = db.query_row("SELECT * FROM schematics WHERE slug = ?1 LIMIT 1", [slug], |r| crate::layout::row_map(r)) else { return Some(crate::idpages::refusal(404)) };
     let truthy = |v: Option<&Value>| v.is_some_and(|v| !matches!(v, Value::Null | Value::Bool(false)) && v != &json!(0) && v != &json!(""));
-    let image_url = sc.get("image_url").and_then(|v| v.as_str()).filter(|u| !u.is_empty())?.to_string();
-    if (truthy(sc.get("is_html")) && truthy(sc.get("html_file"))) || sc.get("world_id")?.as_i64() != w.get("id")?.as_i64() {
-        return None;
+    // Python's 404s: no such map, an HTML map, a map without a picture, another world's map, no right to see maps (all before anything is computed)
+    let image_url = sc.get("image_url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if (truthy(sc.get("is_html")) && truthy(sc.get("html_file"))) || image_url.is_empty() || sc.get("world_id")?.as_i64() != w.get("id")?.as_i64() {
+        return Some(crate::idpages::refusal(404));
     }
     if !p.is_gm {
         let level = nd_perm::sections::section_level(false, p.role.as_deref(), w.get("section_access_json").and_then(|v| v.as_str()), w.get("custom_kinds_json").and_then(|v| v.as_str()), "maps")?;
         if level == "none" {
-            return None;
+            return Some(crate::idpages::refusal(404));
         }
     }
-    let view = crate::edits::strict_view(&db, &sc)??;
+    // a map without strict secrecy has no masked copy: Python's 404 (the players' view then names the original picture)
+    let Some(view) = crate::edits::strict_view(&db, &sc)? else { return Some(crate::idpages::refusal(404)) };
     // the file under uploads/ (a path that leaves it, or no such file: Python's 404)
     let rel = image_url.split_once("/uploads/").map_or(image_url.as_str(), |(_, r)| r);
     if rel.split('/').any(|seg| seg == ".." || seg.is_empty()) {
-        return None;
+        return Some(crate::idpages::refusal(404));
     }
     let src = cfg.db_path.parent()?.join("uploads").join(rel);
+    if !src.is_file() {
+        return Some(crate::idpages::refusal(404));
+    }
     let img = crate::imaging::readable_or_frame(&src)?.to_rgb8();
     let dim = |k: &str, d: f64| sc.get(k).and_then(|v| v.as_i64()).filter(|v| *v != 0).map_or(d, |v| v as f64);
     let (cw, ch) = (dim("canvas_width", 2000.0), dim("canvas_height", 1500.0));

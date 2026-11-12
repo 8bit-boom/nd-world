@@ -21,3 +21,4 @@ rust/target
 rust/target/
 .zcode/
 scripts/.gs_lf.sh
+.nd-test-creds

@@ -29399,6 +29399,21 @@
     "default": true
    }
   },
+  "ai_projects": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "name": {
+    "default": ""
+   },
+   "notes": {
+    "default": ""
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   }
+  },
   "api_tokens": {
    "created_at": {
     "default": "__utcnow__"
@@ -47192,6 +47207,7 @@
  ],
  "schema_sql": [
   "CREATE TABLE ai_instructions (\n\tid INTEGER NOT NULL, \n\tworld_id INTEGER NOT NULL, \n\ttitle VARCHAR(256) NOT NULL, \n\tcontent TEXT NOT NULL, \n\tenabled BOOLEAN, \n\tapplies_to_players BOOLEAN, \n\tcreated_at DATETIME, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(world_id) REFERENCES worlds (id)\n);",
+  "CREATE TABLE ai_projects (\n\tid INTEGER NOT NULL, \n\tworld_id INTEGER NOT NULL, \n\tname VARCHAR(128), \n\tnotes TEXT, \n\tcreated_at DATETIME, \n\tupdated_at DATETIME, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(world_id) REFERENCES worlds (id)\n);",
   "CREATE TABLE api_tokens (\n\tid INTEGER NOT NULL, \n\tuser_id INTEGER NOT NULL, \n\ttoken_hash VARCHAR(64) NOT NULL, \n\tlabel VARCHAR(256), \n\tlast_used_at DATETIME, \n\tcreated_at DATETIME, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(user_id) REFERENCES users (id)\n);",
   "CREATE TABLE app_settings (\n\tid INTEGER NOT NULL, \n\tstatic_format VARCHAR(16), \n\tanimated_format VARCHAR(16), \n\tpreview_format VARCHAR(16), \n\tres_image_workers INTEGER, \n\tres_render_slots INTEGER, \n\tres_memory_mb INTEGER, \n\tollama_model VARCHAR(256), \n\tollama_url VARCHAR(512), \n\tllm_url VARCHAR(512), \n\tllm_model VARCHAR(256), \n\tllm_api_key VARCHAR(256), \n\tllm_context_tokens INTEGER, \n\tcharacter_import_max_chars INTEGER, \n\tsession_media_max INTEGER, \n\tswarmui_external_url VARCHAR(512), \n\tandroid_emulator_url VARCHAR(512), \n\teditor_external_url VARCHAR(512), \n\tollama_temperature FLOAT, \n\tollama_top_p FLOAT, \n\tollama_top_k INTEGER, \n\tollama_repeat_penalty FLOAT, \n\tollama_num_predict INTEGER, \n\tollama_num_ctx INTEGER, \n\tollama_seed INTEGER, \n\tollama_mirostat INTEGER, \n\tollama_mirostat_tau FLOAT, \n\tollama_mirostat_eta FLOAT, \n\tollama_keep_alive VARCHAR(32), \n\tollama_num_gpu INTEGER, \n\tollama_min_p FLOAT, \n\tollama_typical_p FLOAT, \n\tollama_repeat_last_n INTEGER, \n\tollama_presence_penalty FLOAT, \n\tollama_frequency_penalty FLOAT, \n\tollama_num_keep INTEGER, \n\tollama_num_batch INTEGER, \n\tollama_num_thread INTEGER, \n\tollama_main_gpu INTEGER, \n\tollama_use_mmap VARCHAR(8), \n\tollama_server_env_json TEXT, \n\tollama_vram_override_mb INTEGER, \n\tollama_gpu_preset VARCHAR(32), \n\tollama_model_overrides_json TEXT, \n\tmax_upload_mb INTEGER, \n\tmax_gallery_upload_mb INTEGER, \n\tmax_video_mb INTEGER, \n\tmax_audio_mb INTEGER, \n\tmax_ai_attachment_mb INTEGER, \n\thover_preview_enabled BOOLEAN, \n\thover_preview_delay_ms INTEGER, \n\thover_preview_hide_delay_ms INTEGER, \n\thover_preview_width_px INTEGER, \n\thover_preview_max_height_px INTEGER, \n\tdreamlands_enabled BOOLEAN, \n\tking_in_yellow_enabled BOOLEAN, \n\tupdated_at DATETIME, \n\tPRIMARY KEY (id)\n);",
   "CREATE TABLE audio_albums (\n\tid INTEGER NOT NULL, \n\tworld_id INTEGER NOT NULL, \n\tname VARCHAR(120) NOT NULL, \n\tparent_id INTEGER, \n\tcreated_at DATETIME, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(world_id) REFERENCES worlds (id), \n\tFOREIGN KEY(parent_id) REFERENCES audio_albums (id)\n);",
@@ -47207,7 +47223,7 @@
   "CREATE TABLE character_shares (\n\tid INTEGER NOT NULL, \n\tworld_id INTEGER NOT NULL, \n\tcharacter_id INTEGER NOT NULL, \n\ttoken VARCHAR(64) NOT NULL, \n\trevoked BOOLEAN, \n\tcreated_at DATETIME, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(world_id) REFERENCES worlds (id), \n\tFOREIGN KEY(character_id) REFERENCES player_characters (id)\n);",
   "CREATE TABLE character_sheets (\n\tid INTEGER NOT NULL, \n\tworld_id INTEGER NOT NULL, \n\ttemplate_id INTEGER NOT NULL, \n\towner_user_id INTEGER NOT NULL, \n\tplayer_character_id INTEGER, \n\tname VARCHAR(256), \n\tdata_json TEXT, \n\tcreated_at DATETIME, \n\tupdated_at DATETIME, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(world_id) REFERENCES worlds (id), \n\tFOREIGN KEY(template_id) REFERENCES page_docs (id), \n\tFOREIGN KEY(owner_user_id) REFERENCES users (id), \n\tFOREIGN KEY(player_character_id) REFERENCES player_characters (id)\n);",
   "CREATE TABLE chat_jobs (\n\tid INTEGER NOT NULL, \n\tworld_id INTEGER NOT NULL, \n\tcreated_by_user_id INTEGER, \n\tprompt TEXT, \n\tmessages_json TEXT, \n\tsystem TEXT, \n\tmodel VARCHAR(128), \n\toptions_json TEXT, \n\tstatus VARCHAR(32), \n\terror TEXT, \n\tresult TEXT, \n\tresumed_count INTEGER, \n\tcreated_at DATETIME, \n\tupdated_at DATETIME, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(world_id) REFERENCES worlds (id), \n\tFOREIGN KEY(created_by_user_id) REFERENCES users (id)\n);",
-  "CREATE TABLE chat_sessions (\n\tid INTEGER NOT NULL, \n\tworld_id INTEGER NOT NULL, \n\tuser_id INTEGER, \n\tsurface VARCHAR(32), \n\tentity_id INTEGER, \n\ttitle VARCHAR(256), \n\tmessages_json TEXT, \n\tcreated_at DATETIME, \n\tupdated_at DATETIME, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(world_id) REFERENCES worlds (id), \n\tFOREIGN KEY(user_id) REFERENCES users (id), \n\tFOREIGN KEY(entity_id) REFERENCES entities (id)\n);",
+  "CREATE TABLE chat_sessions (\n\tid INTEGER NOT NULL, \n\tworld_id INTEGER NOT NULL, \n\tuser_id INTEGER, \n\tsurface VARCHAR(32), \n\tentity_id INTEGER, \n\ttitle VARCHAR(256), \n\tmessages_json TEXT, \n\tproject_id INTEGER, \n\tcreated_at DATETIME, \n\tupdated_at DATETIME, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(world_id) REFERENCES worlds (id), \n\tFOREIGN KEY(user_id) REFERENCES users (id), \n\tFOREIGN KEY(entity_id) REFERENCES entities (id), \n\tFOREIGN KEY(project_id) REFERENCES ai_projects (id)\n);",
   "CREATE TABLE combat_sessions (\n\tid INTEGER NOT NULL, \n\tgroup_id INTEGER, \n\tworld_id INTEGER NOT NULL, \n\tname VARCHAR(256) NOT NULL, \n\tcombatants_json TEXT, \n\tround_num INTEGER, \n\tactive_idx INTEGER, \n\trev INTEGER DEFAULT '0' NOT NULL, \n\truleset VARCHAR(24) DEFAULT '', \n\tturn_json TEXT, \n\tfinished_at DATETIME, \n\tis_template BOOLEAN DEFAULT '0', \n\tlog_json TEXT, \n\tgame_session_id INTEGER, \n\tparty_id INTEGER, \n\tcreated_at DATETIME, \n\tupdated_at DATETIME, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(world_id) REFERENCES worlds (id), \n\tFOREIGN KEY(game_session_id) REFERENCES game_sessions (id), \n\tFOREIGN KEY(party_id) REFERENCES parties (id)\n);",
   "CREATE TABLE dice_rolls (\n\tid INTEGER NOT NULL, \n\tgroup_id INTEGER, \n\tworld_id INTEGER NOT NULL, \n\tuser_id INTEGER, \n\tuser_name VARCHAR(120) NOT NULL, \n\tnotation VARCHAR(120) NOT NULL, \n\tlabel VARCHAR(80) DEFAULT '' NOT NULL, \n\tbreakdown TEXT NOT NULL, \n\ttotal INTEGER NOT NULL, \n\tcreated_at DATETIME, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(world_id) REFERENCES worlds (id), \n\tFOREIGN KEY(user_id) REFERENCES users (id)\n);",
   "CREATE TABLE entities (\n\tid INTEGER NOT NULL, \n\tworld_id INTEGER NOT NULL, \n\tkind VARCHAR(32) NOT NULL, \n\tsubtype VARCHAR(64), \n\tname VARCHAR(256) NOT NULL, \n\tfolder VARCHAR(256), \n\ttags VARCHAR(512), \n\taliases VARCHAR(512), \n\troleplay_personality TEXT, \n\timage_url VARCHAR(512), \n\tsummary VARCHAR(512), \n\tbody TEXT, \n\tvisible_to_players BOOLEAN, \n\tgroup_ids_json TEXT, \n\trag_priority BOOLEAN, \n\ttemplate_id INTEGER, \n\tcustom_fields_json TEXT, \n\tcreated_at DATETIME, \n\tupdated_at DATETIME, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(world_id) REFERENCES worlds (id), \n\tFOREIGN KEY(template_id) REFERENCES entity_templates (id)\n);",
@@ -47260,6 +47276,8 @@
   "CREATE TABLE worlds (\n\tid INTEGER NOT NULL, \n\tname VARCHAR(256) NOT NULL, \n\tslug VARCHAR(64) NOT NULL, \n\tdescription VARCHAR(512), \n\taccent VARCHAR(16), \n\tfont VARCHAR(120), \n\tfont_size INTEGER, \n\ttheme_json TEXT, \n\thero_style VARCHAR(16), \n\tplayers_see_party BOOLEAN, \n\tmax_characters_per_player INTEGER, \n\tpersonal_images_max INTEGER, \n\tpersonal_audio_max INTEGER, \n\tpersonal_video_max INTEGER, \n\tplayers_can_download_rules BOOLEAN, \n\tplayers_can_download_entities BOOLEAN, \n\tplayers_can_ask_ai BOOLEAN, \n\tplayers_can_use_ai_chat BOOLEAN, \n\tai_chat_rag_entity_limit INTEGER, \n\tai_chat_rag_notes_limit INTEGER, \n\tplayers_can_view_world_summary BOOLEAN, \n\tplayers_can_use_image_gen BOOLEAN, \n\tsection_access_json TEXT, \n\trecap_instructions TEXT, \n\trecap_content_touch DATETIME, \n\tvideo_convert_enabled BOOLEAN, \n\tvideo_convert_max_height INTEGER, \n\tvideo_convert_bitrate_kbps INTEGER, \n\trules_md TEXT, \n\trules_json TEXT, \n\tcockpit_ws_json TEXT, \n\thome_welcome_md TEXT, \n\thome_sections_json TEXT, \n\tcustom_kinds_json TEXT, \n\thome_title VARCHAR(200), \n\thome_subtitle VARCHAR(300), \n\thome_background_url VARCHAR(512), \n\thome_pinned_tiles_json TEXT, \n\thome_hidden_kinds_json TEXT, \n\tnav_menus_json TEXT, \n\tspotlight_image_url VARCHAR(512), \n\tspotlight_label VARCHAR(256), \n\tspotlight_version INTEGER, \n\tnow_playing_url VARCHAR(512), \n\tnow_playing_label VARCHAR(256), \n\tnow_playing_loop BOOLEAN, \n\tnow_playing_version INTEGER, \n\tcreated_at DATETIME, \n\tobsidian_vault_path VARCHAR(1024), \n\tlayout_preset VARCHAR(32), \n\tPRIMARY KEY (id), \n\tUNIQUE (slug)\n);",
   "CREATE INDEX ix_ai_instructions_id ON ai_instructions (id);",
   "CREATE INDEX ix_ai_instructions_world_id ON ai_instructions (world_id);",
+  "CREATE INDEX ix_ai_projects_id ON ai_projects (id);",
+  "CREATE INDEX ix_ai_projects_world_id ON ai_projects (world_id);",
   "CREATE INDEX ix_api_tokens_id ON api_tokens (id);",
   "CREATE UNIQUE INDEX ix_api_tokens_token_hash ON api_tokens (token_hash);",
   "CREATE INDEX ix_api_tokens_user_id ON api_tokens (user_id);",
@@ -47315,6 +47333,7 @@
   "CREATE INDEX ix_chat_jobs_world_id ON chat_jobs (world_id);",
   "CREATE INDEX ix_chat_sessions_entity_id ON chat_sessions (entity_id);",
   "CREATE INDEX ix_chat_sessions_id ON chat_sessions (id);",
+  "CREATE INDEX ix_chat_sessions_project_id ON chat_sessions (project_id);",
   "CREATE INDEX ix_chat_sessions_world_id ON chat_sessions (world_id);",
   "CREATE INDEX ix_combat_sessions_game_session_id ON combat_sessions (game_session_id);",
   "CREATE INDEX ix_combat_sessions_group_id ON combat_sessions (group_id);",

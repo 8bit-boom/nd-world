@@ -645,6 +645,44 @@ pub fn start_run(cfg: Arc<Config>, id: i64) {
     });
 }
 
+/// `GET`-less helpers for the Background Jobs page's "r:<id>" rows. The run named in the key, of this world (a missing or other world's run: Python's 404 "Unknown job")
+fn run_row(cfg: &Config, p: &PageCtx, id: i64) -> Result<(crate::writes::Pooled, Map<String, Value>), Response<Body>> {
+    let unknown = || detail(StatusCode::NOT_FOUND, "Unknown job");
+    let wid = p.world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64()).ok_or_else(unknown)?;
+    let db = crate::writes::open(cfg).ok_or_else(unknown)?;
+    let run = db.query_row("SELECT * FROM media_rename_runs WHERE id = ?1 AND world_id = ?2", rusqlite::params![id, wid], |r| crate::layout::row_map(r)).map_err(|_| unknown())?;
+    Ok((db, run))
+}
+
+/// whether the world has this run
+pub fn exists(cfg: &Config, p: &PageCtx, id: i64) -> bool {
+    run_row(cfg, p, id).is_ok()
+}
+
+/// `POST /api/live-jobs/r:<id>/restart` (`restart_run`): carry on a cancelled / failed / interrupted run from its last saved chunk
+pub fn restart(cfg: Arc<Config>, p: &PageCtx, id: i64) -> Option<Response<Body>> {
+    let (db, run) = match run_row(&cfg, p, id) { Ok(x) => x, Err(r) => return Some(r) };
+    let no = || Some(detail(StatusCode::BAD_REQUEST, "That job cannot be restarted (it is still running, or the server no longer has it)."));
+    if crate::jobs::is_running("media_rename_runs", id) || !matches!(run.get("status").and_then(|v| v.as_str()), Some("cancelled" | "error" | "interrupted")) {
+        return no();
+    }
+    use rusqlite::types::Value as Sql;
+    crate::orm::update(&db, "media_rename_runs", id, &[("status", Sql::Text("pending".into())), ("error", Sql::Text(String::new()))])?;
+    drop(db);
+    start_run(cfg, id);
+    crate::edits::json_response(&json!({"ok": true}))
+}
+
+/// `DELETE /api/live-jobs/r:<id>` (`delete_run`): drop a finished run from the list; a running one has to be cancelled first
+pub fn remove(cfg: &Config, p: &PageCtx, id: i64) -> Option<Response<Body>> {
+    let (db, run) = match run_row(cfg, p, id) { Ok(x) => x, Err(r) => return Some(r) };
+    if matches!(run.get("status").and_then(|v| v.as_str()), Some("pending" | "running")) {
+        return Some(detail(StatusCode::BAD_REQUEST, "Cancel it first, or it is already gone."));
+    }
+    db.execute("DELETE FROM media_rename_runs WHERE id = ?1", [id]).ok()?;
+    crate::edits::json_response(&json!({"ok": true}))
+}
+
 /// `POST /api/media-rename/runs/<id>/cancel` for a run this process works on (None: Python's)
 pub fn cancel(cfg: &Config, p: &PageCtx, id: i64) -> Option<Response<Body>> {
     let wid = p.world.as_ref()?.get("id")?.as_i64()?;

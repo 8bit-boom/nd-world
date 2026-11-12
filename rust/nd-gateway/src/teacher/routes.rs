@@ -59,6 +59,7 @@ pub fn status(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<B
 /// `POST /export/teacher/{start,stop,clear}`
 pub async fn post(cfg: Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
     let action = uri.path().strip_prefix("/export/teacher/")?.to_string();
+    let body_copy = body.clone();
     let c = cfg.clone();
     let u = uri.clone();
     let (db_dir, world, backend, members, opt) = tokio::task::spawn_blocking(move || -> Option<_> {
@@ -85,12 +86,14 @@ pub async fn post(cfg: Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::B
     match action.as_str() {
         "start" => {
             let Some(opt) = opt else { return Some(detail(StatusCode::UNPROCESSABLE_ENTITY, "The options are not valid.")) };
+            // the model the GM picked on the page ("" = the default one from Settings)
+            let chosen = serde_json::from_slice::<Value>(&body_copy).ok().and_then(|v| v.get("model").and_then(|m| m.as_str().map(|m| m.trim().to_string()))).unwrap_or_default();
             if is_running {
                 return Some(detail(StatusCode::CONFLICT, "Already running for this world."));
             }
             let Some(b) = backend else { return Some(detail(StatusCode::CONFLICT, "No AI model is set up. Choose one in Settings first.")) };
             let Some(members) = members else { return Some(detail(StatusCode::INTERNAL_SERVER_ERROR, "The world could not be read.")) };
-            let (model, _) = crate::ai::resolve_model(&b, "").await;
+            let (model, _) = crate::ai::resolve_model(&b, &chosen).await;
             let cancel = Arc::new(AtomicBool::new(false));
             running().lock().ok()?.insert(wid, cancel.clone());
             gen::set_state(&dir, json!({"status": "running", "text": "Starting\u{2026}", "model": model}));

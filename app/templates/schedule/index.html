@@ -15,7 +15,7 @@
 
   <div class="sch-top">
     <section class="sch-new" aria-label="Plan a session">
-      <button type="button" id="sch-new-toggle" class="sch-btn primary">＋ Plan a session</button>
+      <button type="button" id="sch-new-toggle" class="sch-btn primary">＋ Plan or suggest a session</button>
       <form id="sch-new-form" hidden>
         <label>Title <input name="title" maxlength="160" required placeholder="Session 12 — The Heist"/></label>
         <div class="sch-row2">
@@ -286,7 +286,20 @@
       going,
       h('div', { class: 'sch-tools', style: 'margin-top:.5rem' },
         h('a', { class: 'sch-btn', href: '/schedule/plans/' + plan.id + '.ics', text: '⬇ Add to my calendar (.ics)', style: 'text-decoration:none;display:inline-flex;align-items:center' }),
-        plan.session_href ? h('a', { class: 'sch-btn', href: plan.session_href, text: '📓 Session log', style: 'text-decoration:none;display:inline-flex;align-items:center' }) : null));
+        plan.session_href ? h('a', { class: 'sch-btn', href: plan.session_href, text: '📓 Session log', style: 'text-decoration:none;display:inline-flex;align-items:center' }) : null),
+      suggestRow(plan));
+  }
+  // Anyone can suggest another time for a confirmed session: it becomes an open poll (everyone answers, the GM picks)
+  function suggestRow(plan) {
+    const input = h('input', { type: 'datetime-local', 'aria-label': 'A different time', hidden: true });
+    const send = h('button', { type: 'button', class: 'sch-btn', text: '＋ Suggest this time', hidden: true, onclick: () => {
+      const iso = toIso(input.value);
+      if (!iso) { $('sch-err').textContent = '⚠ Pick a date and time first.'; return; }
+      act('POST', '/api/schedule/plans', { title: plan.title + ' — new time?', location: plan.location, duration_min: plan.duration_min,
+        notes: 'Suggested instead of the confirmed time.' + (plan.notes ? '\n' + plan.notes : ''), slots: [iso] });
+    } });
+    const open = h('button', { type: 'button', class: 'sch-btn', text: '🕒 Suggest another time', onclick: (e) => { input.hidden = false; send.hidden = false; e.currentTarget.hidden = true; input.focus(); } });
+    return h('div', { class: 'sch-add', style: 'margin-top:.5rem' }, open, input, send);
   }
   function pastCard(plan) {
     if (plan.status === 'confirmed') {

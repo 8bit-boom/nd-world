@@ -271,8 +271,28 @@ def chat_presets_text() -> str:
     return json.dumps(_DEFAULT_CHAT_PRESETS, indent=1, ensure_ascii=False) + "\n"
 
 
+OPENAPI_DIR = OUT.parent / "openapi"
+
+
+def openapi_files() -> dict:
+    """What FastAPI serves at /openapi.json, /docs, /docs/oauth2-redirect and /redoc, byte for byte (the Python-free image has no FastAPI to ask)"""
+    from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html, get_swagger_ui_oauth2_redirect_html
+    from app.main import _fastapi_app as app
+    spec = json.dumps(app.openapi(), ensure_ascii=False, allow_nan=False, indent=None, separators=(",", ":"))
+    swagger = get_swagger_ui_html(openapi_url=app.openapi_url, title=f"{app.title} - Swagger UI", oauth2_redirect_url=app.swagger_ui_oauth2_redirect_url,
+                                  init_oauth=app.swagger_ui_init_oauth, swagger_ui_parameters=app.swagger_ui_parameters)
+    return {"openapi.json": spec, "docs.html": swagger.body.decode("utf-8"), "redoc.html": get_redoc_html(openapi_url=app.openapi_url, title=f"{app.title} - ReDoc").body.decode("utf-8"),
+            "oauth2-redirect.html": get_swagger_ui_oauth2_redirect_html().body.decode("utf-8")}
+
+
+def openapi_stale() -> list:
+    return [n for n, t in openapi_files().items() if not (OPENAPI_DIR / n).exists() or (OPENAPI_DIR / n).read_text(encoding="utf-8") != t]
+
+
 if __name__ == "__main__":
     if "--check" in sys.argv:
+        if openapi_stale():
+            sys.exit(f"rust/nd-render/data/openapi/{openapi_stale()[0]} is stale: run scripts/gen_rust_data.py")
         if OUT.read_text() != text():
             sys.exit("rust/nd-render/data/app_data.json is stale: run scripts/gen_rust_data.py")
         if DREAMLANDS_OUT.read_text() != dreamlands_text():
@@ -281,4 +301,7 @@ if __name__ == "__main__":
     OUT.write_text(text())
     DREAMLANDS_OUT.write_text(dreamlands_text())
     CHAT_PRESETS_OUT.write_text(chat_presets_text())
+    OPENAPI_DIR.mkdir(exist_ok=True)
+    for n, t in openapi_files().items():
+        (OPENAPI_DIR / n).write_text(t, encoding="utf-8")
     print("wrote", OUT, DREAMLANDS_OUT, CHAT_PRESETS_OUT)

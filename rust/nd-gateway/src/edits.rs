@@ -179,6 +179,7 @@ type Handler = fn(&mut Ctx, &[i64]) -> Option<Response<Body>>;
 const ROUTES: &[(&str, Handler)] = &[
     ("/admin/backup/restore/cancel", crate::restore::cancel),
     ("/api/ai/sessions", ai_chat_session_save),
+    ("/api/ai/projects", ai_chat_project_create),
     ("/api/kiy/plays", kiy_play_save),
     ("/api/characters/roll", characters_roll),
     ("/api/ai/imagegen/star", imagegen_star),
@@ -187,6 +188,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/media-rename/undo", media_rename_undo),
     ("/api/ai/attachments/audio-jobs/complete", attach_audio_job_complete),
     ("/api/ai/attachments/upload/complete", attach_complete),
+    ("/api/ai/ollama/upload/complete", ollama_complete),
     ("/maps/schematic/new", schematic_new),
     ("/settings/resources", settings_resources_save),
     ("/settings", settings_save),
@@ -378,6 +380,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/worlds", api_world_create),
     ("/worlds/{}/rules/edit", rules_edit),
     ("/worlds/{}/rules/import", rules_import),
+    ("/worlds/{}/rules/overlay/suggest", rules_overlay_suggest),
     ("/worlds/{}/kinds/new", kinds_new),
     ("/worlds/{}/kinds/edit", kinds_save),
     ("/worlds/{}/nav-menus/edit", nav_menus_save),
@@ -435,6 +438,10 @@ const UPLOAD_ROUTES: &[(&str, Handler)] = &[
     ("/api/sessions/ai/audio-jobs/chunk", session_audio_job_chunk),
     ("/api/ai/attachments/upload", attach_upload),
     ("/api/ai/attachments/upload/chunk", attach_chunk),
+    ("/api/maps/props/upload", props_upload),
+    ("/maps/schematic/import-uvtt", import_uvtt),
+    ("/api/ai/ollama/upload/direct", ollama_direct),
+    ("/api/ai/ollama/upload/chunk", ollama_chunk),
 ];
 
 /// Form routes that carry an optional picture: streamed like an upload when the body is too big to hold in memory
@@ -574,6 +581,21 @@ pub fn handles(method: &Method, path: &str) -> bool {
 /// The saved-layout routes (app/routers/view_prefs_api.py): a section name in the path, POST and DELETE
 fn view_route(method: &Method, path: &str) -> Option<(SlugHandler, String)> {
     let ok = |s: &str| !s.is_empty() && s.len() <= 40 && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+    // the schematic editor's reads: walls / fog / lights and the room-drawing state, and the list card's SVG preview
+    if *method == Method::GET {
+        if let Some(rest) = path.strip_prefix("/maps/schematic/") {
+            let slug_ok = |s: &str| !s.is_empty() && !s.contains('/');
+            if let Some(sl) = rest.strip_suffix("/walls.json").filter(|s| slug_ok(s)) {
+                return Some((sc_walls_get as SlugHandler, sl.to_string()));
+            }
+            if let Some(sl) = rest.strip_suffix("/rooms.json").filter(|s| slug_ok(s)) {
+                return Some((sc_rooms_get as SlugHandler, sl.to_string()));
+            }
+            if let Some(sl) = rest.strip_suffix("/preview.svg").filter(|s| slug_ok(s)) {
+                return Some((sc_preview_svg as SlugHandler, sl.to_string()));
+            }
+        }
+    }
     if let Some(id) = path.strip_prefix("/api/view-prefs/preset/").filter(|s| ok(s)) {
         return (*method == Method::POST).then(|| (view_pref_preset as SlugHandler, id.to_string()));
     }
@@ -585,6 +607,18 @@ fn view_route(method: &Method, path: &str) -> Option<(SlugHandler, String)> {
     }
     if let Some(id) = path.strip_prefix("/api/ai/sessions/").filter(|s| !s.is_empty() && s.len() <= 15 && s.bytes().all(|b| b.is_ascii_digit()) && !(s.len() > 1 && s.starts_with('0'))) {
         return (*method == Method::DELETE).then(|| (ai_chat_session_delete as SlugHandler, id.to_string()));
+    }
+    // /api/ai/projects/<id>: POST renames / edits the notes, DELETE ungroups the chats and removes the project
+    if let Some(id) = path.strip_prefix("/api/ai/projects/").filter(|s| !s.is_empty() && s.len() <= 15 && s.bytes().all(|b| b.is_ascii_digit()) && !(s.len() > 1 && s.starts_with('0'))) {
+        return match *method {
+            Method::POST => Some((ai_chat_project_edit as SlugHandler, id.to_string())),
+            Method::DELETE => Some((ai_chat_project_delete as SlugHandler, id.to_string())),
+            _ => None,
+        };
+    }
+    // /api/ai/sessions/<id>/project: POST moves a chat between projects (project_id null = ungroup)
+    if let Some(id) = path.strip_prefix("/api/ai/sessions/").and_then(|r| r.strip_suffix("/project")).filter(|s| !s.is_empty() && s.len() <= 15 && s.bytes().all(|b| b.is_ascii_digit()) && !(s.len() > 1 && s.starts_with('0'))) {
+        return (*method == Method::POST).then(|| (ai_chat_session_project as SlugHandler, id.to_string()));
     }
     if let Some(id) = path.strip_prefix("/api/kiy/plays/").filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')) {
         return (*method == Method::DELETE).then(|| (kiy_play_delete as SlugHandler, id.to_string()));
@@ -8047,6 +8081,13 @@ fn ai_chat_session_save(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
         Some(Value::Number(n)) => n.as_i64()?,
         _ => return None,
     };
+    // project_id (the Projects sidebar): honored ONLY on create — an update
+    // ignoring it is what stops a replayed save from undoing a move.
+    let want_project: i64 = match body.get("project_id") {
+        None | Some(Value::Null) => 0,
+        Some(Value::Number(n)) => n.as_i64()?,
+        _ => return None,
+    };
     let mut msgs = vec![];
     for m in body.get("messages")?.as_array()? {
         let m = m.as_object()?;
@@ -8087,7 +8128,8 @@ fn ai_chat_session_save(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
     };
     let id = match existing {
         Some(id) => {
-            orm::update(&c.db, "chat_sessions", id, &[("messages_json", s(&stored))])?;
+            // SQLAlchemy's onupdate bumps updated_at on every UPDATE (the list orders by it)
+            orm::update(&c.db, "chat_sessions", id, &[("messages_json", s(&stored)), ("updated_at", s(&utc_now()))])?;
             id
         }
         None => {
@@ -8106,8 +8148,14 @@ fn ai_chat_session_save(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
                     }
                 }
             }
+            // _chat_project_id: a project of THIS world, else ungrouped (a stale id never fails a save)
+            let pid: Option<i64> = if want_project != 0 {
+                c.db.query_row("SELECT id FROM ai_projects WHERE id = ?1 AND world_id = ?2", rusqlite::params![want_project, wid], |r| r.get(0)).ok()
+            } else {
+                None
+            };
             orm::insert(&c.db, "chat_sessions", &[("world_id", Sql::Integer(wid)), ("user_id", Sql::Integer(c.p.user_id)), ("surface", s("chat")),
-                ("title", s(&title)), ("messages_json", s(&stored))])?
+                ("title", s(&title)), ("messages_json", s(&stored)), ("project_id", pid.map_or(Sql::Null, Sql::Integer))])?
         }
     };
     json_response(&json!({"id": id}))
@@ -8286,6 +8334,107 @@ fn ai_chat_session_delete(c: &mut Ctx, id: &str) -> Option<Response<Body>> {
         return Some(crate::idpages::refusal(404));
     }
     json_response(&json!({"ok": true}))
+}
+
+// ── Chat projects (app/routers/ai.py's chat-project block — the /ai sidebar's
+// Projects section): named groups of chats with notes the client rides into
+// every chat's system prompt. GM only, per world; deleting a project only
+// ungroups its chats. The name is trimmed, capped at 128 characters and
+// falls back to "New project"; the notes are capped at 16000. A body pydantic
+// would 422 (not an object, a non-text name/notes) is Python's.
+fn _project_text(body: &Map<String, Value>, key: &str) -> Option<String> {
+    match body.get(key) {
+        None => Some(String::new()),
+        Some(Value::String(t)) => Some(t.clone()),
+        _ => None,
+    }
+}
+
+fn ai_chat_project_create(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    if !c.p.is_gm {
+        return Some(crate::idpages::refusal(403));
+    }
+    let Some(wid) = c.world_id() else { return Some(crate::idpages::refusal(404)) };
+    let body: Value = serde_json::from_slice(c.body).ok().filter(|_| plain_numbers(c.body))?;
+    let body = body.as_object()?;
+    let raw_name = _project_text(body, "name")?;
+    if raw_name.chars().any(|ch| ('\u{1c}'..='\u{1f}').contains(&ch)) {
+        return None; // str.strip() reads these as space, trim() does not
+    }
+    let mut name: String = raw_name.trim().chars().take(128).collect();
+    if name.is_empty() {
+        name = "New project".to_string();
+    }
+    let notes: String = _project_text(body, "notes")?.chars().take(16000).collect();
+    let now = utc_now();
+    let id = orm::insert(&c.db, "ai_projects", &[("world_id", Sql::Integer(wid)), ("name", s(&name)), ("notes", s(&notes)),
+        ("created_at", s(&now)), ("updated_at", s(&now))])?;
+    json_response(&json!({"id": id, "name": name}))
+}
+
+fn ai_chat_project_edit(c: &mut Ctx, id: &str) -> Option<Response<Body>> {
+    if !c.p.is_gm {
+        return Some(crate::idpages::refusal(403));
+    }
+    let Some(wid) = c.world_id() else { return Some(crate::idpages::refusal(404)) };
+    let id: i64 = id.parse().ok()?;
+    let body: Value = serde_json::from_slice(c.body).ok().filter(|_| plain_numbers(c.body))?;
+    let body = body.as_object()?;
+    let raw_name = _project_text(body, "name")?;
+    if raw_name.chars().any(|ch| ('\u{1c}'..='\u{1f}').contains(&ch)) {
+        return None;
+    }
+    let notes: String = _project_text(body, "notes")?.chars().take(16000).collect();
+    let found: Option<String> = c.db.query_row("SELECT name FROM ai_projects WHERE id = ?1 AND world_id = ?2", rusqlite::params![id, wid], |r| r.get(0)).ok();
+    let Some(old_name) = found else { return Some(crate::idpages::refusal(404)) };
+    // Python keeps the stored name when the request's name trims to empty
+    let trimmed: String = raw_name.trim().chars().take(128).collect();
+    let name = if trimmed.is_empty() { old_name } else { trimmed };
+    orm::update(&c.db, "ai_projects", id, &[("name", s(&name)), ("notes", s(&notes)), ("updated_at", s(&utc_now()))])?;
+    json_response(&json!({"ok": true}))
+}
+
+fn ai_chat_project_delete(c: &mut Ctx, id: &str) -> Option<Response<Body>> {
+    if !c.p.is_gm {
+        return Some(crate::idpages::refusal(403));
+    }
+    let Some(wid) = c.world_id() else { return Some(crate::idpages::refusal(404)) };
+    let id: i64 = id.parse().ok()?;
+    let n = c.db.execute("DELETE FROM ai_projects WHERE id = ?1 AND world_id = ?2", rusqlite::params![id, wid]).ok()?;
+    if n == 0 {
+        return Some(crate::idpages::refusal(404));
+    }
+    // Ungroup, never delete: a project is an arrangement, the chats are content.
+    c.db.execute("UPDATE chat_sessions SET project_id = NULL WHERE project_id = ?1 AND world_id = ?2", rusqlite::params![id, wid]).ok()?;
+    json_response(&json!({"ok": true}))
+}
+
+fn ai_chat_session_project(c: &mut Ctx, id: &str) -> Option<Response<Body>> {
+    if !c.p.is_gm {
+        return Some(crate::idpages::refusal(403));
+    }
+    let Some(wid) = c.world_id() else { return Some(crate::idpages::refusal(404)) };
+    let id: i64 = id.parse().ok()?;
+    let body: Value = serde_json::from_slice(c.body).ok().filter(|_| plain_numbers(c.body))?;
+    let body = body.as_object()?;
+    let want: i64 = match body.get("project_id") {
+        None | Some(Value::Null) => 0,
+        Some(Value::Number(n)) => n.as_i64()?,
+        _ => return None,
+    };
+    let found: Option<i64> = c.db.query_row("SELECT id FROM chat_sessions WHERE id = ?1 AND world_id = ?2 AND surface = 'chat'", rusqlite::params![id, wid], |r| r.get(0)).ok();
+    if found.is_none() {
+        return Some(crate::idpages::refusal(404));
+    }
+    // _chat_project_id: a project of THIS world, else ungrouped
+    let pid: Option<i64> = if want != 0 {
+        c.db.query_row("SELECT id FROM ai_projects WHERE id = ?1 AND world_id = ?2", rusqlite::params![want, wid], |r| r.get(0)).ok()
+    } else {
+        None
+    };
+    // SQLAlchemy's onupdate bumps updated_at on the move (the list orders by it)
+    c.db.execute("UPDATE chat_sessions SET project_id = ?1, updated_at = ?2 WHERE id = ?3", rusqlite::params![pid.map_or(Sql::Null, Sql::Integer), utc_now(), id]).ok()?;
+    json_response(&json!({"ok": true, "project_id": pid}))
 }
 
 /// `view_prefs_reset_all`: every saved layout of the person gone, the site layout forgotten from the session
@@ -8930,6 +9079,89 @@ fn world_create(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
 /// A parsed overlay whose every `order` is an integer (a float is written by Python's repr: Python's)
 fn overlay_plain(v: &Value) -> bool {
     v.get("sections").and_then(|x| x.as_object()).is_none_or(|m| m.values().all(|e| e.get("order").is_none_or(|o| o.is_i64())))
+}
+
+/// `POST /worlds/<id>/rules/overlay/suggest` (app/main.py `world_rules_overlay_suggest`): a starting tabs overlay from the rules text in the
+/// editor (not the stored one) - one tab per top-level heading with every heading beneath it
+fn rules_overlay_suggest(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    use nd_render::rules;
+    let f = c.form()?;
+    row(&c.db, "SELECT id FROM worlds WHERE id = ?1", ids[0])?;
+    let md = nd_render::text::strip_legacy_anchors(&rules::strict_unescape(f.get("rules_md").unwrap_or(""))?);
+    if strip(&md).is_empty() {
+        return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "Markdown is empty — nothing to build tabs from"));
+    }
+    let sections = rules::split_sections_h23(&rules::render_rules_content(&md, true));
+    let body: Vec<&Value> = sections.iter().filter(|s| s.get("id").and_then(|v| v.as_str()).is_some_and(|x| !x.is_empty())).collect();
+    if body.is_empty() {
+        return json_response(&json!({"tabs": []}));
+    }
+    let top = body.iter().filter_map(|s| s["level"].as_i64()).min()?;
+    let mut tabs: Vec<Value> = vec![];
+    for s in body {
+        let id = s["id"].as_str()?;
+        if tabs.is_empty() || s["level"].as_i64()? <= top {
+            let title = s["title"].as_str().unwrap_or("");
+            tabs.push(json!({"label": if title.is_empty() { id } else { title }, "sections": [id]}));
+        } else {
+            tabs.last_mut()?["sections"].as_array_mut()?.push(json!(id));
+        }
+    }
+    json_response(&json!({"tabs": tabs}))
+}
+
+
+const OLLAMA_UNSLOTH: &str = "Upload-from-PC needs the Ollama backend. With Unsloth, add the GGUF via Studio's Model Hub instead.";
+
+/// The Ollama upload routes on the Unsloth backend (app/ai.py `import_local_gguf_model`): the file is taken and dropped again, and the import the
+/// page polls ends in Studio's advice - Ollama's blob push has no equivalent there. Anything else (a real Ollama) is Python's.
+fn ollama_gate(c: &Ctx) -> Option<()> {
+    (c.p.is_gm && crate::ai::backend(&c.db).is_some()).then_some(())
+}
+
+fn ollama_import_start(name: &str) -> Option<Response<Body>> {
+    let id: String = (0..16).map(|_| format!("{:02x}", rand::random::<u8>())).collect();
+    let err = if strip(name).is_empty() { "No model name given" } else { OLLAMA_UNSLOTH };
+    crate::knowledge::imports().lock().ok()?.insert(id.clone(), json!({"error": err}));
+    json_response(&json!({"import_id": id, "status": "queued"}))
+}
+
+fn ollama_direct(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    ollama_gate(c)?;
+    let up = c.upload.as_ref()?;
+    if up.form.0.iter().any(|(k, _)| k != "model_name") || !up.form.has("model_name") || up.files.len() != 1 || up.files[0].name != "file" {
+        return None;
+    }
+    let name = up.form.get("model_name").unwrap_or("").to_string();
+    let file = up.files[0].filename.clone();
+    if py_suffix_lower(&file)? != ".gguf" {
+        return Some(bad400("Only .gguf files are supported"));
+    }
+    if up.files[0].len as i64 > env_bytes("MAX_MODEL_UPLOAD_BYTES", 80 * 1024 * 1024 * 1024)? {
+        return None;
+    }
+    ollama_import_start(&name)
+}
+
+fn ollama_chunk(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    ollama_gate(c)?;
+    let cap = env_bytes("MAX_MODEL_UPLOAD_BYTES", 80 * 1024 * 1024 * 1024)?;
+    save_chunk_in(c, "ollama_models", cap)
+}
+
+fn ollama_complete(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    ollama_gate(c)?;
+    let f = c.form()?;
+    let id = f.get("upload_id").filter(|v| !v.is_empty())?.to_string();
+    let name = f.get("filename")?.to_string();
+    let total = form_int_required(&f, "total_chunks")?;
+    let model = f.get("model_name")?.to_string();
+    if py_suffix_lower(&name)? != ".gguf" {
+        return Some(bad400("Only .gguf files are supported"));
+    }
+    let (dir, _parts, _size) = chunk_parts(c, "ollama_models", &id, total)?;
+    c.removals.push(dir);
+    ollama_import_start(&model)
 }
 
 fn rules_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
@@ -11738,8 +11970,13 @@ fn pc_fight_numbers(db: &Connection, pc: &Map<String, Value>) -> Option<(Value, 
 }
 
 fn pc_combatant(c: &Ctx, pc: &Map<String, Value>) -> Option<Value> {
-    let (_, shock, _, _, _) = pc_maxima(&c.db, pc)?;
-    let (hp, max_hp, res) = pc_fight_numbers(&c.db, pc)?;
+    pc_combatant_db(&c.db, pc)
+}
+
+/// `pc_to_combatant(pc, db)` without a request: what a character's sheet says right now, shaped as a combatant
+pub(crate) fn pc_combatant_db(db: &Connection, pc: &Map<String, Value>) -> Option<Value> {
+    let (_, shock, _, _, _) = pc_maxima(db, pc)?;
+    let (hp, max_hp, res) = pc_fight_numbers(db, pc)?;
     let stats = stat_values(pc)?;
     let get = |k: &str| stats.iter().find(|(id, _)| id == k).map_or(0, |(_, v)| *v);
     let conds: Vec<Value> = match serde_json::from_str::<Value>(pc.get("conditions_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]")) {
@@ -12185,7 +12422,7 @@ fn wall_num(v: Option<&Value>) -> Option<f64> {
 }
 
 /// `map_walls.clean_fog`; None when Python's rounding is not certain
-fn clean_fog(d: &Map<String, Value>) -> Option<Map<String, Value>> {
+pub(crate) fn clean_fog(d: &Map<String, Value>) -> Option<Map<String, Value>> {
     let rng = wall_num(d.get("range"));
     let dark = wall_num(d.get("darkness"));
     let pers = wall_num(d.get("personal"));
@@ -12226,7 +12463,7 @@ fn sc_load(sc: &Map<String, Value>, col: &str, want_list: bool) -> Option<Value>
 }
 
 /// `map_walls.clean_lights` -> (lights, warnings); None for what Python spells or rounds its own way
-fn clean_lights(data: &[Value], sc: &Map<String, Value>) -> Option<(Vec<Value>, Vec<String>)> {
+pub(crate) fn clean_lights(data: &[Value], sc: &Map<String, Value>) -> Option<(Vec<Value>, Vec<String>)> {
     let dim = |k: &str, d: f64| sc.get(k).and_then(|v| v.as_i64()).filter(|v| *v != 0).map_or(d, |v| v as f64).max(1.0);
     let (cw, ch) = (dim("canvas_width", 2000.0), dim("canvas_height", 1500.0));
     let (mut out, mut warnings, mut seen, mut dropped) = (vec![], vec![], Vec::<String>::new(), 0);
@@ -12797,6 +13034,177 @@ fn rooms_refusal(d: &Map<String, Value>) -> Option<Option<String>> {
         return Some(Some("cells hold fewer squares than the grid has".into()));
     }
     Some(None)
+}
+
+/// `GET /maps/schematic/<slug>/walls.json` (app/routers/map_walls.py `walls_get`): every wall (secret doors too), the fog settings and every
+/// light, for the editor
+fn sc_walls_get(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let sc = match sc_gate(c, slug)? { Ok(sc) => sc, Err(r) => return Some(r) };
+    let walls = sc_load(&sc, "walls_json", true)?;
+    let fog = clean_fog(sc_load(&sc, "fog_json", false)?.as_object()?)?;
+    let (lights, _) = clean_lights(sc_load(&sc, "lights_json", true)?.as_array()?, &sc)?;
+    json_response(&json!({"walls": walls, "fog": fog, "lights": lights}))
+}
+
+/// `GET /maps/schematic/<slug>/rooms.json` (`rooms_get`): the room-drawing tool's state, {} when nothing is drawn
+fn sc_rooms_get(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let sc = match sc_gate(c, slug)? { Ok(sc) => sc, Err(r) => return Some(r) };
+    let stored = sc_load(&sc, "rooms_json", false)?;
+    json_response(&clean_rooms(stored.as_object()?)?)
+}
+
+/// `GET /maps/schematic/<slug>/preview.svg` (app/main.py `schematic_preview_svg`): the elements drawn as a small SVG for the /maps list card,
+/// the background picture inlined. Values Python would print its own way (inf / nan, a non-text label) are Python's.
+fn sc_preview_svg(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    use base64::Engine;
+    let Ok(sch) = c.db.query_row("SELECT * FROM schematics WHERE slug = ?1 LIMIT 1", [slug], |r| crate::layout::row_map(r)) else {
+        return Some(crate::idpages::refusal(404));
+    };
+    let wid = sch.get("world_id")?.as_i64()?;
+    if !c.p.is_gm && Some(wid) != c.world_id() {
+        return None; // another world's view rights: Python's
+    }
+    let world = c.db.query_row("SELECT * FROM worlds WHERE id = ?1", [wid], |r| crate::layout::row_map(r)).ok()?;
+    if !crate::pages::section_ok(&c.p, Some(&world), "maps")? {
+        return Some(crate::idpages::refusal(403));
+    }
+    let dim = |k: &str, d: i64| sch.get(k).and_then(|v| v.as_i64()).filter(|v| *v != 0).unwrap_or(d);
+    let (cw, ch) = (dim("canvas_width", 2000), dim("canvas_height", 1500));
+    let svg_resp = |body: String, cache: &str| Response::builder().header(header::CONTENT_TYPE, "image/svg+xml").header(header::CACHE_CONTROL, cache)
+        .header("x-nd-served-by", "gateway").body(Body::from(body)).ok();
+    if !crate::pages::edit_level(&c.p, &world, "maps")? && map_is_strict(&sch)? {
+        return svg_resp(format!("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {cw} {ch}\"><rect width=\"100%\" height=\"100%\" fill=\"#16161d\"/></svg>"), "private, no-cache");
+    }
+    let bg = sch.get("canvas_bg").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("dark");
+    let bg_color = if bg == "dark" || bg == "grid-dark" { "#16161d" } else { "#f5f2ea" };
+    let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let fl = |f: f64| -> Option<String> { f.is_finite().then(|| nd_render::py_float_repr(f)) };
+    // `_n(v, d)`: float(v), or the default d AS GIVEN when float() refuses (so a default 4 prints "4", a converted 4 prints "4.0")
+    let num = |v: Option<&Value>, d: f64, dlit: &str| -> Option<(f64, String)> {
+        let dflt = Some((d, dlit.to_string()));
+        let conv = |f: f64| f.is_finite().then(|| (f, nd_render::py_float_repr(f)));
+        match v {
+            None | Some(Value::Null) => dflt,
+            Some(Value::Bool(b)) => conv(if *b { 1.0 } else { 0.0 }),
+            Some(Value::Number(n)) => conv(n.as_f64()?),
+            Some(Value::String(s)) => match s.trim().parse::<f64>() {
+                Ok(f) if f.is_finite() && !s.trim().is_empty() && !s.contains('_') => conv(f),
+                Ok(_) => None, // "inf", "nan", "1_0": Python's spelling
+                Err(_) => dflt,
+            },
+            Some(_) => dflt,
+        }
+    };
+    // str(x) of a stored value
+    let pystr = |v: &Value| -> Option<String> {
+        match v {
+            Value::String(s) => Some(s.clone()),
+            Value::Bool(b) => Some(if *b { "True" } else { "False" }.into()),
+            Value::Number(n) if n.is_i64() || n.is_u64() => Some(n.to_string()),
+            Value::Number(n) => fl(n.as_f64()?),
+            _ => None,
+        }
+    };
+    let truthy = |v: Option<&Value>| crate::edits::py_truthy_pub(v);
+    let or = |v: Option<&Value>, d: &str| -> Option<String> { if truthy(v) { pystr(v?) } else { Some(d.to_string()) } };
+    let mut parts: Vec<String> = vec![];
+    let image_url = sch.get("image_url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if !image_url.is_empty() {
+        let uploads = c.cfg.db_path.parent()?.join("uploads");
+        let rel = image_url.split_once("/uploads/").map_or(image_url.as_str(), |(_, r)| r);
+        if let (Ok(src), Ok(root)) = (uploads.join(rel).canonicalize(), uploads.canonicalize()) {
+            if src.starts_with(&root) && src.is_file() && std::fs::metadata(&src).ok()?.len() <= 4 * 1024 * 1024 {
+                let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+                let mime = match ext.as_str() {
+                    "png" => "image/png", "jpg" | "jpeg" => "image/jpeg", "gif" => "image/gif", "webp" => "image/webp", "avif" => "image/avif",
+                    "svg" => "image/svg+xml", "bmp" => "image/bmp", "tif" | "tiff" => "image/tiff", "ico" => "image/vnd.microsoft.icon",
+                    _ => "image/png",
+                };
+                let data = base64::engine::general_purpose::STANDARD.encode(std::fs::read(&src).ok()?);
+                parts.push(format!("<image href=\"data:{mime};base64,{data}\" x=\"0\" y=\"0\" width=\"{cw}\" height=\"{ch}\" preserveAspectRatio=\"none\"/>"));
+            }
+        }
+    }
+    let raw = sch.get("elements_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
+    let elements: Vec<Value> = match serde_json::from_str::<Value>(raw) {
+        Ok(Value::Array(a)) => a,
+        Ok(_) => return None, // a non-list: Python's TypeError
+        Err(_) => vec![],
+    };
+    for e in elements.iter().take(600) {
+        let Value::Object(e) = e else { continue };
+        let et = or(e.get("type"), "")?.to_lowercase();
+        let stroke = esc(&or(e.get("stroke"), "#888888")?);
+        let sw = num(e.get("strokeW"), 2.0, "2")?.1;
+        let fill = esc(&or(e.get("fill"), "none")?);
+        let op = num(e.get("opacity"), 1.0, "1.0")?.0;
+        let op_attr = if op != 1.0 { format!(" opacity=\"{}\"", fl(op.min(1.0).max(0.0))?) } else { String::new() };
+        let n = |k: &str, d: f64, dl: &str| -> Option<String> { Some(num(e.get(k), d, dl)?.1) };
+        match et.as_str() {
+            "rect" => parts.push(format!("<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{fill}\" stroke=\"{stroke}\" stroke-width=\"{sw}\" rx=\"{}\"{op_attr}/>",
+                n("x", 0.0, "0.0")?, n("y", 0.0, "0.0")?, n("w", 50.0, "50")?, n("h", 50.0, "50")?, n("rx", 4.0, "4")?)),
+            "circle" => parts.push(format!("<ellipse cx=\"{}\" cy=\"{}\" rx=\"{}\" ry=\"{}\" fill=\"{fill}\" stroke=\"{stroke}\" stroke-width=\"{sw}\"{op_attr}/>",
+                n("cx", 0.0, "0.0")?, n("cy", 0.0, "0.0")?, n("rx", 30.0, "30")?, n("ry", 30.0, "30")?)),
+            "line" | "arrow" => {
+                let (x1, y1, x2, y2) = (num(e.get("x1"), 0.0, "0.0")?.0, num(e.get("y1"), 0.0, "0.0")?.0, num(e.get("x2"), 0.0, "0.0")?.0, num(e.get("y2"), 0.0, "0.0")?.0);
+                if et == "arrow" {
+                    let ang = (y2 - y1).atan2(x2 - x1);
+                    for off in [-2.5f64, 2.5] {
+                        parts.push(format!("<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{stroke}\" stroke-width=\"{sw}\"/>",
+                            fl(x2)?, fl(y2)?, fl(x2 - 10.0 * (ang + off).cos())?, fl(y2 - 10.0 * (ang + off).sin())?));
+                    }
+                }
+                parts.push(format!("<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{stroke}\" stroke-width=\"{sw}\"{op_attr}/>", fl(x1)?, fl(y1)?, fl(x2)?, fl(y2)?));
+            }
+            "poly" | "pencil" => {
+                let pts = if truthy(e.get("points")) { e.get("points") } else { e.get("pts") };
+                if let Some(Value::Array(pts)) = pts {
+                    if pts.len() >= 2 {
+                        let mut out = vec![];
+                        for p in pts {
+                            if let Value::Array(p) = p {
+                                if p.len() >= 2 {
+                                    out.push(format!("{},{}", num(p.first(), 0.0, "0.0")?.1, num(p.get(1), 0.0, "0.0")?.1));
+                                }
+                            }
+                        }
+                        if !out.is_empty() {
+                            parts.push(format!("<polyline points=\"{}\" fill=\"none\" stroke=\"{stroke}\" stroke-width=\"{sw}\"{op_attr}/>", out.join(" ")));
+                        }
+                    }
+                }
+            }
+            "text" => {
+                let label = if truthy(e.get("label")) { e.get("label") } else if truthy(e.get("text")) { e.get("text") } else { None };
+                let label = match label { None => String::new(), Some(Value::String(s)) => s.clone(), Some(_) => return None };
+                let size = if truthy(e.get("size")) { num(e.get("size"), 0.0, "0.0")?.1 } else { "18.0".to_string() };
+                parts.push(format!("<text x=\"{}\" y=\"{}\" fill=\"{}\" font-size=\"{}\" font-family=\"sans-serif\">{}</text>",
+                    n("x", 0.0, "0.0")?, n("y", 0.0, "0.0")?, if fill != "none" { fill.as_str() } else { "#dddddd" }, size, esc(&label)));
+            }
+            "token" | "pin" => {
+                let ix = num(e.get("x"), 0.0, "0.0")?;
+                let iy = num(e.get("y"), 0.0, "0.0")?;
+                let cx = num(e.get("cx"), ix.0, &ix.1)?;
+                let cy = num(e.get("cy"), iy.0, &iy.1)?;
+                let r = num(e.get("r"), 14.0, "14")?;
+                let tcolor = esc(&or(e.get("color"), "#c05050")?);
+                parts.push(format!("<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"{tcolor}\" stroke=\"#111\" stroke-width=\"2\"/>", cx.1, cy.1, r.1));
+                let name = if truthy(e.get("name")) { e.get("name") } else { e.get("label") };
+                if truthy(name) {
+                    parts.push(format!("<text x=\"{}\" y=\"{}\" text-anchor=\"middle\" fill=\"#dddddd\" font-size=\"14\" font-family=\"sans-serif\">{}</text>",
+                        cx.1, fl(cy.0 + r.0 + 12.0)?, esc(&pystr(name?)?)));
+                }
+            }
+            _ => {}
+        }
+    }
+    let name = esc(sch.get("name").and_then(|v| v.as_str()).unwrap_or(""));
+    let label = if parts.is_empty() && image_url.is_empty() {
+        format!("<text x=\"{}\" y=\"{}\" text-anchor=\"end\" font-size=\"20\" font-family=\"sans-serif\" fill=\"#666666\">{name}</text>", cw - 16, ch - 14)
+    } else {
+        String::new()
+    };
+    svg_resp(format!("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {cw} {ch}\" preserveAspectRatio=\"xMidYMid meet\"><rect width=\"{cw}\" height=\"{ch}\" fill=\"{bg_color}\"/>{}{label}</svg>", parts.concat()), "private, max-age=60")
 }
 
 fn sc_rooms(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
@@ -16384,7 +16792,7 @@ fn prop_cells(b: &Map<String, Value>, k: &str, fallback: f64) -> Option<f64> {
     if !v.is_finite() {
         return Some(fallback);
     }
-    Some((v * 4.0).round() / 4.0).map(|v| v.clamp(0.25, 40.0))
+    Some((v * 4.0).round_ties_even() / 4.0).map(|v| v.clamp(0.25, 40.0))
 }
 
 /// `_clean_name`: str(value or ""), whitespace-collapsed, capped at 128, "Object" when nothing is left
@@ -16399,6 +16807,136 @@ fn prop_clean_name(v: Option<&Value>, fallback: &str) -> String {
     let joined = nd_render::text::py_split_join(&raw);
     let cut: String = joined.chars().take(128).collect();
     if cut.is_empty() { fallback.to_string() } else { cut }
+}
+
+/// `POST /maps/schematic/import-uvtt` (app/main.py `schematic_import_uvtt`): a new schematic from a Universal VTT file - the picture as its background, the grid set
+/// to the file's squares, walls / outlines / doors as wall data, lights and the ambient brightness as lights and darkness. -> {slug, url, warnings, stats}
+fn import_uvtt(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let up = c.upload.as_ref()?;
+    if up.form.0.iter().any(|(k, _)| k != "name") || up.form.0.len() > 1 || up.files.len() != 1 || up.files[0].name != "file" || up.files[0].filename.is_empty() {
+        return None;
+    }
+    let name_field = up.form.get("name").unwrap_or("").to_string();
+    let filename = up.files[0].filename.clone();
+    let Some(wid) = c.world_id() else { return Some(bad400("No world selected")) };
+    if !c.can_edit_section("maps")? {
+        return Some(crate::idpages::refusal(403));
+    }
+    let raw = { let up = c.upload.as_ref()?; up.read_part(&up.files[0], 80 * 1024 * 1024 + 1)? };
+    let parsed = match crate::uvtt::parse_uvtt(&raw) {
+        Ok(Some(p)) => p,
+        Ok(None) => return None,
+        Err(msg) => return Some(bad400(&msg)),
+    };
+    let had_alpha = parsed.image.color().has_alpha();
+    let webp = crate::uvtt::encode_webp(&parsed.image, had_alpha)?;
+    // title: the name, else the file's stem with _ and - as spaces; white space folded, 120 characters at most
+    let base_title = if !name_field.is_empty() { name_field } else { let (stem, _) = py_path_parts(&filename)?; stem.replace('_', " ").replace('-', " ") };
+    let title: String = nd_render::text::py_split_join(&base_title).chars().take(120).collect();
+    let title = if title.is_empty() { "Imported map".to_string() } else { title };
+    let slug = py_slug(&title, usize::MAX)?;
+    let slug = if slug.is_empty() { "imported-map".to_string() } else { slug };
+    let mut unique = slug.clone();
+    let mut i = 2;
+    loop {
+        let taken: bool = c.db.query_row("SELECT 1 FROM schematics WHERE slug = ?1", [&unique], |r| r.get::<_, i64>(0)).map(|_| true).unwrap_or(false);
+        if !taken {
+            break;
+        }
+        unique = format!("{slug}-{i}");
+        i += 1;
+    }
+    let dir = uploads_root(c)?.join("schematics");
+    std::fs::create_dir_all(&dir).ok()?;
+    let dest = dir.join(format!("{unique}.webp"));
+    c.created.push(dest.clone());
+    std::fs::write(&dest, &webp).ok()?;
+    let mut dims = Map::new();
+    dims.insert("canvas_width".into(), json!(parsed.width));
+    dims.insert("canvas_height".into(), json!(parsed.height));
+    let (walls, wwarn) = clean_walls(&parsed.walls, &dims)?;
+    let (lights, lwarn) = clean_lights(&parsed.lights, &dims)?;
+    let mut fog_in = Map::new();
+    fog_in.insert("darkness".into(), json!(parsed.darkness));
+    let fog = clean_fog(&fog_in)?;
+    let grid = json!({"cell_size": parsed.cell, "offset_x": 0, "offset_y": 0, "unit_per_cell": 5, "unit_label": "ft"});
+    orm::insert(&c.db, "schematics", &[
+        ("world_id", Sql::Integer(wid)), ("name", s(&title)), ("slug", s(&unique)), ("is_html", Sql::Integer(0)),
+        ("canvas_width", Sql::Integer(parsed.width)), ("canvas_height", Sql::Integer(parsed.height)), ("canvas_bg", s("dark")), ("elements_json", s("[]")),
+        ("image_url", s(&format!("/uploads/schematics/{unique}.webp"))), ("grid_type", s("square")), ("grid_config_json", s(&nd_render::py_dumps(&grid))),
+        ("walls_json", s(&nd_render::py_dumps(&Value::Array(walls.clone())))), ("lights_json", s(&nd_render::py_dumps(&Value::Array(lights)))),
+        ("fog_json", s(&nd_render::py_dumps(&Value::Object(fog)))),
+    ])?;
+    orm::touch(&c.db, wid)?;
+    let mut warnings: Vec<String> = parsed.warnings.clone();
+    warnings.extend(wwarn);
+    warnings.extend(lwarn);
+    let mut stats = parsed.stats.clone();
+    stats.insert("wall_lines".into(), json!(walls.len()));
+    json_response(&json!({"slug": unique, "url": format!("/maps/schematic/{unique}"), "warnings": warnings, "stats": stats}))
+}
+
+/// `POST /api/maps/props/upload` (app/routers/map_props.py `props_upload`): several pictures at once, each processed on its own - the answer lists what
+/// was added and, for the files that could not be used, why. `cells_w` (optional) is the width in squares for every file of the batch.
+fn props_upload(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let up = c.upload.as_ref()?;
+    // the form: `files` parts (each with a file name) and at most a `cells_w` text field; anything else is Python's
+    if up.form.0.iter().any(|(k, _)| k != "cells_w") || up.form.0.len() > 1 || up.files.is_empty() || up.files.iter().any(|f| f.name != "files" || f.filename.is_empty()) {
+        return None;
+    }
+    let cells_w = up.form.get("cells_w").unwrap_or("").to_string();
+    let n_files = up.files.len();
+    let Some(wid) = c.world_id() else { return Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "No world selected")) };
+    if c.p.user_id <= 0 || !c.can_edit_section("maps")? {
+        return Some(crate::idpages::refusal(403));
+    }
+    if n_files > 25 {
+        return Some(bad400("At most 25 pictures at a time"));
+    }
+    let have: i64 = c.db.query_row("SELECT COUNT(*) FROM map_props WHERE world_id = ?1", [wid], |r| r.get(0)).ok()?;
+    let dir = uploads_root(c)?.join("props");
+    std::fs::create_dir_all(&dir).ok()?;
+    let (mut added, mut refused) = (vec![], vec![]);
+    for i in 0..n_files {
+        let (name, len) = { let f = &c.upload.as_ref()?.files[i]; (f.filename.clone(), f.len) };
+        if have + added.len() as i64 >= 500 {
+            refused.push(json!({"file": name, "reason": "The library is full (500 objects)"}));
+            continue;
+        }
+        let ext = py_suffix_lower(&name)?;
+        let raw = { let up = c.upload.as_ref()?; up.read_part(&up.files[i], crate::props::MAX_RAW_BYTES + 1)? };
+        let _ = len;
+        let out = match crate::props::process_prop(&raw, &ext) {
+            Ok(Some(o)) => o,
+            Ok(None) => return None,
+            Err(reason) => {
+                refused.push(json!({"file": name, "reason": reason}));
+                continue;
+            }
+        };
+        let stored = unique_upload_filename(&name, out.ext)?;
+        let dest = dir.join(&stored);
+        c.created.push(dest.clone());
+        std::fs::write(&dest, &out.data).ok()?;
+        let (mut cw, mut ch) = crate::props::default_cells(out.width, out.height);
+        if !cells_w.trim().is_empty() {
+            let mut b = Map::new();
+            b.insert("cells_w".into(), Value::String(cells_w.clone()));
+            let want = prop_cells(&b, "cells_w", cw)?;
+            ch = ((want * (out.height / out.width) * 4.0).round_ties_even() / 4.0).max(0.25);
+            cw = want;
+        }
+        let ch = ch.min(40.0);
+        let stem = { let (stem, _) = py_path_parts(&name)?; stem };
+        let pname = prop_clean_name(Some(&Value::String(stem.replace('_', " ").replace('-', " "))), "Object");
+        let (px_w, px_h) = (out.width as i64, out.height as i64);
+        let kind = if out.ext == ".svg" { "svg" } else { "raster" };
+        let url = format!("/uploads/props/{stored}");
+        let id = orm::insert(&c.db, "map_props", &[("world_id", Sql::Integer(wid)), ("name", s(&pname)), ("file_url", s(&url)), ("kind", s(kind)),
+            ("px_w", Sql::Integer(px_w)), ("px_h", Sql::Integer(px_h)), ("cells_w", Sql::Real(cw)), ("cells_h", Sql::Real(ch))])?;
+        added.push(json!({"id": id, "name": pname, "tags": "", "url": url, "kind": kind, "px_w": px_w, "px_h": px_h, "cells_w": cw, "cells_h": ch}));
+    }
+    json_response(&json!({"added": added, "refused": refused}))
 }
 
 /// `POST /api/maps/props/{prop_id}/update` (app/routers/map_props.py `props_update`): name / tags /

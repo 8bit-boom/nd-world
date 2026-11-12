@@ -311,40 +311,20 @@ pub fn admin_backup(pages: &crate::pages::Pages, cfg: &Config, uri: &Uri, header
     }
     let uploads = cfg.db_path.parent()?.join("uploads");
     let maps_dir = crate::maps::maps_dir(cfg)?;
-    let mut buf = std::io::Cursor::new(Vec::new());
-    {
-        let mut zf = zip::ZipWriter::new(&mut buf);
-        let opts: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
-        zf.start_file("world.db", opts).ok()?;
-        zf.write_all(&std::fs::read(&snap).ok()?).ok()?;
-        zf.start_file("manifest.json", opts).ok()?;
-        zf.write_all(nd_render::py_dumps_indent_as(&Value::Object(manifest), 2, true).as_bytes()).ok()?;
-        let walk = |zf: &mut zip::ZipWriter<&mut std::io::Cursor<Vec<u8>>>, root: &std::path::Path, prefix: &str| -> Option<()> {
-            if !root.exists() {
-                return Some(());
-            }
-            let mut stack = vec![root.to_path_buf()];
-            while let Some(dir) = stack.pop() {
-                let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(&dir).ok()?.filter_map(|e| e.ok()).map(|e| e.path()).collect();
-                entries.sort();
-                for e in entries {
-                    if e.is_dir() {
-                        stack.push(e);
-                    } else if e.is_file() {
-                        let rel = e.strip_prefix(root).ok()?;
-                        zf.start_file(format!("{prefix}/{}", rel.to_string_lossy()), opts).ok()?;
-                        zf.write_all(&std::fs::read(&e).ok()?).ok()?;
-                    }
-                }
-            }
-            Some(())
-        };
-        walk(&mut zf, &uploads, "uploads")?;
-        walk(&mut zf, &maps_dir, "maps")?;
-        zf.finish().ok()?;
-    }
-    let _ = std::fs::remove_file(&snap);
+    let manifest_text = nd_render::py_dumps_indent_as(&Value::Object(manifest), 2, true);
+    // The zip is STREAMED while it is built (a thread writes it into a bounded channel): the download starts at once and memory stays
+    // small, however many gigabytes of uploads there are. Building it whole first made a big instance's backup time out before its first byte.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(8);
+    let snap_t = snap.clone();
+    std::thread::spawn(move || {
+        let mut w = ChanWriter { tx: tx.clone(), buf: Vec::with_capacity(CHUNK) };
+        let res = write_backup_zip(&mut w, &snap_t, &manifest_text, &uploads, &maps_dir).and_then(|_| w.flush());
+        let _ = std::fs::remove_file(&snap_t);
+        if let Err(e) = res {
+            let _ = tx.blocking_send(Err(e)); // cuts the download off, so a broken backup never looks complete
+        }
+    });
+    let stream = futures_util::stream::poll_fn(move |cx| rx.poll_recv(cx));
     // datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     let (y, m, d) = civil_from_days(now.as_secs().div_euclid(86400) as i64);
     let rem = now.as_secs().rem_euclid(86400);
@@ -354,9 +334,81 @@ pub fn admin_backup(pages: &crate::pages::Pages, cfg: &Config, uri: &Uri, header
         .status(axum::http::StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/zip")
         .header(header::CONTENT_DISPOSITION, format!("attachment; filename=\"nd-world-backup-{stamp}.zip\""))
+        .header("x-accel-buffering", "no")
         .header("x-nd-served-by", "gateway")
-        .body(Body::from(buf.into_inner()))
+        .body(Body::from_stream(stream))
         .ok()
+}
+
+const CHUNK: usize = 256 * 1024;
+
+/// A `Write` that hands the zip to the response in 256 KiB pieces (it blocks while the client reads slower than the zip is made)
+struct ChanWriter {
+    tx: tokio::sync::mpsc::Sender<Result<bytes::Bytes, std::io::Error>>,
+    buf: Vec<u8>,
+}
+
+impl Write for ChanWriter {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.buf.extend_from_slice(data);
+        if self.buf.len() >= CHUNK {
+            self.flush()?;
+        }
+        Ok(data.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        if self.buf.is_empty() {
+            return Ok(());
+        }
+        let piece = bytes::Bytes::from(std::mem::replace(&mut self.buf, Vec::with_capacity(CHUNK)));
+        self.tx.blocking_send(Ok(piece)).map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the download was closed"))
+    }
+}
+
+/// Media that is compressed already goes in stored: deflating it again costs minutes on a big instance and saves nothing
+fn stored_kind(name: &str) -> bool {
+    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "webp" | "avif" | "gif" | "mp3" | "mp4" | "m4a" | "webm" | "ogg" | "opus" | "mkv" | "mov"
+        | "wav" | "flac" | "zip" | "gz" | "7z" | "pdf" | "glb")
+}
+
+/// The backup zip: world.db (the VACUUM INTO snapshot), manifest.json, every uploaded file, every map json - the entry names Python's had
+fn write_backup_zip(w: &mut ChanWriter, snap: &std::path::Path, manifest: &str, uploads: &std::path::Path, maps_dir: &std::path::Path) -> std::io::Result<()> {
+    use zip9::write::SimpleFileOptions;
+    let ioe = |e: zip9::result::ZipError| std::io::Error::other(e.to_string());
+    let mut zf = zip9::ZipWriter::new_stream(w);
+    let opts = |name: &str, size: u64| SimpleFileOptions::default()
+        .compression_method(if stored_kind(name) { zip9::CompressionMethod::Stored } else { zip9::CompressionMethod::Deflated })
+        .large_file(size >= 0xFFFF_0000);
+    let snap_size = std::fs::metadata(snap)?.len();
+    zf.start_file("world.db", opts("world.db", snap_size)).map_err(ioe)?;
+    std::io::copy(&mut std::fs::File::open(snap)?, &mut zf)?;
+    zf.start_file("manifest.json", opts("manifest.json", 0)).map_err(ioe)?;
+    zf.write_all(manifest.as_bytes())?;
+    for (root, prefix) in [(uploads, "uploads"), (maps_dir, "maps")] {
+        if !root.exists() {
+            continue;
+        }
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)?.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+            entries.sort();
+            for e in entries {
+                if e.is_dir() {
+                    stack.push(e);
+                } else if e.is_file() {
+                    let Ok(rel) = e.strip_prefix(root) else { continue };
+                    let name = format!("{prefix}/{}", rel.to_string_lossy());
+                    let Ok(mut f) = std::fs::File::open(&e) else { continue }; // a file deleted while the backup runs: skipped
+                    let size = f.metadata().map(|m| m.len()).unwrap_or(0);
+                    zf.start_file(name.as_str(), opts(&name, size)).map_err(ioe)?;
+                    std::io::copy(&mut f, &mut zf)?;
+                }
+            }
+        }
+    }
+    zf.finish().map_err(ioe)?;
+    Ok(())
 }
 
 /// `GET /export/rules-and-notes.md` (app/main.py `export_rules_and_notes`): the world's rules plus every note entity and

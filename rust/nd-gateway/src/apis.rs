@@ -29,6 +29,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/api/quests/board" => quests_board(&cfg, uri, headers),
         "/api/backups" => backups_list(&cfg, uri, headers),
         "/api/ai/sessions" => ai_chat_sessions(&cfg, uri, headers),
+        "/api/ai/projects" => ai_chat_projects(&cfg, uri, headers),
         "/api/ai/imagegen/models/downloaded" => imagegen_downloaded(&cfg, uri, headers),
         "/api/ai/imagegen/models/downloaded" | "/api/perf/summary" | "/api/perf/recent" => perf_empty(&cfg, uri, headers),
         "/api/ai/imagegen/tags/sources" | "/api/ai/imagegen/tags/status" | "/api/ai/imagegen/tags" => imagegen_tags_empty(&cfg, uri, headers),
@@ -39,6 +40,9 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/api/ai/imagegen/status" | "/api/ai/imagegen/models" | "/api/ai/imagegen/loras" | "/api/ai/imagegen/upscalers" | "/api/ai/imagegen/refiners" | "/api/ai/imagegen/ipadapter-models"
         | "/api/ai/imagegen/progress" | "/api/ai/imagegen/updates" | "/api/ai/imagegen/backends" | "/api/ai/imagegen/samplers-schedulers" => imagegen_unbacked(&cfg, uri, headers),
         "/api/ai/imagegen/starred" => imagegen_starred(&cfg, uri, headers),
+        path if path.starts_with("/api/ai/ollama/upload/status/") => crate::knowledge::import_status(&cfg, uri, headers),
+        "/openapi.json" | "/docs" | "/docs/oauth2-redirect" | "/redoc" => api_docs(&cfg, uri, headers),
+        "/api/ai/ollama/hf-search" | "/api/ai/ollama/hf-files" | "/api/ai/imagegen/models/hf-files" => hf_discovery(&cfg, uri, headers),
         "/api/ai/unsloth/models" | "/api/ai/unsloth/image/status" | "/api/ai/unsloth/image/load-progress" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/status"
         | "/api/ai/unsloth/context-overrides" | "/api/ai/unsloth/audio-models" | "/api/ai/unsloth/version" | "/api/ai/unsloth/probe"
         | "/api/ai/unsloth/hub/download-progress" | "/api/ai/unsloth/gguf-variants" => unsloth_unconfigured(&cfg, uri, headers),
@@ -62,6 +66,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/api/audio/clips" => audio_clips(&cfg, uri, headers),
         "/api/world-players" => world_players(&cfg, uri, headers),
         "/api/tables/options" => tables_options(&cfg, uri, headers),
+        "/api/tables.json" => tables_json(&cfg, uri, headers),
         "/api/video-jobs" => video_jobs_list(&cfg, uri, headers),
         path if trailing_id(path, "/api/ai/sessions/").is_some() => ai_chat_session_get(&cfg, uri, headers, trailing_id(path, "/api/ai/sessions/")?),
         path if trailing_id(path, "/api/ai/chat/jobs/").is_some() => chat_job_status(&cfg, uri, headers, trailing_id(path, "/api/ai/chat/jobs/")?),
@@ -78,6 +83,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         }
         path if id_between(path, "/api/entity/", "/preview").is_some() => entity_preview(&cfg, uri, headers, id_between(path, "/api/entity/", "/preview")?),
         path if id_between(path, "/entity/", "/download.md").is_some() => entity_download(&cfg, uri, headers, id_between(path, "/entity/", "/download.md")?),
+        path if id_between(path, "/api/combat/", "/pc-state").is_some() => combat_pc_state(&cfg, uri, headers, id_between(path, "/api/combat/", "/pc-state")?),
         path if id_between(path, "/api/characters/", "/vitals").is_some() => pc_vitals(&cfg, uri, headers, id_between(path, "/api/characters/", "/vitals")?),
         path if id_between(path, "/api/characters/", "/sync").is_some() => pc_sync_get(&cfg, uri, headers, id_between(path, "/api/characters/", "/sync")?),
         path if id_between(path, "/api/characters/", "/advance").is_some() => pc_advance_get(&cfg, uri, headers, id_between(path, "/api/characters/", "/advance")?),
@@ -86,6 +92,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         path if id_between(path, "/characters/", "/export.json").is_some() => pc_export_json(&cfg, uri, headers, id_between(path, "/characters/", "/export.json")?),
         path if id_between(path, "/characters/", "/export.pdf").is_some() => pc_export_pdf(&cfg, uri, headers, id_between(path, "/characters/", "/export.pdf")?),
         path if id_between(path, "/characters/", "/export.md").is_some() => pc_export_md(&cfg, uri, headers, id_between(path, "/characters/", "/export.md")?),
+        path if id_between(path, "/parties/", "/export.ndc").is_some() => party_export_ndc(&cfg, uri, headers, id_between(path, "/parties/", "/export.ndc")?),
         path if id_between(path, "/characters/", "/export.ndc").is_some() => pc_export_ndc(&cfg, uri, headers, id_between(path, "/characters/", "/export.ndc")?),
         path if id_between(path, "/characters/", "/export.foundry.json").is_some() => pc_export_foundry(&cfg, uri, headers, id_between(path, "/characters/", "/export.foundry.json")?),
         path if path.starts_with("/worlds/switch/") => world_switch(&cfg, uri, headers),
@@ -117,14 +124,14 @@ pub fn is_get(path: &str) -> bool {
     matches!(path, "/api/hover-preview/config" | "/api/audio-jobs" | "/api/entities/picker" | "/api/cockpit/workspace" | "/api/cockpit/player-board" | "/api/calendar/search" | "/calendar/event-jump" | "/api/me" | "/api/view-prefs" | "/api/dice/history" | "/api/display/state" | "/rules/download.md" | "/api/ai/imagegen/jobs" | "/api/ai/imagegen/model-templates" | "/api/ai/world-summary")
         || id_between(path, "/pages/", "/download").is_some() || tpl_export_path(path).is_some() || export_json_path(path).is_some()
         || session_media_id(path).is_some() || id_between(path, "/api/ai/assist-job/", "").is_some() || id_between(path, "/api/entity/", "/preview").is_some() || id_between(path, "/entity/", "/download.md").is_some()
-        || id_between(path, "/api/ai/imagegen/jobs/", "").is_some()
+        || id_between(path, "/api/ai/imagegen/jobs/", "").is_some() || path.starts_with("/api/ai/ollama/upload/status/")
         || (path.starts_with("/worlds/switch/") && path.len() > "/worlds/switch/".len() && !path["/worlds/switch/".len()..].contains('/')) || vitals_id(path).is_some() || audio_job_id(path).is_some() || pack_world(path).is_some()
         || media_run_id(path).is_some() || session_audio_job_id(path).is_some() || player_image_job_id(path).is_some()
         || kind_zip_path(path).is_some()
         || id_between(path, "/sessions/", "/npc-candidates").is_some() || id_between(path, "/sessions/", "/summary.md").is_some() || id_between(path, "/sessions/", "/transcript.md").is_some()
         || id_between(path, "/api/audio-jobs/", "/transcript.md").is_some() || id_between(path, "/api/audio-jobs/", "/recap.md").is_some()
-        || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/templates/", "/export.json").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.pdf").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some() || saved_views_section(path).is_some()
-        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/backups" | "/api/ai/imagegen/status" | "/api/ai/imagegen/models" | "/api/ai/imagegen/loras" | "/api/ai/imagegen/upscalers" | "/api/ai/imagegen/refiners" | "/api/ai/imagegen/ipadapter-models" | "/api/ai/imagegen/progress" | "/api/ai/imagegen/updates" | "/api/ai/imagegen/backends" | "/api/ai/imagegen/samplers-schedulers" | "/api/ai/imagegen/starred" | "/api/ai/imagegen/tags/sources" | "/api/ai/imagegen/tags/status" | "/api/ai/imagegen/tags" | "/api/perf/summary" | "/api/perf/recent" | "/api/system/stats" | "/api/orgs/graph" | "/api/ai/context-info" | "/api/ai/ping" | "/api/ai/sessions" | "/api/ai/unsloth/models" | "/api/ai/unsloth/image/status" | "/api/ai/unsloth/image/load-progress" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/status" | "/api/ai/unsloth/context-overrides" | "/api/ai/unsloth/audio-models" | "/api/ai/unsloth/version" | "/api/ai/unsloth/probe" | "/api/ai/unsloth/hub/download-progress" | "/api/ai/unsloth/gguf-variants" | "/api/ai/recap-instructions" | "/api/ai/defaults" | "/api/ai/prompt-presets" | "/api/media-rename/history" | "/api/sessions/ai/audio-jobs" | "/api/kiy/plays" | "/api/media-rename/runs" | "/api/media-rename/summary" | "/api/media-rename/items" | "/api/gallery/browse" | "/admin/diagnostics/events" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some() || trailing_id(path, "/api/ai/sessions/").is_some()
+        || id_between(path, "/api/combat/", "/pc-state").is_some() || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/templates/", "/export.json").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.pdf").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some() || id_between(path, "/parties/", "/export.ndc").is_some() || saved_views_section(path).is_some()
+        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/backups" | "/api/ai/imagegen/status" | "/api/ai/imagegen/models" | "/api/ai/imagegen/loras" | "/api/ai/imagegen/upscalers" | "/api/ai/imagegen/refiners" | "/api/ai/imagegen/ipadapter-models" | "/api/ai/imagegen/progress" | "/api/ai/imagegen/updates" | "/api/ai/imagegen/backends" | "/api/ai/imagegen/samplers-schedulers" | "/api/ai/imagegen/starred" | "/api/ai/imagegen/tags/sources" | "/api/ai/imagegen/tags/status" | "/api/ai/imagegen/tags" | "/api/perf/summary" | "/api/perf/recent" | "/api/system/stats" | "/api/orgs/graph" | "/api/ai/context-info" | "/api/ai/ping" | "/api/ai/sessions" | "/api/ai/projects" | "/api/ai/unsloth/models" | "/api/ai/unsloth/image/status" | "/api/ai/unsloth/image/load-progress" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/status" | "/api/ai/unsloth/context-overrides" | "/api/ai/unsloth/audio-models" | "/api/ai/unsloth/version" | "/api/ai/unsloth/probe" | "/api/ai/unsloth/hub/download-progress" | "/api/ai/unsloth/gguf-variants" | "/api/ai/recap-instructions" | "/api/ai/defaults" | "/api/ai/prompt-presets" | "/api/media-rename/history" | "/api/sessions/ai/audio-jobs" | "/api/kiy/plays" | "/api/media-rename/runs" | "/api/media-rename/summary" | "/api/media-rename/items" | "/api/gallery/browse" | "/admin/diagnostics/events" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/tables.json" | "/api/video-jobs" | "/openapi.json" | "/docs" | "/docs/oauth2-redirect" | "/redoc" | "/api/ai/ollama/hf-search" | "/api/ai/ollama/hf-files" | "/api/ai/imagegen/models/hf-files") || trailing_id(path, "/api/ai/chat/jobs/").is_some() || trailing_id(path, "/api/ai/sessions/").is_some()
 }
 
 /// the id of `/api/parties/<id>/vitals` (plain digits, as FastAPI's int reads them here)
@@ -977,7 +984,7 @@ fn entities_picker(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Respo
 
 /// POST routes served here (small JSON reads that take a body)
 pub fn is_post(path: &str) -> bool {
-    matches!(path, "/api/ai/world-context-smart" | "/api/ai/world-context-player" | "/api/ai/unsloth/prefs" | "/api/ai/defaults" | "/api/system/gpu-power" | "/api/ai/models/add" | "/api/ai/models/remove" | "/api/ai/models/reset")
+    matches!(path, "/api/ai/world-context-smart" | "/api/ai/world-context-player" | "/api/ai/unsloth/prefs" | "/api/ai/defaults" | "/api/system/gpu-power" | "/api/ai/models/add" | "/api/ai/models/remove" | "/api/ai/models/reset" | "/api/media-rename/select")
 }
 
 pub fn post(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
@@ -987,6 +994,7 @@ pub fn post(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Op
         "/api/ai/unsloth/prefs" => unsloth_prefs(&cfg, uri, headers, body),
         "/api/ai/defaults" => ai_defaults_set(&cfg, uri, headers, body),
         "/api/system/gpu-power" => gpu_power(&cfg, uri, headers, body),
+        "/api/media-rename/select" => media_rename_select(&cfg, uri, headers, body),
         "/api/ai/models/add" | "/api/ai/models/remove" | "/api/ai/models/reset" => models_edit(&cfg, uri, headers, body),
         _ => None,
     }
@@ -1708,24 +1716,56 @@ fn py_int_value(v: &Value) -> Option<i64> {
     }
 }
 
-/// `GET /characters/<id>/export.ndc` (app/routers/characters.py `character_export_ndc`): the character in the Android app's / editor's format
-fn pc_export_ndc(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
-    let db = crate::writes::open(cfg)?;
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
-    let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
-    let pc = db.query_row("SELECT * FROM player_characters WHERE id = ?1", [id], |r| crate::layout::row_map(r)).ok();
-    let Some(pc) = pc else { return Some(crate::idpages::refusal(404)) };
-    if !(p.is_gm || pc.get("owner_user_id").and_then(|v| v.as_i64()) == Some(p.user_id)) {
+/// `GET /parties/<id>/export.ndc` (app/routers/parties.py `party_export_ndc`, GM only): every native member in one .ndc array; members on a custom sheet are
+/// skipped (named in X-Skipped-Custom-Sheets)
+fn party_export_ndc(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
         return Some(crate::idpages::refusal(403));
     }
-    if !crate::edits::pc_maxima(&db, &pc)?.4 {
-        return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "The .ndc format is the Neon & Dragons app's — a character on a custom sheet (Hunt in the Moonlight, Asterion, …) can't be exported to it. Use the JSON, Markdown, PDF or Foundry export instead."));
+    let Some(party) = rows_of(&db, "SELECT * FROM parties WHERE id = ?1", &[&id])?.into_iter().next() else { return Some(crate::idpages::refusal(404)) };
+    let wid = party.get("world_id").and_then(|v| v.as_i64())?;
+    let ids = crate::edits::member_ids(party.get("member_pc_ids_json"))?;
+    let mut pcs: Vec<Map<String, Value>> = vec![];
+    if !ids.is_empty() {
+        let marks = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let mut st = db.prepare(&format!("SELECT * FROM player_characters WHERE id IN ({marks}) AND world_id = ? ORDER BY name")).ok()?;
+        let mut params: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
+        params.push(&wid);
+        pcs = st.query_map(params.as_slice(), |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     }
+    let mut docs = vec![];
+    let mut skipped: Vec<String> = vec![];
+    for pc in &pcs {
+        if crate::edits::pc_maxima(&db, pc)?.4 {
+            docs.push(Value::Object(pc_ndc_doc(cfg, &db, pc)?));
+        } else {
+            skipped.push(pc.get("name").and_then(|v| v.as_str())?.to_string());
+        }
+    }
+    let name = party.get("name").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("party");
+    // _safe_export_filename: ASCII letters, digits, space, - and _ only here (Unicode letters: Python's)
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-' || c == '_') {
+        return None;
+    }
+    let body = nd_render::py_dumps_indent_as(&Value::Array(docs), 2, false);
+    let mut r = crate::edits::json_response_raw(&body, "application/json")?;
+    r.headers_mut().insert("content-disposition", format!("attachment; filename=\"{name}.ndc\"").parse().ok()?);
+    if !skipped.is_empty() {
+        let joined: String = skipped.join(", ").chars().filter(|c| c.is_ascii()).collect();
+        r.headers_mut().insert("x-skipped-custom-sheets", if joined.is_empty() { "custom sheets".to_string() } else { joined }.parse().ok()?);
+    }
+    Some(r)
+}
+
+/// `GET /characters/<id>/export.ndc` (app/routers/characters.py `character_export_ndc`): the character in the Android app's / editor's format
+/// `_pc_to_ndc_dict(pc)`: a native sheet in the Android app's / editor's format (None: something Python would read or print its own way)
+pub(crate) fn pc_ndc_doc(cfg: &Config, db: &rusqlite::Connection, pc: &Map<String, Value>) -> Option<Map<String, Value>> {
     let list = |k: &str| -> Option<Vec<Value>> {
         match py_json_strict(pc.get(k).and_then(|v| v.as_str()), "[]")? { Value::Array(a) => Some(a), _ => None }
     };
     let (stats, feats, equipment, currency) = (list("stats_json")?, list("feats_json")?, list("equipment_json")?, list("currency_json")?);
-    let d = crate::edits::derived(&pc)?;
+    let d = crate::edits::derived(pc)?;
     let dint = |k: &str| d.get(k).and_then(|v| v.as_i64());
     let mut stat_val: Vec<(String, i64)> = vec![];
     for s in &stats {
@@ -1813,7 +1853,7 @@ fn pc_export_ndc(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Optio
     let race_id = text_col("race_id")?;
     let (phys, ment) = (dint("phys")?, dint("ment")?);
     let ecto = if race_id == "banshee" { phys + ment } else { 0 };
-    let n = |k: &str| crate::edits::col_int(&pc, k);
+    let n = |k: &str| crate::edits::col_int(pc, k);
     let empty_obj = || json!({});
     let empty_arr = || json!([]);
     let mut doc = Map::new();
@@ -1850,6 +1890,22 @@ fn pc_export_ndc(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Optio
         "portraitBase64": portrait, "notes": notes,
         "featSpecialAttrValues": empty_obj(), "professionSpecialAttrValues": empty_obj(), "raceSpecialAttrValues": empty_obj(),
     }
+    Some(doc)
+}
+
+fn pc_export_ndc(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let pc = db.query_row("SELECT * FROM player_characters WHERE id = ?1", [id], |r| crate::layout::row_map(r)).ok();
+    let Some(pc) = pc else { return Some(crate::idpages::refusal(404)) };
+    if !(p.is_gm || pc.get("owner_user_id").and_then(|v| v.as_i64()) == Some(p.user_id)) {
+        return Some(crate::idpages::refusal(403));
+    }
+    if !crate::edits::pc_maxima(&db, &pc)?.4 {
+        return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "The .ndc format is the Neon & Dragons app's — a character on a custom sheet (Hunt in the Moonlight, Asterion, …) can't be exported to it. Use the JSON, Markdown, PDF or Foundry export instead."));
+    }
+    let Some(doc) = pc_ndc_doc(cfg, &db, &pc) else { return None };
     let fname = export_name(pc.get("name").and_then(|v| v.as_str()))?;
     let body = nd_render::py_dumps_indent_as(&json!([Value::Object(doc)]), 2, false);
     let mut r = crate::edits::json_response_raw(&body, "application/json")?;
@@ -2787,7 +2843,7 @@ fn player_image_jobs_list(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Optio
     crate::edits::json_response(&Value::Array(out))
 }
 
-/// DELETE routes: `/api/ai/chat/jobs/<id>` (a finished job's row) and `/api/ai/imagegen/model-templates/custom/<id>` (one of the world's own
+/// DELETE routes: `/api/ai/prompt-presets/<id>`, `/api/ai/chat/jobs/<id>` (a finished job's row) and `/api/ai/imagegen/model-templates/custom/<id>` (one of the world's own
 /// templates). Anything else, or a case Python judges otherwise, is Python's.
 pub fn delete(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
     let db = crate::writes::open(cfg)?;
@@ -2806,6 +2862,15 @@ pub fn delete(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<B
             return None; // IN_PROGRESS_STATUSES: Python's 400 / the running task
         }
         db.execute("DELETE FROM chat_jobs WHERE id = ?1", [id]).ok()?;
+        return crate::edits::json_response(&json!({"ok": true}));
+    }
+    if let Some(id) = trailing_id(path, "/api/ai/prompt-presets/") {
+        // `api_prompt_presets_delete`: the world's own preset of either scope (a 404 for another world's or a missing one)
+        let Some(wid) = p.world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64()) else { return Some(crate::idpages::refusal(404)) };
+        if rows_of(&db, "SELECT id FROM prompt_presets WHERE id = ?1 AND world_id = ?2", &[&id, &wid])?.is_empty() {
+            return Some(crate::idpages::refusal(404));
+        }
+        db.execute("DELETE FROM prompt_presets WHERE id = ?1", [id]).ok()?;
         return crate::edits::json_response(&json!({"ok": true}));
     }
     let id = trailing_id(path, "/api/ai/imagegen/model-templates/custom/")?;
@@ -3212,6 +3277,91 @@ fn media_rename_items(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Re
         "generic_count": generic_flags.iter().filter(|g| **g).count()}))
 }
 
+/// `POST /api/media-rename/select` (app/routers/media_rename.py): everything that matches across the whole library, as the refs a run takes -
+/// {kinds, scope: "needs_work" | "all", album?} -> {items, count, capped}
+fn media_rename_select(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
+    const MAX_RUN_ITEMS: usize = 2000;
+    let (db, p) = page(cfg, uri, headers)?;
+    let Some(w) = p.world.as_ref() else { return Some(crate::idpages::refusal(404)) };
+    let wid = w.get("id")?.as_i64()?;
+    let b = match serde_json::from_slice::<Value>(body) {
+        Ok(Value::Object(o)) if crate::edits::plain_numbers(body) => o,
+        Ok(Value::Object(_)) => return None,
+        Ok(_) => return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "Send a JSON object.")),
+        Err(_) if body.windows(3).any(|x| x == b"NaN") || body.windows(8).any(|x| x == b"Infinity") => return None,
+        Err(_) => return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "Send a JSON body.")),
+    };
+    let Some(Value::Array(raw_kinds)) = b.get("kinds") else { return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "kinds must be a list.")) };
+    if raw_kinds.iter().any(|k| matches!(k, Value::Array(_) | Value::Object(_))) {
+        return None; // an unhashable member: Python's TypeError
+    }
+    let known = |k: &Value| matches!(k.as_str(), Some("audio" | "video" | "image"));
+    let kinds: Vec<&str> = if raw_kinds.iter().all(known) {
+        ["audio", "video", "image"].into_iter().filter(|k| raw_kinds.iter().any(|r| r.as_str() == Some(k))).collect()
+    } else {
+        return Some(crate::idpages::refusal(403)); // a kind that is not one of the three: `_require_edit`'s 403
+    };
+    for kind in &kinds {
+        let section = if *kind == "image" { "images" } else { kind };
+        if !crate::pages::edit_level(&p, w, section)? {
+            return Some(crate::idpages::refusal(403));
+        }
+    }
+    let only_generic = match b.get("scope") { None => true, Some(v) => v.as_str() != Some("all") };
+    // int(body.get("album") or 0): only with one kind; what int() refuses is 0
+    let album: i64 = if kinds.len() == 1 {
+        match b.get("album") {
+            Some(Value::Number(n)) => n.as_i64().or_else(|| n.as_f64().map(|f| f.trunc() as i64)).unwrap_or(0),
+            Some(Value::String(t)) => crate::form::py_int(t).unwrap_or(0),
+            Some(Value::Bool(true)) => 1,
+            _ => 0,
+        }
+    } else {
+        0
+    };
+    let mut refs: Vec<Value> = vec![];
+    for kind in kinds {
+        if kind == "audio" || kind == "video" {
+            let table = if kind == "audio" { "audio_clips" } else { "video_clips" };
+            let rows = if album != 0 {
+                rows_of(&db, &format!("SELECT id, name FROM {table} WHERE world_id = ?1 AND album_id = ?2 ORDER BY name, id"), &[&wid, &album])?
+            } else {
+                rows_of(&db, &format!("SELECT id, name FROM {table} WHERE world_id = ?1 ORDER BY name, id"), &[&wid])?
+            };
+            for r in rows {
+                if crate::media_rename::looks_generic(r.get("name").and_then(|v| v.as_str()).unwrap_or("")) || !only_generic {
+                    refs.push(json!({"kind": kind, "id": r.get("id")}));
+                }
+            }
+        } else {
+            let in_album: Option<Vec<String>> = if album != 0 {
+                let chosen = rows_of(&db, "SELECT * FROM image_albums WHERE id = ?1 AND world_id = ?2", &[&album, &wid])?.into_iter().next();
+                Some(match chosen {
+                    Some(a) => crate::gallery::album_urls(&a).as_array()?.iter().filter_map(|u| u.as_str().map(str::to_string)).collect(),
+                    None => vec![],
+                })
+            } else {
+                None
+            };
+            let usage = crate::media_rename::image_usage(&db, wid)?;
+            let mut sorted: Vec<&crate::media_rename::ImageUse> = usage.iter().collect();
+            sorted.sort_by(|a, b| a.0.cmp(&b.0));
+            for u in sorted {
+                if in_album.as_ref().is_some_and(|set| !set.contains(&u.0)) {
+                    continue;
+                }
+                let generic = crate::media_rename::looks_generic(&u.3) && u.1.is_empty();
+                if generic || !only_generic {
+                    refs.push(json!({"kind": "image", "url": u.0}));
+                }
+            }
+        }
+    }
+    let count = refs.len();
+    refs.truncate(MAX_RUN_ITEMS);
+    crate::edits::json_response(&json!({"items": refs, "count": count, "capped": count > MAX_RUN_ITEMS}))
+}
+
 /// `GET /api/kiy/plays` (app/routers/lore_extras.py): the saved King in Yellow plays (kiy_plays.json beside the database) without their text. GM only.
 fn kiy_plays(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
     let (_db, p) = page(cfg, uri, headers)?;
@@ -3358,22 +3508,47 @@ fn ai_chat_sessions(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Resp
         return None;
     }
     let Some(wid) = world_id_of(&p) else { return Some(crate::idpages::refusal(404)) };
-    let rows = rows_of(&db, "SELECT id, title FROM chat_sessions WHERE world_id = ?1 AND surface = 'chat' ORDER BY updated_at DESC", &[&wid])?;
-    let list: Vec<Value> = rows.iter().map(|r| json!({"id": r.get("id"), "title": r.get("title")})).collect();
+    let rows = rows_of(&db, "SELECT id, title, project_id FROM chat_sessions WHERE world_id = ?1 AND surface = 'chat' ORDER BY updated_at DESC", &[&wid])?;
+    let list: Vec<Value> = rows.iter().map(|r| json!({"id": r.get("id"), "title": r.get("title"), "project_id": r.get("project_id")})).collect();
     crate::edits::json_response(&json!({"sessions": list}))
 }
 
-/// `GET /api/ai/sessions/<id>`: one saved Chat conversation: `{id, messages}`. GM only; another world's or surface's row is a 404
+/// `GET /api/ai/sessions/<id>`: one saved Chat conversation: `{id, project_id, messages}`. GM only; another world's or surface's row is a 404
 fn ai_chat_session_get(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
     let (db, p) = page(cfg, uri, headers)?;
     if !p.is_gm {
         return None;
     }
     let Some(wid) = world_id_of(&p) else { return Some(crate::idpages::refusal(404)) };
-    let rows = rows_of(&db, "SELECT id, messages_json FROM chat_sessions WHERE id = ?1 AND world_id = ?2 AND surface = 'chat'", &[&id, &wid])?;
+    let rows = rows_of(&db, "SELECT id, project_id, messages_json FROM chat_sessions WHERE id = ?1 AND world_id = ?2 AND surface = 'chat'", &[&id, &wid])?;
     let Some(row) = rows.into_iter().next() else { return Some(crate::idpages::refusal(404)) };
     let messages = py_json_strict(row.get("messages_json").and_then(|v| v.as_str()), "[]")?;
-    crate::edits::json_response(&json!({"id": id, "messages": messages}))
+    crate::edits::json_response(&json!({"id": id, "project_id": row.get("project_id"), "messages": messages}))
+}
+
+/// `GET /api/ai/projects` (app/routers/ai.py `api_chat_projects_list`): the active world's chat projects, newest first, each with its
+/// chats newest-first (the sidebar's Projects section). GM only.
+fn ai_chat_projects(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    let Some(wid) = world_id_of(&p) else { return Some(crate::idpages::refusal(404)) };
+    let projects = rows_of(&db, "SELECT id, name, notes FROM ai_projects WHERE world_id = ?1 ORDER BY created_at DESC, id DESC", &[&wid])?;
+    let chats = rows_of(&db, "SELECT id, title, project_id FROM chat_sessions WHERE world_id = ?1 AND surface = 'chat' AND project_id IS NOT NULL ORDER BY updated_at DESC", &[&wid])?;
+    let mut grouped: std::collections::HashMap<i64, Vec<Value>> = std::collections::HashMap::new();
+    for c in &chats {
+        let pid = c.get("project_id").and_then(|v| v.as_i64())?;
+        grouped.entry(pid).or_default().push(json!({"id": c.get("id"), "title": c.get("title")}));
+    }
+    let list: Vec<Value> = projects
+        .iter()
+        .map(|r| {
+            let pid = r.get("id").and_then(|v| v.as_i64())?;
+            Some(json!({"id": r.get("id"), "name": r.get("name"), "notes": r.get("notes"), "chats": grouped.get(&pid).cloned().unwrap_or_default()}))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    crate::edits::json_response(&json!({"projects": list}))
 }
 
 /// `GET /api/ai/recap-instructions`: the world's standing recap instructions. GM only.
@@ -3816,10 +3991,26 @@ fn imagegen_downloaded(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<R
         return None;
     }
     let dir = std::path::PathBuf::from(std::env::var("SWARMUI_MODELS_DIR").unwrap_or_else(|_| "/data/swarmui-models".into()));
-    if dir.is_dir() && std::fs::read_dir(&dir).ok()?.next().is_some() {
-        return None;
+    let mut models: Vec<Value> = vec![];
+    fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<Value>) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        let mut entries: Vec<_> = rd.filter_map(|e| e.ok()).collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let path = e.path();
+            if path.is_dir() {
+                walk(root, &path, out);
+            } else if path.is_file() && !e.file_name().to_string_lossy().ends_with(".part") {
+                let rel = path.strip_prefix(root).unwrap_or(&path);
+                let sub = rel.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+                out.push(json!({"subfolder": sub, "filename": e.file_name().to_string_lossy(), "bytes": std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)}));
+            }
+        }
     }
-    crate::edits::json_response(&json!({"models": [], "folder_suggestions": ["", "LoRA", "VAE", "clip", "diffusion_models", "ControlNet", "Upscale", "IPAdapter", "Refiner", "Embedding"]}))
+    if dir.is_dir() {
+        walk(&dir, &dir, &mut models);
+    }
+    crate::edits::json_response(&json!({"models": models, "folder_suggestions": ["", "LoRA", "VAE", "clip", "diffusion_models", "ControlNet", "Upscale", "IPAdapter", "Refiner", "Embedding"]}))
 }
 
 /// `GET /api/quests/board`: the active world's top-level active quests for the cockpit (GM; 400 without a world)
@@ -3882,6 +4073,75 @@ fn world_players(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Respons
         }
     }
     crate::edits::json_response(&Value::Array(out))
+}
+
+/// `GET /api/combat/<id>/pc-state` (app/routers/combat.py `combat_pc_state`, GM only): what the player characters of an encounter are like ON THEIR SHEETS now -
+/// the other direction of Sync
+fn combat_pc_state(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return Some(crate::idpages::refusal(403));
+    }
+    let wid = p.world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64());
+    let Some(cs) = rows_of(&db, "SELECT * FROM combat_sessions WHERE id = ?1", &[&id])?.into_iter().next() else { return Some(crate::idpages::refusal(404)) };
+    if wid.is_none() || cs.get("world_id").and_then(|v| v.as_i64()) != wid {
+        return Some(crate::idpages::refusal(404));
+    }
+    let raw = cs.get("combatants_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]");
+    if !crate::edits::plain_numbers(raw.as_bytes()) {
+        return None;
+    }
+    let combatants: Vec<Value> = match serde_json::from_str::<Value>(raw) {
+        Ok(Value::Array(a)) => a.into_iter().filter(|c| c.is_object()).collect(),
+        Ok(_) => vec![],
+        Err(_) if raw.contains("NaN") || raw.contains("Infinity") => return None,
+        Err(_) => vec![],
+    };
+    let mut out = Map::new();
+    for c in &combatants {
+        if c.get("source").and_then(|v| v.as_str()) != Some("pc") {
+            continue;
+        }
+        let Some(pc_id) = c.get("pc_id").filter(|v| crate::edits::py_truthy_pub(Some(v))) else { continue };
+        let Some(pc_id) = pc_id.as_i64() else { return None };
+        let Some(pc) = rows_of(&db, "SELECT * FROM player_characters WHERE id = ?1 AND world_id = ?2", &[&pc_id, &wid.unwrap_or(0)])?.into_iter().next() else { continue };
+        let sheet = crate::edits::pc_combatant_db(&db, &pc)?;
+        let key = c.get("id").and_then(|v| v.as_str())?.to_string();
+        let mut one = Map::new();
+        for k in ["hp", "max_hp", "shock", "max_shock", "conditions", "res"] {
+            one.insert(k.into(), sheet.get(k)?.clone());
+        }
+        out.insert(key, Value::Object(one));
+    }
+    crate::edits::json_response(&json!({"pcs": out}))
+}
+
+/// `GET /api/tables.json` (app/routers/tables.py `tables_json`, for the nd-cartographer studio): every roll table of the world and the built-in ones,
+/// with the entries that have a label (400-less: 404 without a world)
+fn tables_json(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let Some(wid) = world_id_of(&p) else { return Some(crate::ai_more::detail(axum::http::StatusCode::NOT_FOUND, "No world selected")) };
+    let mut out = vec![];
+    for t in rows_of(&db, "SELECT * FROM random_tables WHERE world_id IS NULL OR world_id = ?1 ORDER BY category, name", &[&wid])? {
+        let raw = t.get("entries_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
+        if !crate::edits::plain_numbers(raw.as_bytes()) {
+            return None;
+        }
+        let entries: Vec<Value> = match serde_json::from_str::<Value>(raw) {
+            Ok(Value::Array(a)) => a.into_iter().filter_map(|e| {
+                let o = e.as_object()?;
+                let label = o.get("label").filter(|l| crate::edits::py_truthy_pub(Some(l)))?.clone();
+                Some(json!({"label": label, "weight": o.get("weight").cloned().unwrap_or(json!(1))}))
+            }).collect::<Vec<_>>(),
+            Ok(Value::Object(_)) | Ok(Value::String(_)) => vec![], // iterating one yields keys / characters, never a dict
+            Ok(_) => return None,                                  // null / a number: Python's TypeError
+            Err(_) if raw.contains("NaN") || raw.contains("Infinity") => return None,
+            Err(_) => vec![],
+        };
+        let category = if crate::edits::py_truthy_pub(t.get("category")) { t.get("category").cloned().unwrap_or(json!("general")) } else { json!("general") };
+        out.push(json!({"id": t.get("id"), "name": t.get("name"), "slug": t.get("slug"), "category": category, "entries": entries}));
+    }
+    crate::edits::json_response(&json!({"tables": out}))
 }
 
 /// `GET /api/tables/options`: the world's (and the global) roll tables with entry counts (400 without a world)
@@ -4158,4 +4418,104 @@ fn world_summary_get(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Res
         None => Value::Null,
     };
     crate::edits::json_response(&json!({"recap": job.get("recap").cloned().unwrap_or(json!("")), "generated_at": finished}))
+}
+
+fn py_truthy(v: &Value) -> bool {
+    match v {
+        Value::Null => false,
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0),
+        Value::String(t) => !t.is_empty(),
+        Value::Array(a) => !a.is_empty(),
+        Value::Object(o) => !o.is_empty(),
+    }
+}
+
+/// `GET /api/ai/ollama/hf-search`, `/api/ai/ollama/hf-files`, `/api/ai/imagegen/models/hf-files` (app/ai.py `search_huggingface_models` /
+/// `list_huggingface_gguf_files` / `list_huggingface_repo_files_recursive`): discovery on Hugging Face's public API; any failure is an empty list, as in Python
+fn hf_discovery(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+    let (_db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    let param = |n: &str| crate::pages::query_param(uri, n);
+    let path = uri.path();
+    let strip = |t: &str| nd_render::text::py_strip(t).to_string();
+    let fetch = |url: String| -> Option<Value> {
+        let (status, body) = tokio::runtime::Handle::current().block_on(crate::kiy::fetch(&url, std::time::Duration::from_secs(10), "python-httpx/0.27"))?;
+        if status >= 400 {
+            return None;
+        }
+        serde_json::from_slice(&body).ok()
+    };
+    if path.ends_with("/hf-search") {
+        let q = strip(&param("q").unwrap_or_default());
+        let mut results: Vec<Value> = vec![];
+        if !q.is_empty() {
+            let url = format!("https://huggingface.co/api/models?search={}&sort=downloads&direction=-1&limit=20", utf8_percent_encode(&q, NON_ALPHANUMERIC));
+            if let Some(Value::Array(list)) = fetch(url) {
+                for m in list {
+                    let Value::Object(m) = m else { continue };
+                    let id = match m.get("id").filter(|v| py_truthy(v)).or_else(|| m.get("modelId")) {
+                        Some(Value::String(t)) => t.clone(),
+                        None | Some(Value::Null) => continue,
+                        _ => return None,
+                    };
+                    if id.is_empty() {
+                        continue;
+                    }
+                    let num = |k: &str| m.get(k).filter(|v| py_truthy(v)).cloned().unwrap_or(json!(0));
+                    results.push(json!({"id": id, "downloads": num("downloads"), "likes": num("likes")}));
+                }
+            }
+        }
+        return crate::edits::json_response(&json!({"results": results}));
+    }
+    let repo = strip(&param("repo").unwrap_or_default());
+    let repo = repo.trim_matches('/').to_string();
+    let recursive = path.ends_with("/models/hf-files");
+    let valid = repo.split('/').count() == 2 && repo.split('/').all(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')));
+    if !repo.contains('/') {
+        return crate::edits::json_response(&json!({"files": []}));
+    }
+    if !valid {
+        return None; // a name httpx would percent-encode its own way
+    }
+    let suffix = if recursive { param("suffix").unwrap_or_else(|| ".gguf".into()).to_lowercase() } else { String::new() };
+    if recursive && suffix.chars().any(|c| !c.is_ascii()) {
+        return None;
+    }
+    let url = format!("https://huggingface.co/api/models/{repo}/tree/main{}", if recursive { "?recursive=true" } else { "" });
+    let mut files: Vec<Value> = vec![];
+    if let Some(Value::Array(list)) = fetch(url) {
+        for e in list {
+            let Value::Object(e) = e else { continue };
+            let path = match e.get("path") { None => String::new(), Some(Value::String(t)) => t.clone(), _ => return None };
+            let size = e.get("size").cloned().unwrap_or(Value::Null);
+            if recursive {
+                if e.get("type").and_then(|t| t.as_str()) == Some("file") && path.to_lowercase().ends_with(&suffix) {
+                    files.push(json!({"path": path, "size_bytes": size}));
+                }
+            } else if path.to_lowercase().ends_with(".gguf") {
+                files.push(json!({"filename": path, "size_bytes": size}));
+            }
+        }
+    }
+    crate::edits::json_response(&json!({"files": files}))
+}
+
+/// `/openapi.json`, `/docs`, `/docs/oauth2-redirect`, `/redoc` (FastAPI's own, generated into rust/nd-render/data/openapi by scripts/gen_rust_data.py)
+fn api_docs(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (_db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    let (body, ctype) = match uri.path() {
+        "/openapi.json" => (include_str!("../../nd-render/data/openapi/openapi.json"), "application/json"),
+        "/docs" => (include_str!("../../nd-render/data/openapi/docs.html"), "text/html; charset=utf-8"),
+        "/docs/oauth2-redirect" => (include_str!("../../nd-render/data/openapi/oauth2-redirect.html"), "text/html; charset=utf-8"),
+        _ => (include_str!("../../nd-render/data/openapi/redoc.html"), "text/html; charset=utf-8"),
+    };
+    crate::edits::json_response_raw(body, ctype)
 }

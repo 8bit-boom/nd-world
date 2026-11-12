@@ -185,11 +185,11 @@ fn translate_options(o: &Map<String, Value>) -> Map<String, Value> {
     out
 }
 
-fn sse(v: &Value) -> String {
+pub(crate) fn sse(v: &Value) -> String {
     format!("data: {}\n\n", nd_render::py_dumps(v))
 }
 
-fn stream_response(rx: tokio::sync::mpsc::Receiver<String>) -> Response<Body> {
+pub(crate) fn stream_response(rx: tokio::sync::mpsc::Receiver<String>) -> Response<Body> {
     let stream = tokio_stream_from(rx);
     Response::builder()
         .status(StatusCode::OK)
@@ -753,7 +753,7 @@ fn stream_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Opt
         Some(o @ Value::Object(_)) => clamp_options(o)?,
         Some(_) => return None,
     };
-    let messages = build_messages(b.get("messages")?)?;
+    let messages = build_messages(b.get("messages")?, cfg.db_path.parent().map(|d| d.join("uploads")).as_deref())?;
     let surface = if p.is_gm || surface == "chat" || surface == "ask_ai" { surface } else { "chat".into() };
     let requested = if p.is_gm && !model.is_empty() { model } else { surface_default(cfg, &surface)? };
     if !p.is_gm && system.chars().count() > PLAYER_SYSTEM_MAX_CHARS {
@@ -1620,25 +1620,72 @@ pub async fn audio_job_resummarize(cfg: std::sync::Arc<Config>, uri: Uri, header
 }
 
 /// `_build_ollama_messages`: only messages without attachments or with document ones (pictures and audio are Python's)
-fn build_messages(v: &Value) -> Option<Vec<Value>> {
+fn build_messages(v: &Value, uploads: Option<&std::path::Path>) -> Option<Vec<Value>> {
+    use base64::Engine;
+    // `_attachment_disk_path`: an /uploads/ URL's file, only when it stays under the uploads folder
+    let disk = |url: &str| -> Option<std::path::PathBuf> {
+        let rest = url.strip_prefix("/uploads/")?;
+        let root = uploads?.canonicalize().ok()?;
+        let path = uploads?.join(rest).canonicalize().ok()?;
+        (path.starts_with(&root) && path.is_file()).then_some(path)
+    };
     let mut messages = vec![];
     for m in v.as_array()? {
         let Value::Object(m) = m else { return None };
         let (Some(Value::String(role)), Some(Value::String(content))) = (m.get("role"), m.get("content")) else { return None };
         let mut content = content.clone();
+        let mut images: Vec<String> = vec![];
         for a in m.get("attachments").map(|a| a.as_array()).unwrap_or(Some(&vec![]))? {
             let Value::Object(a) = a else { return None };
             let s = |k: &str| match a.get(k) { None => Some(String::new()), Some(Value::String(s)) => Some(s.clone()), _ => None };
-            if a.get("kind") != Some(&json!("document")) || !matches!(a.get("url"), Some(Value::String(_))) {
-                return None;
-            }
+            let (Some(Value::String(kind)), Some(Value::String(url))) = (a.get("kind"), a.get("url")) else { return None };
             let (name, t) = (s("name")?, s("text")?);
-            if !t.is_empty() {
-                let snippet: String = t.chars().take(MAX_ATTACHMENT_TEXT_CHARS).collect();
-                content.push_str(&format!("\n\n---\nAttached file: {}\n\n{snippet}\n---", if name.is_empty() { "document" } else { &name }));
+            let snippet = || -> String { t.chars().take(MAX_ATTACHMENT_TEXT_CHARS).collect() };
+            match kind.as_str() {
+                "document" if !t.is_empty() => {
+                    content.push_str(&format!("\n\n---\nAttached file: {}\n\n{}\n---", if name.is_empty() { "document" } else { &name }, snippet()));
+                }
+                "audio" => {
+                    let label = if name.is_empty() { "audio clip" } else { &name };
+                    let is_wav = url.rsplit('/').next().is_some_and(|f| f.to_lowercase().ends_with(".wav") && f.len() > 4);
+                    let mut sent = false;
+                    if !t.is_empty() {
+                        content.push_str(&format!("\n\n---\nTranscript of attached audio file: {label}\n\n{}\n---", snippet()));
+                        sent = true;
+                    }
+                    // the wav's bytes go in an `audios` field that the Studio dialect drops: only the note is left of it
+                    if is_wav && disk(url).is_some() {
+                        if t.is_empty() {
+                            content.push_str(&format!("\n\n[Attached audio file: {label} — sent to the model directly for models with audio input support]"));
+                        }
+                        sent = true;
+                    }
+                    if !sent {
+                        content.push_str(&format!("\n\n[Attached audio file: {label} — not sent to the model: no transcription available and it isn't a .wav file for direct audio input; mentioned here for context only]"));
+                    }
+                }
+                "image" => {
+                    if let Some(path) = disk(url) {
+                        images.push(base64::engine::general_purpose::STANDARD.encode(std::fs::read(path).ok()?));
+                    }
+                }
+                _ => {}
             }
         }
-        messages.push(json!({"role": role, "content": content}));
+        if images.is_empty() {
+            messages.push(json!({"role": role, "content": content}));
+        } else {
+            // `_translate_messages`: text, then each picture as an image_url part (JPEG sniffed by its base64 prefix, else PNG)
+            let mut parts = vec![];
+            if !content.is_empty() {
+                parts.push(json!({"type": "text", "text": content}));
+            }
+            for b in images {
+                let media = if b.starts_with("/9j/") { "image/jpeg" } else { "image/png" };
+                parts.push(json!({"type": "image_url", "image_url": {"url": format!("data:{media};base64,{b}")}}));
+            }
+            messages.push(json!({"role": role, "content": parts}));
+        }
     }
     Some(messages)
 }
@@ -1684,7 +1731,7 @@ fn chat_job_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> O
         Some(o @ Value::Object(_)) => clamp_options(o)?,
         Some(_) => return None,
     };
-    let messages = build_messages(b.get("messages")?)?;
+    let messages = build_messages(b.get("messages")?, cfg.db_path.parent().map(|d| d.join("uploads")).as_deref())?;
     let backend = backend(&db)?;
     if !options.contains_key("num_ctx") {
         let total = format!("{system}{}", messages.iter().map(|m| m["content"].as_str().unwrap_or("")).collect::<String>());
@@ -2654,6 +2701,42 @@ pub(crate) async fn chat_with_schema(b: &Backend, model: &str, messages: &[Value
         return Err(format!("Ollama error {status}: {}", error_text(&bytes, status)));
     }
     content(&bytes)
+}
+
+
+/// `benchmark_model`'s one call: (completion tokens, prompt tokens, wall-clock nanoseconds) of a non-streamed chat, or the ValueError text Python raises
+pub(crate) async fn chat_timed(b: &Backend, model: &str, messages: &[Value], extra: &Map<String, Value>) -> Result<(i64, i64, i64), String> {
+    let mut opts = b.options_for(model);
+    for (k, v) in extra {
+        opts.insert(k.clone(), v.clone());
+    }
+    opts.remove("num_ctx");
+    let mut body = Map::new();
+    body.insert("model".into(), json!(model));
+    body.insert("messages".into(), Value::Array(messages.to_vec()));
+    body.insert("stream".into(), json!(false));
+    body.extend(translate_options(&opts));
+    body.insert("chat_template_kwargs".into(), json!({"enable_thinking": false}));
+    let req = backend_request(b, "POST", "/v1/chat/completions", Some(&Value::Object(body))).ok_or_else(|| "AI unavailable: request".to_string())?;
+    let started = std::time::Instant::now();
+    let resp = client().request(req).await.map_err(|e| format!("AI unavailable: ConnectError: {e}"))?;
+    let status = resp.status().as_u16();
+    let bytes = resp.into_body().collect().await.map_err(|e| format!("AI unavailable: ReadError: {e}"))?.to_bytes();
+    if status >= 400 {
+        let m = match serde_json::from_slice::<Value>(&bytes) {
+            Ok(Value::Object(o)) => match o.get("error") {
+                Some(Value::Object(e)) => e.get("message").map(|m| match m { Value::String(s) => s.clone(), other => other.to_string() }).unwrap_or_default(),
+                Some(Value::String(s)) if !s.is_empty() => s.clone(),
+                _ => String::new(),
+            },
+            _ => String::from_utf8_lossy(&bytes).chars().take(500).collect(),
+        };
+        return Err(format!("Ollama error {status}: {}", if m.is_empty() { format!("HTTP {status}") } else { m }));
+    }
+    let elapsed = started.elapsed().as_nanos() as i64;
+    let v: Value = serde_json::from_slice(&bytes).map_err(|_| "AI unavailable: JSONDecodeError: the backend's answer is not JSON".to_string())?;
+    let n = |k: &str| v.pointer(&format!("/usage/{k}")).and_then(|x| x.as_i64()).unwrap_or(0);
+    Ok((n("completion_tokens"), n("prompt_tokens"), elapsed))
 }
 
 /// `_normalized_fact_key`
@@ -4299,14 +4382,15 @@ fn sync_ai_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Op
             text_raw(&b, "surface")?;
             let think = match b.get("think") { None => false, Some(Value::Bool(t)) => *t, Some(_) => return None };
             let options = match b.get("options") { None => Map::new(), Some(o @ Value::Object(_)) => clamp_options(o)?, Some(_) => return None };
-            let messages = build_messages(b.get("messages")?)?;
+            let messages = build_messages(b.get("messages")?, cfg.db_path.parent().map(|d| d.join("uploads")).as_deref())?;
             let bk = backend(&db)?;
             let model = if model.is_empty() { bk.model.clone() } else { model };
             if !compact {
                 SyncAi::Chat { b: bk, model, system, messages, options }
             } else {
                 if messages.is_empty() { return refuse(StatusCode::BAD_REQUEST, "No messages to compact"); }
-                let all: String = messages.iter().map(|m| m["content"].as_str().unwrap_or("")).collect();
+                let text_of = |m: &Value| -> String { match &m["content"] { Value::String(t) => t.clone(), Value::Array(parts) => parts.iter().filter_map(|p| p["text"].as_str()).collect(), _ => String::new() } };
+                let all: String = messages.iter().map(|m| text_of(m)).collect();
                 let cpt = chars_per_token(&all);
                 let tokens = (all.chars().count() as i64 + cpt - 1) / cpt;
                 let ceiling = max_auto_ctx() - 512;
@@ -4315,7 +4399,7 @@ fn sync_ai_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Op
                 }
                 // _chat_history_to_text
                 let history = messages.iter().filter_map(|m| {
-                    let c = crate::edits::py_strip_pub(m["content"].as_str().unwrap_or(""));
+                    let c = crate::edits::py_strip_pub(&text_of(m));
                     (!c.is_empty()).then(|| format!("{}: {c}", if m["role"] == "user" { "GM" } else { "Assistant" }))
                 }).collect::<Vec<_>>().join("\n\n");
                 SyncAi::Compact { b: bk, model, history, think }
@@ -4831,9 +4915,32 @@ pub async fn live_job_action(cfg: std::sync::Arc<Config>, method: axum::http::Me
         _ => return None,
     };
     let key = percent_encoding::percent_decode_str(&key).decode_utf8().ok()?.into_owned();
-    let (kind, ident) = key.split_once(':')?;
-    let (kind, ident) = (kind.to_string(), ident.to_string());
+    let python_free = crate::config::python_free();
+    let (kind, ident) = match key.split_once(':') {
+        Some((k, i)) if matches!(k, "t" | "m" | "r") && !i.is_empty() => (k.to_string(), i.to_string()),
+        _ if python_free => return Some(crate::ai_more::detail(axum::http::StatusCode::NOT_FOUND, "Unknown job")), // `_split`
+        _ => return None,
+    };
     if !(ident.starts_with("gw") || kind == "r") {
+        // no Python app behind this gateway: nothing else can be running, and Python's answers for "not there" are these
+        if python_free && kind != "r" {
+            let msg = match action.as_str() {
+                "cancel" => "That job is not running any more.",
+                "restart" => "That job cannot be restarted (it is still running, or the server no longer has it).",
+                _ => "Cancel it first, or it is already gone.",
+            };
+            let ok = tokio::task::spawn_blocking({
+                let (cfg, method, uri, headers) = (cfg.clone(), method.clone(), uri.clone(), headers.clone());
+                move || {
+                    let db = crate::writes::open(&cfg)?;
+                    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+                    let p = crate::layout::build(&db, &cfg, method.as_str(), &uri, &headers, now)?;
+                    let w = p.world.as_ref()?;
+                    (crate::pages::edit_level(&p, w, "background_jobs") == Some(true)).then_some(())
+                }
+            }).await.ok().flatten().is_some();
+            return ok.then(|| crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, msg));
+        }
         return None;
     }
     tokio::task::spawn_blocking(move || {
@@ -4848,7 +4955,22 @@ pub async fn live_job_action(cfg: std::sync::Arc<Config>, method: axum::http::Me
             "m" => crate::runners::action(&ident, &action),
             "t" => crate::tasks::page_action(&ident, &action),
             // a bulk rename this process works on: its cancel (restart and remove are Python's: it reads the row)
-            "r" if action == "cancel" => crate::media_rename::cancel(&cfg, &p, ident.parse().ok()?),
+            "r" => {
+                let Ok(id) = ident.parse::<i64>() else { return Some(crate::ai_more::detail(axum::http::StatusCode::NOT_FOUND, "Unknown job")) };
+                match action.as_str() {
+                    "cancel" => crate::media_rename::cancel(&cfg, &p, id).or_else(|| {
+                        // nothing of this process runs it: with no Python behind the gateway it is not running at all
+                        if !crate::config::python_free() { return None; }
+                        Some(match crate::media_rename::exists(&cfg, &p, id) {
+                            true => crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "That job is not running any more."),
+                            false => crate::ai_more::detail(axum::http::StatusCode::NOT_FOUND, "Unknown job"),
+                        })
+                    }),
+                    "restart" if crate::config::python_free() => crate::media_rename::restart(cfg.clone(), &p, id),
+                    "remove" if crate::config::python_free() => crate::media_rename::remove(&cfg, &p, id),
+                    _ => None, // with Python behind: the row is read there
+                }
+            }
             _ => None,
         }
     }).await.ok().flatten()
