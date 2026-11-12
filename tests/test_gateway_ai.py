@@ -3096,6 +3096,7 @@ def test_python_free_unsloth_studio_export_is_chatml_with_a_readme(client, seed)
         assert not any(row["messages"][1]["content"].startswith("Tell me what the lore says about") for row in evalr), "the eval file holds questions only"
         readme = z.read("README.md").decode("utf-8")
         assert "chatml" in readme and "Assistant completions only" in readme and "Load YAML" in readme and "GM secrets" in readme and world_name in readme
+        assert "Operation not permitted" in readme and "HF_DATASETS_CACHE=/tmp/hf-datasets" in readme and "If something goes wrong" in readme
         # the same world gives the same bytes
         assert g.get("/export/unsloth-studio.zip").content == r.content
         # options: no world book, no eval

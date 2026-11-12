@@ -258,6 +258,11 @@ Train a first, short run to see speed and loss: in the Dataset section set *Trai
 - Use an official base: **Qwen3.5 9B** (or 4B / 2B), **Gemma 4 E4B / E2B**. They have official GGUF files and, for models with an image part, the vision file, so a model trained here can still read pictures.\n\
 - Community merges (for example \"13B ... Heretic ... Thinking\") are riskier: their chat templates expect thinking blocks this data does not have, there is usually no official vision file, and a 13B model at 16-bit leaves almost no memory on a 32 GB card at this context. If you must, use QLoRA.\n\
 - If the model has an image part, train the **language layers only** (*Train as: Language model*; leave *Vision Layers* off if Studio shows that checkbox).\n\n\
+## If something goes wrong\n\
+- **\"Failed to format ChatML dataset ... Operation not permitted ... /workspace/.cache/huggingface/datasets/...\"** (Studio in a container, for example on TrueNAS SCALE): the folder behind `/workspace` refuses the `chmod` / `chown` calls the dataset cache needs (typically a dataset with NFSv4 ACLs and ACL mode *Restricted*). The data is fine. Easiest fix: give the container the environment variable `HF_DATASETS_CACHE=/tmp/hf-datasets` (TrueNAS: Apps, your Unsloth app, Edit, Environment Variables), so the cache lives inside the container, and restart the app. The other fix: on the dataset set *ACL Type* POSIX (or *ACL Mode* Passthrough), make the app's user the owner and apply recursively. To check: in a shell in the container, `touch /workspace/.cache/t && chmod 644 /workspace/.cache/t` fails with \"Operation not permitted\" when this is the cause.\n\
+- **Out of memory:** lower *Context Length* one step, keep batch size 1 with accumulation 8, use QLoRA, and free the card first (Ollama keeps models loaded: `ollama stop <model>`).\n\
+- **The loss turns into nan** (Volta / Turing cards, which have no bf16): halve the learning rate.\n\
+- **Studio does not recognise the dataset:** set *Target Format* to `chatml` instead of Auto.\n\n\
 ## Notes\n\
 - {worlds_note}\n\
 - The text of the world book is {book_note}.\n\
