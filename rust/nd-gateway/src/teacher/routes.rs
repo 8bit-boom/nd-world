@@ -134,13 +134,21 @@ fn query_count(uri: &Uri, key: &str, default: usize) -> usize {
     uri.query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix(&format!("{key}=")))).and_then(|v| v.parse::<usize>().ok()).map(|n| n.min(1_000_000)).unwrap_or(default)
 }
 
-/// `GET /export/unsloth-studio.zip?w=<world slug>&world_book=1&teacher=1&test=10[&worlds=a,b,c | &worlds_all=1][&max_tokens=8192][&eval_limit=300][&info=1]`: the world's training examples as chatml JSONL for the Train page of
+/// `GET /export/unsloth-studio.zip?w=<world slug>&world_book=1&teacher=1&test=10[&worlds=a,b,c | &worlds_all=1][&vram=<GB of the card>][&max_tokens=auto|N][&eval_limit=300][&info=1]`: the world's training examples as chatml JSONL for the Train page of
 /// Unsloth Studio / Unsloth Desktop, zipped with a README (`info=1`: only the counts, as JSON; `worlds=a,b` or `worlds_all=1`: several worlds (or every world of the server) combined in one file; `w` picks the world like everywhere else in nd-world). GM only, for the active world; answered here only
 /// without Python (no Python counterpart: the hybrid image answers "Not available here").
-pub fn studio(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+pub fn studio(cfg: &Config, uri: &Uri, headers: &HeaderMap, detected: &Value) -> Option<Response<Body>> {
     let (db, world) = gm_world(cfg, "GET", uri, headers)?;
+    // the card the settings are for: the one picked on the page (`vram=<GB>`), else the one nd-world sees on its own machine, else an assumed 24 GB
+    let chosen = uri.query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("vram="))).and_then(|v| v.parse::<f64>().ok()).filter(|g| (0.0..=1024.0).contains(g));
+    let hw = super::hw::resolve(detected, chosen);
+    // `max_tokens=auto` (the default): as long as this card trains, at most 8192
+    let max_tokens = match uri.query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("max_tokens="))) {
+        Some(v) if v != "auto" => v.parse::<usize>().map(|n| n.min(1_000_000)).unwrap_or(8192),
+        _ => super::hw::auto_max_tokens(hw.vram_gb),
+    };
     let opts = super::studio::Options { world_book: query_flag(uri, "world_book", true), teacher: query_flag(uri, "teacher", true), test_percent: query_num(uri, "test", 10),
-                                          max_tokens: query_count(uri, "max_tokens", 8192), eval_limit: query_count(uri, "eval_limit", 300) };
+                                          max_tokens, eval_limit: query_count(uri, "eval_limit", 300), hw };
     let db_dir = cfg.db_path.parent()?.to_path_buf();
     let build_one = |w: &Map<String, Value>| -> Result<super::studio::Built, String> {
         let wid = w.get("id").and_then(|v| v.as_i64()).ok_or("no world")?;

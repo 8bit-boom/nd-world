@@ -3471,3 +3471,43 @@ def test_python_free_unsloth_studio_export_has_a_settings_file_and_limits_for_le
             db.commit()
         finally:
             db.close()
+
+
+def test_python_free_unsloth_studio_export_recommends_settings_for_the_chosen_card(client, seed):
+    """`vram=<GB>` picks the card the settings are worked out for (without it: the card nd-world sees on its own machine, else an assumed 24 GB): the bigger the card
+    the bigger the model and the longer the context, a small card gets QLoRA and one sequence per step, the YAML and the README follow, and the README lists every tier."""
+    import io
+    import zipfile
+    import yaml
+    from .test_gateway_golden import _python_free_gateway
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        def info(q=""):
+            return g.get(f"/export/unsloth-studio.zip?{q}&info=1").json()
+        none = info()
+        assert none["hardware"]["source"] in ("assumed", "detected") and none["hardware"]["vram_gb"] > 0
+        by = {gb: info(f"vram={gb}") for gb in (8, 12, 16, 24, 32, 48, 80)}
+        assert all(v["hardware"]["source"] == "chosen" and v["hardware"]["vram_gb"] == gb for gb, v in by.items())
+        assert [by[gb]["model"] for gb in (8, 12, 16, 24)] == ["Qwen3.5 2B", "Qwen3.5 4B", "Gemma 4 E4B", "Qwen3.5 9B"]
+        # (for this small world the data needs only a 2048 context, so even a small card affords 16-bit LoRA; the tight ones get 4-bit)
+        assert [by[gb]["method"] for gb in (8, 12, 16, 24, 32, 48, 80)] == ["LoRA", "QLoRA", "QLoRA", "QLoRA", "LoRA", "LoRA", "LoRA"]
+        assert all(by[gb]["est_gb"] <= gb for gb in by) and by[80]["model"] == "Qwen3.5 9B"
+        # the files follow the card
+        def files(gb):
+            z = zipfile.ZipFile(io.BytesIO(g.get(f"/export/unsloth-studio.zip?vram={gb}").content))
+            return z.read("studio-settings.yaml").decode("utf-8"), z.read("README.md").decode("utf-8")
+        y8, r8 = files(8)
+        y32, r32 = files(32)
+        cfg8, cfg32 = yaml.safe_load(y8), yaml.safe_load(y32)
+        assert (cfg8["training"]["batch_size"], cfg8["training"]["gradient_accumulation_steps"]) == (1, 8)
+        assert y8.startswith("# nd-world: recommended for 8 GB") and "Qwen3.5 2B, LoRA" in y8.splitlines()[1] and "Qwen3.5 9B, LoRA" in y32.splitlines()[1]
+        assert "## Recommended for your hardware" in r8 and "**Qwen3.5 2B** (`unsloth/Qwen3.5-2B`)" in r8 and "**Qwen3.5 9B** (`unsloth/Qwen3.5-9B`)" in r32
+        for label in ("8 GB", "12 GB", "16 GB (Tesla T10", "24 GB (RTX 3090", "32 GB (RTX 5090", "48 GB", "80 GB (A100"):
+            assert label in r8, label
+        # an old card is told it has no bf16 (only when the card is known: the notes come with the detected name)
+        assert "Recommended for your hardware" in r32 and "assumed" not in r32
+        # "fit my hardware" for the longest example: the default, and a number still wins
+        assert info("vram=8&max_tokens=auto")["longest_tokens"] <= 8192 and info("vram=8&max_tokens=300")["longest_tokens"] <= 300
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)

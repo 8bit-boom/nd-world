@@ -36,3 +36,15 @@ merge; QLoRA when memory is short).
 (`skipped_long`), so a few outliers do not force a 32768 context. `eval_limit` (default 300; 0 = all) caps `eval.jsonl` at an even sample of the held-out questions
 (`eval_total` says how many there were). Tested in `tests/test_gateway_ai.py` (the YAML keys are Studio's; the values follow the data).
 
+## Recommended settings for the training card
+
+The settings (and the README's "Recommended for your hardware" section) are worked out for a card: `vram=<GB>` on the address (the card's *Training card* list), else the card
+nd-world sees on its own machine (`nvidia-smi` or AMD sysfs, the same reading as Settings > System's "Detected hardware"; on TrueNAS SCALE give the nd-world app the GPU, see
+`docs/GPU_SETUP.md`), else an assumed 24 GB. nd-world may run on a different computer than the one that trains (the TrueNAS server vs the PC): pick the training computer's card.
+
+`teacher/hw.rs`: the biggest of Qwen3.5 9B, Gemma 4 E4B, Qwen3.5 4B, Gemma 4 E2B, Qwen3.5 2B whose 4-bit QLoRA fits a 4096 context in the usable memory (92 % of the card minus
+1 GB), then LoRA (16-bit) when it also fits at the context the data needs, else QLoRA; the context is the data's need cut to what fits. The memory figures are Unsloth's published ones for
+each model at 2048 / batch 1 (the same numbers as ND Lore Forge's catalog), scaled for context and batch: **estimates**. A small card (12 GB or less) or a context over 8192 gets one
+sequence per step (batch 1 x accumulation 8). `max_tokens=auto` (the default) leaves out examples longer than the card trains, at most 8192; a number overrides it. Volta / Turing
+cards (V100, T10, T4, RTX 20) get a note: no bf16, training runs in fp16. The README lists every tier (8 / 12 / 16 / 24 / 32 / 48 / 80 GB) with its model, method and context.
+

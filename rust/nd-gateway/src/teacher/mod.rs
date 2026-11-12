@@ -7,6 +7,7 @@ pub mod chunk;
 pub mod docs;
 pub mod markup;
 pub mod gen;
+pub mod hw;
 pub mod routes;
 pub mod split;
 pub mod studio;
