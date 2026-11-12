@@ -48,3 +48,4 @@ each model at 2048 / batch 1 (the same numbers as ND Lore Forge's catalog), scal
 sequence per step (batch 1 x accumulation 8). `max_tokens=auto` (the default) leaves out examples longer than the card trains, at most 8192; a number overrides it. Volta / Turing
 cards (V100, T10, T4, RTX 20) get a note: no bf16, training runs in fp16. The README lists every tier (8 / 12 / 16 / 24 / 32 / 48 / 80 GB) with its model, method and context.
 
+The README ends with an "If something goes wrong" section: the dataset-cache `Operation not permitted` error of Studio in a container on TrueNAS SCALE (set `HF_DATASETS_CACHE=/tmp/hf-datasets`, or fix the dataset's ACL type / mode), out of memory, `nan` loss on cards without bf16, and the Target Format.
