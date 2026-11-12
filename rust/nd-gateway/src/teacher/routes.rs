@@ -130,22 +130,42 @@ fn query_num(uri: &Uri, key: &str, default: u8) -> u8 {
     uri.query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix(&format!("{key}=")))).and_then(|v| v.parse::<u8>().ok()).map(|n| n.min(30)).unwrap_or(default)
 }
 
-/// `GET /export/unsloth-studio.zip?world_book=1&teacher=1&test=10[&info=1]`: the world's training examples as chatml JSONL for the Train page of
-/// Unsloth Studio / Unsloth Desktop, zipped with a README (`info=1`: only the counts, as JSON). GM only, for the active world; answered here only
+/// `GET /export/unsloth-studio.zip?w=<world slug>&world_book=1&teacher=1&test=10[&worlds=a,b,c | &worlds_all=1][&info=1]`: the world's training examples as chatml JSONL for the Train page of
+/// Unsloth Studio / Unsloth Desktop, zipped with a README (`info=1`: only the counts, as JSON; `worlds=a,b` or `worlds_all=1`: several worlds (or every world of the server) combined in one file; `w` picks the world like everywhere else in nd-world). GM only, for the active world; answered here only
 /// without Python (no Python counterpart: the hybrid image answers "Not available here").
 pub fn studio(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
     let (db, world) = gm_world(cfg, "GET", uri, headers)?;
-    let wid = world.get("id")?.as_i64()?;
-    let slug = world.get("slug").and_then(|v| v.as_str())?.to_string();
-    let members = crate::export::training_members(&db, &world)?;
-    let teacher = gen::read_examples(&gen::world_dir(cfg.db_path.parent()?, wid));
     let opts = super::studio::Options { world_book: query_flag(uri, "world_book", true), teacher: query_flag(uri, "teacher", true), test_percent: query_num(uri, "test", 10) };
-    let built = match super::studio::build(&members, &teacher, &opts) {
-        Ok(b) => b,
-        Err(e) => return Some(detail(StatusCode::UNPROCESSABLE_ENTITY, &e)),
+    let db_dir = cfg.db_path.parent()?.to_path_buf();
+    let build_one = |w: &Map<String, Value>| -> Result<super::studio::Built, String> {
+        let wid = w.get("id").and_then(|v| v.as_i64()).ok_or("no world")?;
+        let members = crate::export::training_members(&db, w).ok_or("The world could not be read.")?;
+        super::studio::build(&members, &gen::read_examples(&gen::world_dir(&db_dir, wid)), &opts)
+    };
+    // several worlds in one file: `worlds=slug1,slug2` (the ones named) or `worlds_all=1` (every world of this server); the GM sees them all. A world with
+    // nothing to export is left out. One world only: the one in `w` / the active-world cookie.
+    let named: Vec<String> = uri.query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("worlds="))).unwrap_or("").split(',')
+        .map(|x| x.trim().to_string()).filter(|x| !x.is_empty() && x.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')).collect();
+    let all = query_flag(uri, "worlds_all", false);
+    let (built, slug) = if all || !named.is_empty() {
+        let mut st = db.prepare("SELECT * FROM worlds ORDER BY id").ok()?;
+        let rows: Vec<Map<String, Value>> = st.query_map([], |r| crate::layout::row_map(r)).ok()?.filter_map(|r| r.ok())
+            .filter(|w| all || w.get("slug").and_then(|v| v.as_str()).is_some_and(|s| named.iter().any(|n| n == s))).collect();
+        let parts: Vec<super::studio::Built> = rows.iter().filter_map(|w| build_one(w).ok()).collect();
+        let n = parts.len();
+        match super::studio::merge(parts) {
+            Some(b) => (b, if all { "all-worlds".to_string() } else if n == 1 { rows.iter().find_map(|w| w.get("slug").and_then(|v| v.as_str()).map(str::to_string)).unwrap_or_default() } else { format!("{n}-worlds") }),
+            None => return Some(no_store(detail(StatusCode::UNPROCESSABLE_ENTITY, "None of those worlds has anything to export yet."))),
+        }
+    } else {
+        let slug = world.get("slug").and_then(|v| v.as_str())?.to_string();
+        match build_one(&world) {
+            Ok(b) => (b, slug),
+            Err(e) => return Some(no_store(detail(StatusCode::UNPROCESSABLE_ENTITY, &e))),
+        }
     };
     if query_flag(uri, "info", false) {
-        return Some(reply(StatusCode::OK, super::studio::summary(&built)));
+        return Some(no_store(reply(StatusCode::OK, super::studio::summary(&built))));
     }
     let build = nd_render::build_info();
     let build = build.get_attr("build").ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_else(|| "dev".to_string());
@@ -157,4 +177,12 @@ pub fn studio(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<B
         .header("x-nd-served-by", "gateway")
         .body(Body::from(zip))
         .ok()
+        .map(no_store)
+}
+
+/// The answer depends on the signed-in user and the chosen world, never on the address alone: no cache (browser, proxy or CDN) may keep it.
+fn no_store(mut r: Response<Body>) -> Response<Body> {
+    r.headers_mut().insert(header::CACHE_CONTROL, "private, no-store".parse().unwrap());
+    r.headers_mut().insert(header::VARY, "Cookie".parse().unwrap());
+    r
 }

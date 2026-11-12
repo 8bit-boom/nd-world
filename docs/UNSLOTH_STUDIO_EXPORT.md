@@ -5,7 +5,9 @@ Export & Backup has a card **Training data for Unsloth Studio**. It downloads th
 Studio's Format = chatml reads) and a `README.md` with the settings to choose (context length, *Train on Completions* on, language layers only for
 models with an image part). GM only; the file contains GM secrets (labelled "GM secret"), so a model trained on it repeats them.
 
-`GET /export/unsloth-studio.zip?world_book=1&teacher=1&test=10` (`info=1` returns only the counts as JSON).
+`GET /export/unsloth-studio.zip?w=<world slug>&world_book=1&teacher=1&test=10` (`info=1` returns only the counts as JSON; `worlds_all=1` puts every world of the server in one file).
+
+**Which world?** The one named by `w` (the card puts the world you are in into the address), else the active-world cookie: one world per file, `<slug>-unsloth-studio.zip`. The answer is sent `Cache-Control: private, no-store` and `Vary: Cookie`, because it depends on who asks and which world; a cache keyed on the address alone (a browser, a proxy, a CDN that caches `.zip` files) must never hand one world's file to another. **All worlds:** tick *All worlds in one file* (`worlds_all=1`, file `all-worlds-unsloth-studio.zip`): every example carries its own world's name in its system message, so one model can learn them all and still tell them apart; a world with nothing to export is left out.
 
 What is in it:
 

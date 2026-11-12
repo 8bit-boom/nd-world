@@ -34,6 +34,8 @@ pub struct Built {
     pub teacher: usize,
     pub longest: usize,
     pub world: String,
+    /// how many worlds the data comes from (1 unless "all worlds")
+    pub worlds: usize,
 }
 
 fn chatml(messages: &[(String, String)]) -> Option<String> {
@@ -99,7 +101,30 @@ pub fn build(members: &[(&'static str, Vec<u8>)], teacher: &[gen::Example], opts
     if train.is_empty() {
         return Err("This world has nothing to export yet.".into());
     }
-    Ok(Built { train, eval, world_book: book, chats, teacher: tch, longest, world })
+    Ok(Built { train, eval, world_book: book, chats, teacher: tch, longest, world, worlds: 1 })
+}
+
+/// Several worlds in one dataset (every example carries its own world's name in its system message, so one model can hold them all).
+pub fn merge(parts: Vec<Built>) -> Option<Built> {
+    let names: Vec<String> = parts.iter().map(|p| p.world.clone()).collect();
+    let mut it = parts.into_iter();
+    let mut all = it.next()?;
+    let mut n = 1;
+    for p in it {
+        all.train.extend(p.train);
+        all.eval.extend(p.eval);
+        all.world_book += p.world_book;
+        all.chats += p.chats;
+        all.teacher += p.teacher;
+        all.longest = all.longest.max(p.longest);
+        n += 1;
+    }
+    all.world = match names.len() {
+        1 => names[0].clone(),
+        k => format!("{} and {}", names[..k - 1].join(", "), names[k - 1]),
+    };
+    all.worlds = n;
+    Some(all)
 }
 
 pub fn readme(b: &Built, nd_build: &str) -> String {
@@ -112,6 +137,7 @@ pub fn readme(b: &Built, nd_build: &str) -> String {
 4. If the model has an image part (Qwen3.5, Gemma 4), train the **language layers only**: leave *Vision Layers* off if Studio shows that checkbox. The vision part then stays as it was and the base model's images keep working.\n\
 5. Start training. When it finishes, use **Export** in Studio: *GGUF* for Ollama / llama.cpp, or *Merged model* for 16-bit files.\n\n\
 ## Notes\n\
+- {worlds_note}\n\
 - The text of the world book is {book_note}.\n\
 - {eval_note}\n\
 - For more control (several worlds in one model, reviewing and editing the examples, a test page that scores the trained model against the original), use ND Lore Forge with the Training bundle.\n\
@@ -121,6 +147,7 @@ pub fn readme(b: &Built, nd_build: &str) -> String {
         teacher = if b.teacher > 0 { format!(", {} written and checked by this world's AI model", b.teacher) } else { String::new() },
         eval = if b.eval.is_empty() { String::new() } else { format!(", {} held-out questions in `eval.jsonl`", b.eval.len()) },
         tok = (b.longest as f64 / 3.5) as usize,
+        worlds_note = if b.worlds > 1 { format!("This file holds {} worlds at once. Every example carries the name of its own world in its system message, so one model can learn all of them and still tell them apart.", b.worlds) } else { "This file holds one world. Download again in another world, or tick \"All worlds in one file\", to train several.".to_string() },
         book_note = if b.world_book > 0 { "included as answers to \"Tell me what the lore says about <title>\" (Studio has no plain-text mode for this)" } else { "left out (it was switched off for this export)" },
         eval_note = if b.eval.is_empty() { "No questions were held out, so there is no `eval.jsonl`.".to_string() } else { "`eval.jsonl` holds questions the training never saw. If Studio lets you pick an eval split for a local file, use it; otherwise ignore the file.".to_string() })
 }
@@ -146,5 +173,5 @@ pub fn zip(b: &Built, nd_build: &str) -> Option<Vec<u8>> {
 
 /// What the page shows before downloading: counts for the chosen options.
 pub fn summary(b: &Built) -> Value {
-    json!({"rows": b.train.len(), "chats": b.chats, "world_book": b.world_book, "teacher": b.teacher, "eval": b.eval.len()})
+    json!({"rows": b.train.len(), "chats": b.chats, "world_book": b.world_book, "teacher": b.teacher, "eval": b.eval.len(), "worlds": b.worlds, "world": b.world})
 }

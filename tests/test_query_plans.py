@@ -16,10 +16,31 @@ PLANS = {
 }
 
 
+def _schema_copy(raw):
+    """An empty in-memory database with the real schema (tables and indexes) and NO statistics. The question here is whether the indexes exist; which plan the
+    planner picks on the shared test database also depends on what earlier tests left in it and on the statistics `PRAGMA optimize` made from that."""
+    mem = sqlite3.connect(":memory:")
+    rows = raw.execute("SELECT type, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' AND type IN ('table', 'index') ORDER BY type DESC").fetchall()
+    for _, ddl in rows:
+        try:
+            mem.execute(ddl)
+        except sqlite3.Error:
+            pass      # a virtual (full-text) table the plain connection cannot make: none of the queries here use one
+    return mem
+
+
 @pytest.mark.parametrize("name", list(PLANS))
 def test_the_hot_queries_use_an_index(client, name):
     with engine.connect() as conn:
         raw = conn.connection.dbapi_connection
-        plan = [r[3] for r in raw.execute("EXPLAIN QUERY PLAN " + PLANS[name]).fetchall()]
+        mem = _schema_copy(raw)
+        try:
+            stats = raw.execute("SELECT tbl, idx, stat FROM sqlite_stat1 WHERE tbl IN ('entity_links', 'entity_player_access')").fetchall()
+        except sqlite3.Error:
+            stats = "no statistics"
+        counts = {t: raw.execute(f"SELECT count(*) FROM {t}").fetchone()[0] for t in ("entity_links", "entity_player_access")}
+        indexes = [r[0] for r in raw.execute("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name IN ('entity_links', 'entity_player_access')")]
+    plan = [r[3] for r in mem.execute("EXPLAIN QUERY PLAN " + PLANS[name]).fetchall()]
     scans = [p for p in plan if p.startswith("SCAN") and "USING" not in p]
-    assert not scans, (name, plan)
+    # the message names what the shared database held, for a failure that only shows up in a full run
+    assert not scans, (name, plan, {"indexes": indexes, "stats": stats, "rows": counts})
