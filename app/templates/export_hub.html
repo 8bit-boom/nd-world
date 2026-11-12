@@ -132,6 +132,9 @@
       <label style="display:block"><input type="checkbox" id="studio-book" checked> Include the world book (as answers)</label>
       <label style="display:block"><input type="checkbox" id="studio-teacher" checked> Include the examples this world's AI model wrote (when there are any)</label>
       <label style="display:block">Keep <select id="studio-test"><option>0</option><option selected>10</option><option>20</option><option>30</option></select> % of the questions out of training as <code>eval.jsonl</code></label>
+      <label style="display:block">Leave out examples longer than <select id="studio-maxtok"><option value="0">(keep all)</option><option>2048</option><option>4096</option><option selected>8192</option><option>16384</option></select> tokens
+        <span style="font-size:.8rem;color:var(--text-dim)">(a few very long examples force a huge context length; leaving them out keeps training fast and light)</span></label>
+      <label style="display:block">Evaluation file: at most <select id="studio-evallimit"><option value="0">(all)</option><option>100</option><option selected>300</option><option>1000</option></select> questions</label>
       <div id="studio-counts" style="margin-top:.4rem;font-size:.85rem;color:var(--text-dim)"></div>
       <div style="margin-top:.6rem"><a class="btn-primary" id="studio-download" href="#" download>Download for Unsloth Studio</a></div>
       <p style="font-size:.8rem;color:var(--text-dim);margin-top:.5rem">The data contains GM secrets, and a model trained on it will repeat them. Keep that model away from players.</p>

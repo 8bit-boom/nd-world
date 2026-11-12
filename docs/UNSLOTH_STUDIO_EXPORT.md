@@ -22,3 +22,17 @@ What is in it:
 
 Python-free image only (no Python counterpart): the hybrid image answers "Not available here" and the card says so. For editing the examples, several
 worlds in one model, a test page and stop/continue, use the Training Bundle with ND Lore Forge.
+
+## Settings for Studio, and limits
+
+The zip also holds **`studio-settings.yaml`**, in the shape Studio's own *Save YAML* writes, so *Configuration → Load YAML* on the Train page takes it. Values are worked
+out from the data (`teacher/studio.rs::settings`): context length (the next power of two over the longest kept example, 2048-32768), batch 2 x 4 (1 x 8 above 8192),
+1 / 2 / 3 epochs for 20000+ / 3000+ / fewer rows, learning rate 1e-4 for a big dataset and 2e-4 otherwise, warmup about 3 % of the steps, save steps about a tenth of the run
+(never every 30 steps), eval 0.1 for a small eval file (0 for none or a big one), packing **off**, train-on-completions **on**, rank 16 / alpha 32, all seven target
+modules. The README has the same values as a table with the reasons, the quick start, and advice on choosing the model (an official base such as Qwen3.5 9B, not a community
+merge; QLoRA when memory is short).
+
+`max_tokens` (default 8192; 0 keeps everything) leaves out examples longer than that many tokens (estimated at 3.5 characters each), counted in the README and in `info=1`
+(`skipped_long`), so a few outliers do not force a 32768 context. `eval_limit` (default 300; 0 = all) caps `eval.jsonl` at an even sample of the held-out questions
+(`eval_total` says how many there were). Tested in `tests/test_gateway_ai.py` (the YAML keys are Studio's; the values follow the data).
+
