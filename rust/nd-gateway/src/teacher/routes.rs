@@ -209,11 +209,15 @@ fn no_store(mut r: Response<Body>) -> Response<Body> {
     r
 }
 
-/// `POST /export/unsloth-studio/train` (same query as the zip), `GET /export/unsloth-studio/job?id=`, `POST /export/unsloth-studio/job/{cancel,pause,resume}?id=`:
+/// `POST /export/unsloth-studio/train` (same query as the zip), `GET /export/unsloth-studio/job?id=`, `POST /export/unsloth-studio/job/cancel?id=` (`job/pause` and `job/resume` only answer 400: Studio cannot pause):
 /// train on the Unsloth Studio Settings points at. GM only.
 pub async fn studio_train(cfg: Arc<Config>, uri: Uri, headers: HeaderMap, detected: Value, action: &'static str) -> Option<Response<Body>> {
     let method = if action == "job" { "GET" } else { "POST" };
     let target = studio_target(&cfg, method, &uri, &headers).await?;
+    if matches!(action, "pause" | "resume") {
+        // Studio always answers these two with 400 "not supported; use cancel": answered here without calling Studio (old links stay harmless)
+        return Some(no_store(detail(StatusCode::BAD_REQUEST, super::train::PAUSE_REFUSED)));
+    }
     let Some((base, key)) = target else {
         return Some(no_store(detail(StatusCode::CONFLICT, "No Unsloth Studio API key is saved. Add the Studio address and key in Settings first.")));
     };
@@ -224,7 +228,7 @@ pub async fn studio_train(cfg: Arc<Config>, uri: Uri, headers: HeaderMap, detect
     });
     match action {
         "job" => Some(answer(super::train::job(&base, &key, &id).await)),
-        "cancel" | "pause" | "resume" => Some(answer(super::train::act(&base, &key, &id, action).await)),
+        "cancel" => Some(answer(super::train::act(&base, &key, &id, action).await)),
         _ if query_flag(&uri, "per_world", false) => {
             // one adapter per world: one job for every world chosen (Unsloth Studio queues them, and trains several of the same model together when it can)
             let (cfg3, uri3, headers3) = (cfg.clone(), uri.clone(), headers.clone());

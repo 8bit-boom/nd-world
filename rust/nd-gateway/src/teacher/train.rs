@@ -1,5 +1,5 @@
 //! Train in Unsloth Studio from nd-world: upload the export's `train.jsonl` / `eval.jsonl` to Studio's OpenAI-style fine-tuning API (`/v1/files`,
-//! `/v1/fine_tuning/jobs`, read from Studio's source: studio/backend/routes/openai_fine_tuning.py) and follow, cancel, pause or resume the job.
+//! `/v1/fine_tuning/jobs`, read from Studio's source: studio/backend/routes/openai_fine_tuning.py) and follow or cancel the job (Studio refuses pause and resume).
 //! The same settings as `studio-settings.yaml` ride along as extra fields of the job (any `TrainingStartRequest` field is accepted at the top level).
 //! Python-free only; the Studio address and key are the ones Settings already holds.
 use std::time::Duration;
@@ -144,9 +144,12 @@ pub async fn job(base: &str, key: &str, id: &str) -> Result<Value, String> {
     Ok(v)
 }
 
-/// `cancel`, `pause` or `resume`.
+/// What the old pause / resume links answer: Studio itself always refuses them (400 "not supported; use cancel").
+pub const PAUSE_REFUSED: &str = "Unsloth cannot pause a training job; cancel it and start again.";
+
+/// `cancel` only.
 pub async fn act(base: &str, key: &str, id: &str, action: &str) -> Result<Value, String> {
-    if !safe_id(id) || !matches!(action, "cancel" | "pause" | "resume") {
+    if !safe_id(id) || action != "cancel" {
         return Err("That is not a job action.".into());
     }
     let (s, b) = call("POST", &format!("{base}/v1/fine_tuning/jobs/{id}/{action}"), key, Some("application/json"), b"{}".to_vec(), 60).await?;

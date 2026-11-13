@@ -3523,7 +3523,7 @@ def test_python_free_unsloth_studio_export_recommends_settings_for_the_chosen_ca
 
 def test_python_free_unsloth_studio_training_job_is_started_followed_and_stopped(client, seed):
     """"Train in Unsloth Studio": the gateway uploads train.jsonl / eval.jsonl to Studio's /v1/files, starts /v1/fine_tuning/jobs with the YAML's settings as
-    extra fields, and relays the job, its events, cancel/pause/resume; Studio's own errors and a missing key are explained in words."""
+    extra fields, and relays the job, its events and cancel (pause/resume are refused locally: Studio always says no); Studio's own errors and a missing key are explained in words."""
     import threading
     from http.server import BaseHTTPRequestHandler, HTTPServer
     from .test_gateway_golden import _python_free_gateway
@@ -3560,7 +3560,9 @@ def test_python_free_unsloth_studio_training_job_is_started_followed_and_stopped
             for act in ("cancel", "pause", "resume"):
                 if self.path == f"/v1/fine_tuning/jobs/ftjob-1/{act}":
                     seen["acts"].append(act)
-                    return self._send(200, {"id": "ftjob-1", "status": "cancelled" if act == "cancel" else "running"})
+                    if act != "cancel":   # Studio's real answer (routes/openai_fine_tuning.py)
+                        return self._send(400, {"error": {"message": "Pausing and resuming fine-tuning jobs is not supported; use cancel."}})
+                    return self._send(200, {"id": "ftjob-1", "status": "cancelled"})
             self._send(404, {"detail": "nope"})
 
         def do_GET(self):
@@ -3612,9 +3614,17 @@ def test_python_free_unsloth_studio_training_job_is_started_followed_and_stopped
         j = g.get("/export/unsloth-studio/job?id=ftjob-1").json()
         assert j["status"] == "running" and j["events"][0]["message"].startswith("Step 5") and j["checkpoints"] == 2
         assert g.get("/export/unsloth-studio/job?id=../etc").status_code == 502
-        for act in ("pause", "resume", "cancel"):
-            assert g.post(f"/export/unsloth-studio/job/{act}?id=ftjob-1").status_code == 200
-        assert seen["acts"] == ["pause", "resume", "cancel"]
+        # pause / resume: Studio always refuses, so the gateway answers 400 itself and never calls Studio; cancel is relayed
+        for act in ("pause", "resume"):
+            r = g.post(f"/export/unsloth-studio/job/{act}?id=ftjob-1")
+            assert r.status_code == 400 and r.json()["detail"] == "Unsloth cannot pause a training job; cancel it and start again.", r.text
+        assert seen["acts"] == []
+        assert g.post("/export/unsloth-studio/job/cancel?id=ftjob-1").status_code == 200
+        assert seen["acts"] == ["cancel"]
+        # the card offers Cancel only
+        card = g.get("/export").text
+        assert 'id="studio-cancel"' in card and 'id="studio-pause"' not in card and 'id="studio-resume"' not in card
+        assert "studio-pause" not in g.get("/static/js/studio-export.js").text
         # one model per world: one job for each world ticked, named for it
         slugs = [seed.world_a.slug, seed.world_b.slug]
         before = len(seen["jobs"])

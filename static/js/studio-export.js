@@ -62,7 +62,7 @@
     $('studio-jobline').textContent = 'Studio job ' + j.id + ': ' + j.status + (j.nd ? ' (' + j.nd.model + ', ' + j.nd.method + ', context ' + j.nd.context + ', ' + j.nd.rows + ' rows)' : '') +
       (j.checkpoints ? ' · ' + j.checkpoints + ' checkpoint' + (j.checkpoints > 1 ? 's' : '') : '') + (j.error && j.error.message ? ' · ' + j.error.message : '');
     $('studio-jobevents').textContent = (j.events || []).map(function (e) { return e.message; }).join('\n');
-    ['studio-pause', 'studio-resume', 'studio-cancel'].forEach(function (id) { $(id).disabled = done; });
+    $('studio-cancel').disabled = done;
     if (done && timer) { clearInterval(timer); timer = null; }
   }
   function follow() {
@@ -85,7 +85,7 @@
       timer = setInterval(follow, 5000);
     }).catch(function (e) { $('studio-jobline').textContent = e.message; }).then(function () { b.disabled = false; });
   });
-  ['pause', 'resume', 'cancel'].forEach(function (a) {
+  ['cancel'].forEach(function (a) {
     $('studio-' + a).addEventListener('click', function () {
       if (!jobId) return;
       if (a === 'cancel' && !window.confirm('Stop this training job in Unsloth Studio?')) return;

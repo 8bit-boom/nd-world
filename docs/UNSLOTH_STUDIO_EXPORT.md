@@ -66,7 +66,8 @@ The card's **Train in Unsloth Studio now** button sends the data and the same se
 |---|---|
 | `POST /export/unsloth-studio/train?...` | the same query as the zip; uploads `train.jsonl` / `eval.jsonl`, starts the job, answers Studio's job object plus `nd` (model, method, context, rows). `per_world=1`: one job for every world ticked |
 | `GET /export/unsloth-studio/job?id=` | the job, its last events and its checkpoint count (the card polls every 5 s) |
-| `POST /export/unsloth-studio/job/{cancel,pause,resume}?id=` | Studio's job actions |
+| `POST /export/unsloth-studio/job/cancel?id=` | stops the job in Studio |
+| `POST /export/unsloth-studio/job/{pause,resume}?id=` | answer 400 "Unsloth cannot pause a training job; cancel it and start again." without calling Studio (Studio always refuses them: "Pausing and resuming fine-tuning jobs is not supported; use cancel."). The card has no Pause / Resume buttons; the routes stay so old links are harmless |
 
 `vram=studio` (the card list's "The card Unsloth Studio reports") reads the graphics card from Studio's `/api/train/hardware`, which is right when Studio runs on another computer than nd-world.
 While Studio trains on the same card, Studio unloads its chat models, so AI chat in nd-world stops answering until the job is done.
