@@ -71,3 +71,5 @@ The card's **Train in Unsloth Studio now** button sends the data and the same se
 `vram=studio` (the card list's "The card Unsloth Studio reports") reads the graphics card from Studio's `/api/train/hardware`, which is right when Studio runs on another computer than nd-world.
 While Studio trains on the same card, Studio unloads its chat models, so AI chat in nd-world stops answering until the job is done.
 Not done: asking Studio to export a GGUF afterwards. Studio's export routes need the checkpoint's path on Studio's disk, which the API-key routes most likely hide; export in Studio's own *Export* tab.
+
+QLoRA note: Unsloth's Qwen3.5 page says both that QLoRA is not recommended for any Qwen3.5 model and (in its sample code) that only MoE QLoRA is not recommended and dense is fine. The README tells the owner that QLoRA is fine for the dense sizes it recommends, with a little more quality loss than 16-bit.

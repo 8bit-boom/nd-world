@@ -271,6 +271,7 @@ The memory figures are estimates from Unsloth's published numbers; if Studio run
 | Offload layers | Off | |\n\n\
 Train a first, short run to see speed and loss: in the Dataset section set *Train Split End* to about 3000, or use Max Steps 300, then do the full run.\n\n\
 ## Choosing the model\n\
+- **QLoRA (4-bit) is fine for these dense models**, with a little more quality loss than 16-bit; Unsloth's advice against QLoRA is for Qwen3.5 MoE models (35B-A3B and larger), and its own page is not consistent about the dense ones. 16-bit LoRA is chosen above whenever it fits with room to spare.\n\
 - Use an official base: **Qwen3.5 9B** (or 4B / 2B), **Gemma 4 E4B / E2B**. They have official GGUF files and, for models with an image part, the vision file, so a model trained here can still read pictures.\n\
 - Community merges (for example \"13B ... Heretic ... Thinking\") are riskier: their chat templates expect thinking blocks this data does not have, there is usually no official vision file, and a 13B model at 16-bit leaves almost no memory on a 32 GB card at this context. If you must, use QLoRA.\n\
 - If the model has an image part, train the **language layers only** (*Train as: Language model*; leave *Vision Layers* off if Studio shows that checkbox).\n\n\
