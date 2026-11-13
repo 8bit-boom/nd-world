@@ -1,0 +1,264 @@
+{% extends "base.html" %}
+{% block title %}Lore Forge — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div class="form-page">
+  <h1>🔥 Lore Forge</h1>
+  <p style="font-size:.9rem;color:var(--text-dim);max-width:64rem">
+    Fine-tune a small model on <strong>{{ world.name if world else 'this world' }}</strong>'s lore — the ND Lore Forge
+    trainer (<a href="{{ lf.repo_url }}" target="_blank" rel="noopener">Llm-training</a>), installed inside nd-world
+    itself. One click installs it, one click removes it. The trained model is pushed into Ollama and/or the Studio hub,
+    and nd-world's chat can switch to it.
+  </p>
+
+  <div style="background:rgba(255,120,0,.08);border:1px solid rgba(255,140,0,.5);color:#ffb066;padding:.7rem 1rem;border-radius:6px;font-size:.85rem;margin-bottom:1rem;line-height:1.5">
+    <strong>GM secrets are included</strong> in what the model learns: training happens locally on this machine and the
+    trained model is GM-trusted, exactly like the training bundle. Players never see this page or the model settings.
+  </div>
+
+  <div class="export-option" id="lf-install-card">
+    <h2>📦 The trainer <span id="lf-install-state" style="font-weight:400;font-size:.85rem;color:var(--text-dim)"></span></h2>
+    <div id="lf-install-missing">
+      <p style="font-size:.9rem">Not installed. <em>Install</em> downloads the trainer's worker code (a few MB) from
+        GitHub; <em>Set up the training environment</em> then installs Python, PyTorch and Unsloth into its own venv —
+        that one is a multi-GB download and runs as a background job you can cancel.</p>
+      <button type="button" class="btn-primary" id="lf-install">⬇ Install the trainer</button>
+      <span id="lf-install-msg" style="font-size:.85rem;color:var(--text-dim);margin-left:.6rem"></span>
+    </div>
+    <div id="lf-install-present" style="display:none">
+      <div id="lf-install-info" style="font-size:.85rem;color:var(--text-dim);margin-bottom:.5rem"></div>
+      <div id="lf-env-info" style="font-size:.85rem;color:var(--text-dim);margin-bottom:.5rem"></div>
+      <button type="button" class="btn-primary" id="lf-setup-env">🧱 Set up the training environment</button>
+      <button type="button" class="btn-cancel" id="lf-uninstall">🗑 Uninstall (delete everything)</button>
+      <span id="lf-env-msg" style="font-size:.85rem;color:var(--text-dim);margin-left:.6rem"></span>
+      <div id="lf-job-progress" style="margin-top:.6rem;font-size:.85rem"></div>
+      <details style="margin-top:.5rem"><summary style="font-size:.85rem">Job log</summary>
+        <pre id="lf-job-log" style="font-size:.75rem;max-height:12rem;overflow:auto;white-space:pre-wrap"></pre>
+      </details>
+    </div>
+  </div>
+
+  <div class="export-option" id="lf-train-card" style="display:none">
+    <h2>🎓 Train on {{ world.name if world else 'this world' }}</h2>
+    <p style="font-size:.85rem;color:var(--text-dim)">
+      The world's lore becomes the training text ({{ lf.teacher_examples }} checked teacher example(s) ride along as
+      practice conversations — make more from the <a href="/export">Export &amp; Backup</a> page). Training runs as a
+      background job and holds the GPU; watch it on the <a href="/background-jobs">Background Jobs</a> page.
+    </p>
+    <div style="display:flex;gap:1rem;flex-wrap:wrap;margin:.6rem 0">
+      <div class="form-group" style="margin:0">
+        <label for="lf-model" style="margin-bottom:.2rem">Base model</label>
+        <select id="lf-model" style="max-width:340px">
+          {% for m in lf.models %}<option value="{{ m.repo }}">{{ m.name }}{% if m.params_b %} ({{ m.params_b }}B){% endif %}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="form-group" style="margin:0">
+        <label for="lf-method" style="margin-bottom:.2rem">Method</label>
+        <select id="lf-method" style="max-width:280px">
+          {% for m in lf.methods %}<option value="{{ m.id }}" {% if m.id == 'qlora' %}selected{% endif %}>{{ m.label }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="form-group" style="margin:0">
+        <label for="lf-preset" style="margin-bottom:.2rem">Preset</label>
+        <select id="lf-preset" style="max-width:180px">
+          {% for p in lf.presets %}<option value="{{ p.id }}" {% if p.id == 'normal' %}selected{% endif %}>{{ p.label }}</option>{% endfor %}
+        </select>
+      </div>
+    </div>
+    <details style="margin:.5rem 0">
+      <summary style="font-size:.85rem">Training Hyperparameters</summary>
+      <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-top:.6rem">
+        <label style="font-size:.85rem">Rank <input id="lf-rank" type="number" min="1" max="256" style="width:5rem"></label>
+        <label style="font-size:.85rem">Alpha <input id="lf-alpha" type="number" min="1" max="512" style="width:5rem"></label>
+        <label style="font-size:.85rem">Learning rate <input id="lf-lr" type="text" placeholder="e.g. 1e-4" style="width:7rem"></label>
+        <label style="font-size:.85rem">Epochs <input id="lf-epochs" type="number" min="1" max="20" style="width:4rem"></label>
+        <label style="font-size:.85rem">Max seq <input id="lf-max-seq" type="number" min="256" max="16384" step="256" style="width:6rem"></label>
+      </div>
+      <p style="font-size:.8rem;color:var(--text-dim)">Left empty, the preset decides. LoftQ needs the transformers backend (it starts slower); DoRA and RS-LoRA work on both.</p>
+    </details>
+    <label style="font-size:.85rem"><input type="checkbox" id="lf-include-teacher" checked> Include the checked teacher examples as chat rows</label>
+    <div style="margin-top:.6rem">
+      <button type="button" class="btn-primary" id="lf-train">🔥 Start training</button>
+      <span id="lf-train-msg" style="font-size:.85rem;color:var(--text-dim);margin-left:.6rem"></span>
+    </div>
+  </div>
+
+  <div class="export-option" id="lf-runs-card" style="display:none">
+    <h2>📈 Runs</h2>
+    <div id="lf-runs"></div>
+  </div>
+
+  <p style="font-size:.8rem;color:var(--text-dim)">
+    Everything lives under <code id="lf-dir">{{ lf.dir }}</code>.{{ " The Studio hub folder is visible here (ND_STUDIO_HUB_DIR is set)." if lf.studio_hub_dir }}
+  </p>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var active = 0;
+
+  function post(url, body) {
+    return fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})}
+    ).then(function (r) { return r.json().then(function (j) { return {status: r.status, j: j}; }); });
+  }
+
+  function esc(s) {
+    var d = document.createElement("div");
+    d.textContent = s == null ? "" : String(s);
+    return d.innerHTML;
+  }
+
+  function dur(sec) {
+    if (!sec && sec !== 0) return "";
+    var m = Math.floor(sec / 60), h = Math.floor(m / 60);
+    return h ? h + " h " + (m % 60) + " min" : m + " min";
+  }
+
+  function methodLabel(id) {
+    var sel = $("lf-method");
+    for (var i = 0; i < sel.options.length; i++) if (sel.options[i].value === id) return sel.options[i].text;
+    return id;
+  }
+
+  function render(st) {
+    active = 0;
+    Object.keys(st.jobs || {}).forEach(function (k) {
+      var j = st.jobs[k];
+      if (j && (j.status === "running" || j.status === "queued")) active++;
+    });
+    var state = $("lf-install-state");
+    var missing = $("lf-install-missing"), present = $("lf-install-present");
+    if (st.installed) {
+      state.textContent = "— installed" + (st.branch ? " (" + st.branch + ")" : "");
+      missing.style.display = "none"; present.style.display = "";
+      $("lf-install-info").textContent = "Worker code: " + st.dir + "/repo — " + st.models.length + " catalog model(s).";
+      var env = st.env || {};
+      $("lf-env-info").textContent = st.env_ready
+        ? "Training environment ready (" + (env.python || "venv") + ")."
+        : (env.status === "error" ? "Training environment failed: " + (env.error || "see the log") : "Training environment not set up yet.");
+      $("lf-setup-env").style.display = st.env_ready ? "none" : "";
+      var prog = $("lf-job-progress"), log = $("lf-job-log");
+      var parts = [];
+      Object.keys(st.jobs || {}).forEach(function (k) {
+        var j = st.jobs[k];
+        if (!j || !j.status) return;
+        var line = k + ": " + j.status + (j.stage ? " — " + j.stage : "") + (j.error ? " — " + j.error : "");
+        if (j.loss != null) line += " — loss " + j.loss;
+        if (j.step != null && j.total != null) line += " (" + j.step + "/" + j.total + ")";
+        if (j.eta) line += " — ETA " + j.eta;
+        parts.push(esc(line));
+      });
+      prog.innerHTML = parts.join("<br>");
+      log.textContent = ((st.jobs.install || {}).log || []).concat(((st.jobs.env || {}).log || [])).slice(-30).join("\n");
+      $("lf-train-card").style.display = st.env_ready ? "" : "none";
+    } else {
+      state.textContent = st.install_error ? "— last install failed" : "— not installed";
+      missing.style.display = ""; present.style.display = "none";
+      $("lf-train-card").style.display = "none";
+      if (st.install_error) $("lf-install-msg").textContent = st.install_error;
+    }
+
+    // runs
+    var runs = st.runs || [];
+    var card = $("lf-runs-card");
+    card.style.display = runs.length ? "" : "none";
+    var html = "";
+    runs.forEach(function (r) {
+      var bits = [];
+      bits.push("<strong>" + esc(r.model && r.model.name ? r.model.name : r.model) + "</strong> · " + esc(methodLabel(r.method)) + " · " + esc(r.preset) + " preset");
+      if (r.text_rows != null) bits.push(r.text_rows + " text row(s)" + (r.chat_rows ? ", " + r.chat_rows + " chat row(s)" : ""));
+      var status = r.status || "ready";
+      var live = r.live || {};
+      if (status === "running" && live.stage) bits.push(live.stage);
+      if (r.loss != null) bits.push("loss " + r.loss);
+      if (r.step != null && r.total != null) bits.push("step " + r.step + "/" + r.total);
+      if (r.eta) bits.push("ETA " + esc(r.eta));
+      if (r.summary && r.summary.final_loss != null) bits.push("final loss " + r.summary.final_loss);
+      if (r.summary && r.summary.train_seconds) bits.push("took " + dur(r.summary.train_seconds));
+      if (r.export_status) bits.push("export: " + esc(r.export_status) + (r.export_quant ? " (" + esc(r.export_quant) + ")" : ""));
+      if (r.model_name) bits.push("installed as " + esc(r.model_name));
+      html += '<div style="border-top:1px solid rgba(255,255,255,.08);padding:.7rem 0">' +
+        '<div style="font-size:.9rem">' + bits.map(esc).join(" · ") + '</div>' +
+        '<div style="margin-top:.4rem">';
+      if (status === "running" || r.export_status === "running") {
+        html += '<button type="button" class="btn-cancel" data-stop="' + esc(r.id) + '">⏹ Stop</button>';
+      } else if (status === "done") {
+        html += '<label style="font-size:.85rem">GGUF quant <select data-quant="' + esc(r.id) + '">' +
+          (st.quants || []).map(function (q) { return '<option' + (q === (r.export_quant || "q4_k_m") ? " selected" : "") + '>' + q + '</option>'; }).join("") +
+          '</select></label> ' +
+          '<button type="button" class="btn-export" data-export="' + esc(r.id) + '">📦 Export GGUF</button>';
+        if (r.export_status === "done") {
+          html += ' <button type="button" class="btn-export" data-install-model="' + esc(r.id) + '">⬆ Install into Ollama</button>';
+          html += ' <button type="button" class="btn-save" data-use-model="' + esc(r.id) + '">✅ Use in nd-world</button>';
+        }
+      }
+      if (r.error) html += '<div style="font-size:.8rem;color:#ff8a8a;margin-top:.3rem">' + esc(r.error) + '</div>';
+      if (r.summary && r.summary.stopped) html += '<div style="font-size:.8rem;color:var(--text-dim)">stopped — the checkpoint is kept, start again to continue</div>';
+      html += "</div></div>";
+    });
+    $("lf-runs").innerHTML = html;
+  }
+
+  function poll() {
+    fetch("/lore-forge/status").then(function (r) { return r.json(); }).then(function (st) { render(st); }).catch(function () {});
+    window.setTimeout(poll, active ? 2500 : 15000);
+  }
+
+  $("lf-install").addEventListener("click", function () {
+    $("lf-install-msg").textContent = "Installing…";
+    post("/lore-forge/install").then(function (r) {
+      $("lf-install-msg").textContent = r.status === 202 ? "Downloading in the background…" : (r.j.detail || "Failed");
+    });
+  });
+  $("lf-setup-env").addEventListener("click", function () {
+    $("lf-env-msg").textContent = "Setting up (this downloads PyTorch — it takes a while)…";
+    post("/lore-forge/setup-env").then(function (r) {
+      if (r.status !== 202) $("lf-env-msg").textContent = r.j.detail || "Failed";
+    });
+  });
+  $("lf-uninstall").addEventListener("click", function () {
+    if (!window.confirm("Delete the Lore Forge module completely — worker code, training environment and every run folder? Models already installed into Ollama or the Studio hub stay.")) return;
+    post("/lore-forge/uninstall").then(function (r) { if (r.status !== 200) window.alert(r.j.detail || "Failed"); });
+  });
+  $("lf-train").addEventListener("click", function () {
+    var hyper = {};
+    [["rank", "lf-rank"], ["alpha", "lf-alpha"], ["lr", "lf-lr"], ["max_seq", "lf-max-seq"]].forEach(function (pair) {
+      var v = $(pair[1]).value.trim();
+      if (v !== "") hyper[pair[0]] = pair[0] === "lr" ? v : parseInt(v, 10);
+    });
+    var epochs = $("lf-epochs").value.trim();
+    var body = {model: $("lf-model").value, method: $("lf-method").value, preset: $("lf-preset").value,
+                include_teacher: $("lf-include-teacher").checked, hyper: hyper};
+    if (epochs !== "") body.epochs = parseInt(epochs, 10);
+    $("lf-train-msg").textContent = "Packing the world…";
+    post("/lore-forge/train", body).then(function (r) {
+      $("lf-train-msg").textContent = r.status === 202 ? "Training started (Background Jobs has the progress)." : (r.j.detail || "Failed");
+    });
+  });
+  $("lf-runs").addEventListener("click", function (ev) {
+    var t = ev.target;
+    var stop = t.getAttribute && t.getAttribute("data-stop");
+    var exportRun = t.getAttribute && t.getAttribute("data-export");
+    var installModel = t.getAttribute && t.getAttribute("data-install-model");
+    var useModel = t.getAttribute && t.getAttribute("data-use-model");
+    if (stop) { post("/lore-forge/runs/" + stop + "/stop"); }
+    if (exportRun) {
+      var q = document.querySelector('[data-quant="' + exportRun + '"]').value;
+      post("/lore-forge/runs/" + exportRun + "/export", {quant: q});
+    }
+    if (installModel) {
+      post("/lore-forge/runs/" + installModel + "/install-model", {target: "ollama"}).then(function (r) {
+        if (r.status !== 202) window.alert(r.j.detail || "Failed");
+      });
+    }
+    if (useModel) {
+      post("/lore-forge/runs/" + useModel + "/use-model", {}).then(function (r) {
+        window.alert(r.status === 200 ? "nd-world's chat now answers from " + r.j.model + "." : (r.j.detail || "Failed"));
+      });
+    }
+  });
+  poll();
+})();
+</script>
+{% endblock %}

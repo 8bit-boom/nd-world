@@ -917,6 +917,17 @@ Several tables in one world (see docs/FORK_STATUS.md). GM only; plain form POSTs
 | GET | `/export/foundry.json` | GM | Foundry VTT import pack for the whole active world. |
 | GET | `/export/rules-and-notes.md` | GM | Downloads the world's rules plus all its notes as one Markdown file: the world's Notes (entities of kind `note` — lore, session notes, rumors…) in full under `## Notes`, then every note pinned to an entity under `## Entity notes`. Everything is included unfiltered, hidden-from-players notes too. |
 | GET | `/export/training.ndtrain` | GM | Downloads the active world's **Training Bundle**: a zip of JSON/JSONL/Markdown members holding all of its text (entities with raw `[gmonly]` tags, notes, relations, rules, sessions, facts, quests, tables, enabled AI instructions, characters) for ND Lore Forge, the program that fine-tunes a small model on the world. Includes GM secrets; no accounts, images or private notes. Format: [TRAINING_BUNDLE_FORMAT.md](TRAINING_BUNDLE_FORMAT.md). |
+| GET | `/lore-forge` | GM (Python-free image only) | **Lore Forge**, embedded: the management page for the in-app ND Lore Forge trainer (install / training environment / fine-tune runs / GGUF export / install-model / use-model / uninstall). No Python counterpart — the hybrid image forwards (404). |
+| GET | `/lore-forge/status` | GM (Python-free image only) | Lore Forge's state as JSON: installed, training environment, model catalog, presets, methods (incl. DoRA / RS-LoRA / LoftQ), runs with live progress, job statuses. |
+| POST | `/lore-forge/install` | GM (Python-free image only) | One-click install: downloads the Llm-training worker code from GitHub into the database folder (or copies `ND_LORE_FORGE_REPO_DIR`). 202 + background job. |
+| POST | `/lore-forge/setup-env` | GM (Python-free image only) | The separate, explicit step: pinned `uv`, a managed Python venv, PyTorch (CUDA when a GPU answers, CPU otherwise) and Unsloth/transformers/peft/trl. 202 + cancellable background job. |
+| POST | `/lore-forge/uninstall` | GM (Python-free image only) | Deletes the whole `lore-forge/` folder (worker code, venv, runs). Refused while a job runs. Models already installed into Ollama/Studio stay. |
+| POST | `/lore-forge/train` | GM (Python-free image only) | Starts a fine-tune of the active world: `{model, method, preset, epochs?, hyper?, include_teacher?}` — the world's text (GM secrets included) plus the teacher examples become the worker's source rows; writes `train.jsonl` + `job.json` and runs `python -m ndforge_worker` under the shared AI slot. 202 + run id. |
+| POST | `/lore-forge/runs/{id}/stop` | GM (Python-free image only) | Writes the worker's STOP file: the run saves a checkpoint and exits. |
+| POST | `/lore-forge/runs/{id}/export` | GM (Python-free image only) | Merges the adapter and writes the GGUF: `{quant}` (q4_k_m … f16). 202 + background job; `export.json` maps quant → file. |
+| POST | `/lore-forge/runs/{id}/install-model` | GM (Python-free image only) | Installs the exported GGUF: `{name?, target: ollama\|studio\|both}` — into Ollama via `/api/blobs` + `/api/create`, into the Studio hub via `ND_STUDIO_HUB_DIR`. 202 + background job. |
+| POST | `/lore-forge/runs/{id}/use-model` | GM (Python-free image only) | Points nd-world's chat at the trained model (writes `app_settings.llm_model`). |
+
 
 ## AI — Chat & World-Building
 

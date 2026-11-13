@@ -8153,7 +8153,10 @@ def test_python_free_live_jobs_list_reads_the_rename_runs(client, seed):
     env = dict(os.environ, ND_PYTHON_FREE="1", ND_UPSTREAM="127.0.0.1:1", ND_GATEWAY_LISTEN=f"127.0.0.1:{port}", DB_PATH=os.environ["DB_PATH"],
                ND_STATIC_DIR=str(root / "static"), ND_TEMPLATES_DIR=str(root / "app" / "templates"), ND_BUNDLED_MAPS_DIR=str(root / "app" / "maps"),
                ND_RUST_ROUTES="login,dice_roll,live,pages,writes,ai,mcp,fans,auth", SECRET_KEY="python-free-test-key", ND_PBKDF2_ITERATIONS="1000")
-    proc = subprocess.Popen([str(binary)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        proc = subprocess.Popen([str(binary)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        pytest.skip("the gateway binary exists but cannot run on this platform (built for another OS)")
     try:
         for _ in range(50):
             try:
@@ -9682,7 +9685,10 @@ def _python_free_gateway(seed, extra_env=None):
     env = dict(os.environ, ND_PYTHON_FREE="1", ND_UPSTREAM="127.0.0.1:1", ND_GATEWAY_LISTEN=f"127.0.0.1:{port}", DB_PATH=os.environ["DB_PATH"],
                ND_STATIC_DIR=str(root / "static"), ND_TEMPLATES_DIR=str(root / "app" / "templates"), ND_BUNDLED_MAPS_DIR=str(root / "app" / "maps"),
                ND_RUST_ROUTES="login,dice_roll,live,pages,writes,ai,mcp,fans,auth", SECRET_KEY="python-free-test-key", ND_PBKDF2_ITERATIONS="1000", **(extra_env or {}))
-    proc = subprocess.Popen([str(binary)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        proc = subprocess.Popen([str(binary)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        pytest.skip("the gateway binary exists but cannot run on this platform (built for another OS)")
     for _ in range(50):
         try:
             httpx.get(f"http://127.0.0.1:{port}/login", timeout=2)

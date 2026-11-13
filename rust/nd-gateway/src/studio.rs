@@ -617,6 +617,25 @@ pub async fn ai_models_route(cfg: Arc<Config>, uri: Uri, headers: HeaderMap) -> 
             result.push((ll, json!({"id": id, "label": id, "loaded": true, "builtin": false})));
         }
     }
+    // the model hub's cached chat GGUFs — the FINE-TUNED exports among them, which /v1/models does not list until
+    // loaded, so a model fine-tuned in Studio was not choosable before (hub_cached = /api/hub/cached-gguf)
+    if let Ok(Some(cached)) = hub_cached(&b).await {
+        for entry in cached {
+            if !entry.get("capabilities").and_then(|c| c.get("can_chat")).map(|v| py_truthy(Some(v))).unwrap_or(false) {
+                continue;
+            }
+            let Some(id) = entry.get("repo_id").and_then(|r| r.as_str()).map(str::trim).filter(|s| !s.is_empty()) else { continue };
+            if !id.is_ascii() {
+                return None; // str.lower
+            }
+            let ll = id.to_ascii_lowercase();
+            if result.iter().any(|r| ll == r.0 || r.0.contains(&ll) || ll.contains(r.0.as_str())) {
+                continue;
+            }
+            let loaded = is_loaded(id);
+            result.push((ll, json!({"id": id, "label": format!("{id} (Studio hub)"), "loaded": loaded, "builtin": false, "fine_tuned": true})));
+        }
+    }
     let models: Vec<Value> = result.into_iter().map(|r| r.1).collect();
     ok(&json!({
         "models": models, "default": b.model,

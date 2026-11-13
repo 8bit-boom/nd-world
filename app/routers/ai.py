@@ -1777,6 +1777,25 @@ async def ai_models():
         ll = lid.lower()
         if not any(ll == r or ll in r or r in ll for r in listed_lower):
             result.append({"id": lid, "label": lid, "loaded": True, "builtin": False})
+    # On the Studio backend, surface the model hub's cached chat GGUFs too — the FINE-TUNED exports among them,
+    # which /v1/models does not list until loaded, so a model fine-tuned in Studio was not choosable before
+    # (unsloth_extras.hub_cached; docs/UNSLOTH_PHASE0_FINDINGS.md: ALL cached GGUFs, capabilities per row).
+    if _ai.effective_llm_api_key():
+        try:
+            cached = await _asyncio.wait_for(_unsloth_extras.hub_cached(), timeout=_MODELS_LIST_TIMEOUT)
+        except Exception:
+            cached = []
+        for entry in cached or []:
+            if not (entry.get("capabilities") or {}).get("can_chat"):
+                continue
+            rid = (entry.get("repo_id") or "").strip()
+            if not rid:
+                continue
+            rl = rid.lower()
+            if any(rl == m["id"].lower() or rl in m["id"].lower() or m["id"].lower() in rl for m in result):
+                continue
+            result.append({"id": rid, "label": f"{rid} (Studio hub)",
+                           "loaded": _is_loaded(rid), "builtin": False, "fine_tuned": True})
     return {
         "models": result, "default": _ai.effective_ollama_model(), "available": loaded,
         "defaults": _ai.get_defaults(),

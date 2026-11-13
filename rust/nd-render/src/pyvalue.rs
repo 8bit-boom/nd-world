@@ -163,6 +163,7 @@ fn utc_tz() -> bool {
 }
 
 /// `datetime(y, mo, d, h, mi, s).timestamp()` for a naive datetime: read in the server's local time (TZ, else /etc/localtime), which is UTC in the image
+#[cfg(not(windows))]
 pub fn local_epoch(y: i64, mo: i64, d: i64, h: u32, mi: u32, s: u32) -> i64 {
     let utc = days_from_civil(y, mo, d) * 86400 + (h * 3600 + mi * 60 + s) as i64;
     if utc_tz() {
@@ -184,7 +185,19 @@ pub fn local_epoch(y: i64, mo: i64, d: i64, h: u32, mi: u32, s: u32) -> i64 {
     }
 }
 
+/// Windows has no libc mktime/localtime_r: the same via the process's time-zone bias. The parity tests run against
+/// the Linux build; this path exists so a dev checkout compiles and runs on Windows (DST-day edge cases best effort).
+#[cfg(windows)]
+pub fn local_epoch(y: i64, mo: i64, d: i64, h: u32, mi: u32, s: u32) -> i64 {
+    let utc = days_from_civil(y, mo, d) * 86400 + (h * 3600 + mi * 60 + s) as i64;
+    if utc_tz() {
+        return utc;
+    }
+    utc - local_offset_secs()
+}
+
 /// `datetime.fromtimestamp(secs)`: the server's local calendar time for an epoch second (year, month, day, hour, minute, second)
+#[cfg(not(windows))]
 pub fn local_civil(secs: i64) -> (i64, i64, i64, u32, u32, u32) {
     let utc = || {
         let (y, m, d) = civil_from_days(secs.div_euclid(86400));
@@ -204,6 +217,32 @@ pub fn local_civil(secs: i64) -> (i64, i64, i64, u32, u32, u32) {
         }
         (tm.tm_year as i64 + 1900, tm.tm_mon as i64 + 1, tm.tm_mday as i64, tm.tm_hour as u32, tm.tm_min as u32, tm.tm_sec as u32)
     }
+}
+
+#[cfg(windows)]
+pub fn local_civil(secs: i64) -> (i64, i64, i64, u32, u32, u32) {
+    if utc_tz() {
+        let (y, m, d) = civil_from_days(secs.div_euclid(86400));
+        let r = secs.rem_euclid(86400) as u32;
+        return (y, m, d, r / 3600, r % 3600 / 60, r % 60);
+    }
+    let local = (secs + local_offset_secs()).max(0);
+    let (y, m, d) = civil_from_days(local / 86400);
+    let r = local.rem_euclid(86400) as u32;
+    (y, m, d, r / 3600, r % 3600 / 60, r % 60)
+}
+
+/// The process's current UTC offset in seconds (Bias is minutes, positive west of UTC; DST rules not modelled)
+#[cfg(windows)]
+fn local_offset_secs() -> i64 {
+    extern "system" {
+        fn GetTimeZoneInformation(lpTimeZoneInformation: *mut u8) -> u32;
+    }
+    // TIME_ZONE_INFORMATION is small and flat; 4320 zeroed bytes more than covers it
+    let mut buf = [0u8; 4320];
+    unsafe { GetTimeZoneInformation(buf.as_mut_ptr()) };
+    let bias = i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+    -(bias as i64) * 60
 }
 
 /// the civil date of a days-since-epoch count (Howard Hinnant's civil_from_days)

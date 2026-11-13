@@ -194,6 +194,20 @@
     </div>
   </div>
 
+  <div class="export-option" id="lore-forge-card">
+    <h2>🔥 Lore Forge <span class="export-tag">optional, one click in and out</span></h2>
+    <p>
+      Install the ND Lore Forge trainer <em>inside nd-world</em>: it fine-tunes a small model (Qwen3.5, Gemma 4 — LoRA,
+      QLoRA, DoRA, RS-LoRA, LoftQ or full) on <strong>{{ world.name }}</strong>'s lore and the teacher examples above,
+      exports a GGUF and can switch nd-world's chat to the trained model. One click installs the trainer, one click
+      deletes everything again. Every step runs as a background job you can stop.
+    </p>
+    <div id="lore-forge-unavailable" style="display:none;font-size:.85rem;color:var(--text-dim)">
+      Not available here: this works only in the Python-free image.
+    </div>
+    <a id="lore-forge-open" href="/lore-forge" class="btn-primary" style="display:none">🔥 Open Lore Forge</a>
+  </div>
+
   <div class="export-option">
     <h2>🎲 FoundryVTT Export</h2>
     <p>
@@ -240,4 +254,5 @@
 <script src="/static/js/file-dropzone.js?v={{ asset_v('js/file-dropzone.js') }}"></script>
 <script src="/static/js/studio-export.js?v={{ asset_v('js/studio-export.js') }}" defer></script>
 <script src="/static/js/teacher-examples.js?v={{ asset_v('js/teacher-examples.js') }}" defer></script>
+<script src="/static/js/lore-forge-card.js?v={{ asset_v('js/lore-forge-card.js') }}" defer></script>
 {% endblock %}

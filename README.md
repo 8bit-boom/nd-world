@@ -687,6 +687,18 @@ quests, tables, characters) in one zip, **GM secrets included**, no pictures, ac
 (repository `Llm-training`), a desktop program that fine-tunes a small model (Qwen3.5, Gemma 4) on one world. Format:
 [docs/TRAINING_BUNDLE_FORMAT.md](docs/TRAINING_BUNDLE_FORMAT.md).
 
+### Lore Forge (optional module, Python-free image)
+
+**🎯 Tools → 📦 Export & Backup → 🔥 Lore Forge** (the card opens the management page): the ND Lore Forge trainer
+installed *inside* nd-world — one click installs it, one click deletes it. It fine-tunes a small model (Qwen3.5, Gemma 4) on the
+active world's lore and the checked teacher examples, with LoRA / QLoRA / **DoRA / RS-LoRA / LoftQ** / full fine-tuning,
+Quick/Normal/Best presets and editable hyperparameters. Every step (install, the multi-GB training environment,
+training, GGUF export, model install) is a background job you can stop from the Background Jobs page; a stopped train
+keeps its checkpoint. The exported GGUF goes into Ollama and/or the Studio hub folder (`ND_STUDIO_HUB_DIR`), and one
+button points nd-world's chat at the trained model. Answered by the gateway **only without Python**
+(`ND_PYTHON_FREE=1`); the hybrid image shows the card but marks it not available. GM secrets are included in what the
+model learns — training is local and the model is GM-trusted, exactly like the training bundle.
+
 ### Export a world
 
 From the hub, download **World JSON** (single file, or split into separate

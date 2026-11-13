@@ -50,6 +50,7 @@ pub mod importer;
 pub mod settings_overrides;
 pub mod studio;
 pub mod teacher;
+pub mod lore_forge;
 pub mod sysstats;
 pub mod studio_key;
 pub mod settings_system;
@@ -535,6 +536,32 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
         return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
+    }
+    // Lore Forge, embedded (crate::lore_forge): one-click install / delete of the ND Lore Forge training worker plus
+    // fine-tune runs driven from the gateway itself. Rust-only (the worker is a subprocess this process manages;
+    // there is no Python counterpart), so answered only without Python - in hybrid the request goes to Python as before.
+    if config::python_free() && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        let path = req.uri().path();
+        if req.method() == axum::http::Method::GET && matches!(path, "/lore-forge" | "/lore-forge/status") {
+            let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
+            let is_page = path == "/lore-forge";
+            if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || lore_forge::routes::get(&pages_, &cfg, &uri, &headers, is_page)).await {
+                return resp;
+            }
+        }
+        if req.method() == axum::http::Method::POST
+            && (matches!(path, "/lore-forge/install" | "/lore-forge/setup-env" | "/lore-forge/uninstall" | "/lore-forge/train")
+                || (path.starts_with("/lore-forge/runs/") && path.matches('/').count() == 4))
+        {
+            let (parts, body) = req.into_parts();
+            let Ok(bytes) = axum::body::to_bytes(body, 1 << 16).await else {
+                return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+            };
+            if let Some(resp) = lore_forge::routes::post(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await {
+                return resp;
+            }
+            return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
+        }
     }
     if req.method() == axum::http::Method::GET && req.uri().path() == "/export/foundry.json" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
