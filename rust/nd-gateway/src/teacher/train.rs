@@ -283,7 +283,9 @@ mod tests {
         let j = job_body(&st(), "my world!", "file-a", Some("file-b"));
         assert_eq!(j["model"], "unsloth/Qwen3.5-9B");
         assert_eq!(j["hyperparameters"]["learning_rate_multiplier"], 0.5);
-        assert_eq!(j["suffix"], "myworld");
+        // the slug (cut to Studio's characters) then `-yyyymmdd-hhmm`, so two runs of one world differ
+        let suffix = j["suffix"].as_str().unwrap();
+        assert!(suffix.starts_with("myworld-") && suffix.len() == "myworld-".len() + 13 && suffix["myworld-".len()..].chars().all(|c| c.is_ascii_digit() || c == '-'), "{suffix}");
         assert_eq!(j["load_in_4bit"], true);
         assert_eq!(j["finetune_vision_layers"], false);
         assert_eq!(j["validation_file"], "file-b");
