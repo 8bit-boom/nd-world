@@ -3555,7 +3555,14 @@ def test_python_free_unsloth_studio_training_job_is_started_followed_and_stopped
             if self.path == "/v1/fine_tuning/jobs":
                 if state["job_status"] != 200:
                     return self._send(state["job_status"], {"error": {"message": "Unknown parameter(s): nope"}})
-                seen["jobs"].append(json.loads(raw))
+                job = json.loads(raw)
+                # Studio's own check (routes/openai_fine_tuning.py): any key besides the OpenAI-shaped ones must be a TrainingStartRequest field, and not a managed one
+                spec = json.load(open(os.path.join(os.path.dirname(__file__), "fixtures", "unsloth", "training_start_fields.json")))
+                openai_keys = {"model", "training_file", "validation_file", "hyperparameters", "method", "suffix", "seed", "integrations"}
+                unknown = sorted(k for k in job if k not in openai_keys and (k not in spec["fields"] or k in spec["managed"]))
+                if unknown:
+                    return self._send(400, {"error": {"message": "Unknown parameter(s): " + ", ".join(unknown)}})
+                seen["jobs"].append(job)
                 return self._send(200, {"id": "ftjob-1", "object": "fine_tuning.job", "status": "queued" if state["queue"] else "running"})
             for act in ("cancel", "pause", "resume"):
                 if self.path == f"/v1/fine_tuning/jobs/ftjob-1/{act}":
@@ -3633,6 +3640,9 @@ def test_python_free_unsloth_studio_training_job_is_started_followed_and_stopped
         pj = r.json()
         assert pj["per_world"] is True and [j.get("world") for j in pj["jobs"]] == slugs and all(j.get("id") == "ftjob-1" for j in pj["jobs"]), pj
         assert len(seen["jobs"]) - before == 2 and seen["jobs"][before]["suffix"] != seen["jobs"][before + 1]["suffix"]
+        # the stand-in rejects an unknown or managed key like Studio does, so a misspelt field in job_body would fail here
+        bad = httpx.post(f"http://127.0.0.1:{srv.server_port}/v1/fine_tuning/jobs", json={"model": "m", "lora_rank": 8, "project_name": "x"})
+        assert bad.status_code == 400 and bad.json()["error"]["message"] == "Unknown parameter(s): lora_rank, project_name"
         # Studio's own words for a refusal
         state["job_status"] = 400
         r = g.post("/export/unsloth-studio/train?vram=24")
