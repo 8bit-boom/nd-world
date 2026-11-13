@@ -60,7 +60,8 @@
     var done = ['succeeded', 'failed', 'cancelled'].indexOf(j.status) >= 0;
     $('studio-job').style.display = '';
     $('studio-jobline').textContent = 'Studio job ' + j.id + ': ' + j.status + (j.nd ? ' (' + j.nd.model + ', ' + j.nd.method + ', context ' + j.nd.context + ', ' + j.nd.rows + ' rows)' : '') +
-      (j.checkpoints ? ' · ' + j.checkpoints + ' checkpoint' + (j.checkpoints > 1 ? 's' : '') : '') + (j.error && j.error.message ? ' · ' + j.error.message : '');
+      (j.checkpoints ? ' · ' + j.checkpoints + ' checkpoint' + (j.checkpoints > 1 ? 's' : '') : '') + (j.error && j.error.message ? ' · ' + j.error.message : '') +
+      (j.studio && j.studio.version ? ' · Unsloth ' + j.studio.version + (j.studio.tested ? '' : ' (not checked by nd-world yet)') : '');
     $('studio-jobevents').textContent = (j.events || []).map(function (e) { return e.message; }).join('\n');
     $('studio-cancel').disabled = done;
     if (done && timer) { clearInterval(timer); timer = null; }

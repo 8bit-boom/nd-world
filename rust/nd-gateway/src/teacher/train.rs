@@ -85,7 +85,7 @@ async fn call(method: &str, url: &str, key: &str, content_type: Option<&str>, bo
 /// Studio's own wording of an error, else the status.
 fn problem(status: u16, body: &[u8]) -> String {
     if status == 401 || status == 403 {
-        return "Studio refused the API key - create a new one in Studio (Settings -> API) and save it in nd-world's Settings.".to_string();
+        return KEY_REFUSED.to_string();
     }
     if status == 404 {
         return "This Studio has no fine-tuning API (it is older than the one nd-world expects). Download the zip and load it on Studio's Train page instead.".to_string();
@@ -105,8 +105,51 @@ async fn upload(base: &str, key: &str, name: &str, lines: &[String]) -> Result<S
     v["id"].as_str().map(str::to_string).ok_or_else(|| "Studio's answer to the upload had no file id.".to_string())
 }
 
+/// What a Unsloth (Studio or Desktop) answers to the three cheap probes. Features are probed, never the version alone: Desktop updates itself.
+pub struct Caps {
+    pub version: Option<String>,
+}
+
+/// Versions nd-world has been checked against (docs/UNSLOTH_API_CONTRACT.md, "Tested versions"). Empty until the owner's checklist on a real Desktop records one;
+/// the card says "not checked by nd-world yet" for any other version, and the job is still tried.
+pub const TESTED_VERSIONS: &[&str] = &[];
+
+const KEY_REFUSED: &str = "Unsloth refused the API key - create a new one in Unsloth (Settings -> API) and save it in nd-world's Settings; Unsloth shows a key only once.";
+
+/// Probe before sending any data: the key works (`/v1/models` answers 401 on a bad key; `/api/health` never does), the fine-tuning API exists (404: too old), the version.
+pub async fn capabilities(base: &str, key: &str) -> Result<Caps, String> {
+    let (s, _) = call("GET", &format!("{base}/v1/models"), key, None, Vec::new(), 30).await?;
+    if s == 401 || s == 403 {
+        return Err(KEY_REFUSED.to_string());
+    }
+    let (s, b) = call("GET", &format!("{base}/v1/fine_tuning/jobs?limit=1"), key, None, Vec::new(), 30).await?;
+    if s != 200 {
+        return Err(problem(s, &b));
+    }
+    Ok(Caps { version: version(base, key).await })
+}
+
+/// The version the authenticated `/api/health` reports (a bad key gets the unauthenticated body without one).
+pub async fn version(base: &str, key: &str) -> Option<String> {
+    let (s, b) = call("GET", &format!("{base}/api/health"), key, None, Vec::new(), 15).await.ok()?;
+    if s != 200 {
+        return None;
+    }
+    let v: Value = serde_json::from_slice(&b).ok()?;
+    v["version"].as_str().or_else(|| v["studio_version"].as_str()).map(|x| x.chars().take(40).collect())
+}
+
+/// `{"version", "tested"}` for the card.
+pub fn studio_note(version: Option<&str>) -> Value {
+    match version {
+        Some(v) => json!({"version": v, "tested": TESTED_VERSIONS.contains(&v)}),
+        None => Value::Null,
+    }
+}
+
 /// Upload both files and start the job. The answer is Studio's job object, with `queued` shown as such when Studio is busy.
 pub async fn start(base: &str, key: &str, b: &Built, slug: &str, st: &Settings) -> Result<Value, String> {
+    let caps = capabilities(base, key).await?;
     let train = upload(base, key, "train.jsonl", &b.train).await?;
     let eval = if b.eval.is_empty() { None } else { Some(upload(base, key, "eval.jsonl", &b.eval).await?) };
     let body = job_body(st, slug, &train, eval.as_deref());
@@ -114,7 +157,9 @@ pub async fn start(base: &str, key: &str, b: &Built, slug: &str, st: &Settings) 
     if s != 200 {
         return Err(format!("Studio did not start the job: {}", problem(s, &r)));
     }
-    serde_json::from_slice(&r).map_err(|_| "Studio's answer to the job could not be read.".to_string())
+    let mut job: Value = serde_json::from_slice(&r).map_err(|_| "Studio's answer to the job could not be read.".to_string())?;
+    job["studio"] = studio_note(caps.version.as_deref());
+    Ok(job)
 }
 
 fn safe_id(id: &str) -> bool {
@@ -131,6 +176,7 @@ pub async fn job(base: &str, key: &str, id: &str) -> Result<Value, String> {
         return Err(problem(s, &b));
     }
     let mut v: Value = serde_json::from_slice(&b).map_err(|_| "Studio's answer could not be read.".to_string())?;
+    v["studio"] = studio_note(version(base, key).await.as_deref());
     if let Ok((200, e)) = call("GET", &format!("{base}/v1/fine_tuning/jobs/{id}/events?limit=8"), key, None, Vec::new(), 30).await {
         if let Ok(ev) = serde_json::from_slice::<Value>(&e) {
             v["events"] = ev["data"].clone();

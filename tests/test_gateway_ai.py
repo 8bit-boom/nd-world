@@ -3528,7 +3528,7 @@ def test_python_free_unsloth_studio_training_job_is_started_followed_and_stopped
     from http.server import BaseHTTPRequestHandler, HTTPServer
     from .test_gateway_golden import _python_free_gateway
     seen = {"auth": set(), "files": [], "jobs": [], "acts": []}
-    state = {"job_status": 200, "queue": False}
+    state = {"job_status": 200, "queue": False, "old": False, "bad_key": False}
 
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -3576,6 +3576,19 @@ def test_python_free_unsloth_studio_training_job_is_started_followed_and_stopped
             seen["auth"].add(self.headers.get("Authorization"))
             if self.path == "/api/train/hardware":
                 return self._send(200, {"available": True, "devices": [{"name": "NVIDIA Test 12", "vram_total_gb": 12.0, "vram_used_gb": 1.0}]})
+            if self.path == "/v1/models":
+                if state["bad_key"]:
+                    return self._send(401, {"detail": "Invalid API key"})
+                return self._send(200, {"object": "list", "data": []})
+            if self.path == "/api/health":   # a key Studio does not know gets the unauthenticated body, never a 401
+                body = {"status": "healthy", "service": "Unsloth UI Backend"}
+                if self.headers.get("Authorization") == "Bearer sk-unsloth-test":
+                    body.update({"version": "2026.11.1", "studio_version": "2026.11.1"})
+                return self._send(200, body)
+            if self.path.startswith("/v1/fine_tuning/jobs?"):
+                if state["old"]:
+                    return self._send(404, {"detail": "Not Found"})
+                return self._send(200, {"object": "list", "data": [], "has_more": False})
             if self.path == "/v1/fine_tuning/jobs/ftjob-1":
                 return self._send(200, {"id": "ftjob-1", "status": "running", "trained_tokens": 1200})
             if self.path.startswith("/v1/fine_tuning/jobs/ftjob-1/events"):
@@ -3643,6 +3656,18 @@ def test_python_free_unsloth_studio_training_job_is_started_followed_and_stopped
         # the stand-in rejects an unknown or managed key like Studio does, so a misspelt field in job_body would fail here
         bad = httpx.post(f"http://127.0.0.1:{srv.server_port}/v1/fine_tuning/jobs", json={"model": "m", "lora_rank": 8, "project_name": "x"})
         assert bad.status_code == 400 and bad.json()["error"]["message"] == "Unknown parameter(s): lora_rank, project_name"
+        # the capabilities probe runs before any data is sent: the version is on the card, an old Studio gets the zip advice, a refused key says so
+        assert job["studio"] == {"version": "2026.11.1", "tested": False}, job
+        assert g.get("/export/unsloth-studio/job?id=ftjob-1").json()["studio"]["version"] == "2026.11.1"
+        files_before = len(seen["files"])
+        state["old"] = True
+        r = g.post("/export/unsloth-studio/train?vram=24")
+        assert r.status_code == 502 and "no fine-tuning API" in r.json()["detail"] and "zip" in r.json()["detail"], r.text
+        state["old"], state["bad_key"] = False, True
+        r = g.post("/export/unsloth-studio/train?vram=24")
+        assert r.status_code == 502 and "refused the API key" in r.json()["detail"], r.text
+        state["bad_key"] = False
+        assert len(seen["files"]) == files_before, "nothing is uploaded when the probe fails"
         # Studio's own words for a refusal
         state["job_status"] = 400
         r = g.post("/export/unsloth-studio/train?vram=24")
@@ -3707,3 +3732,4 @@ def test_python_free_unsloth_studio_export_can_add_a_thinking_block_to_a_share_o
             db.commit()
         finally:
             db.close()
+
