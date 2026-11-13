@@ -15,7 +15,9 @@ pub struct ModelRow {
 }
 
 /// In order of preference: the biggest model that still trains with a usable context.
-pub const MODELS: [ModelRow; 5] = [
+pub const MODELS: [ModelRow; 6] = [
+    // Unsloth's Qwen3.8 fine-tuning page: dense 27B, QLoRA works with 24 GB; 16-bit LoRA "over 36 GB" is a lower bound (the 16-bit weights alone are about 56 GB), so 60 here (2.2 x B + 1, the rule Lore Forge uses)
+    ModelRow { name: "Qwen3.8 27B", repo: "unsloth/Qwen3.8-27B", lora_gb: 60.0, qlora_gb: 20.0, rank: 16, packing: false },
     ModelRow { name: "Qwen3.5 9B", repo: "unsloth/Qwen3.5-9B", lora_gb: 22.0, qlora_gb: 12.0, rank: 16, packing: false },
     ModelRow { name: "Gemma 4 E4B", repo: "unsloth/gemma-4-E4B-it", lora_gb: 17.0, qlora_gb: 10.0, rank: 8, packing: false },
     ModelRow { name: "Qwen3.5 4B", repo: "unsloth/Qwen3.5-4B", lora_gb: 10.0, qlora_gb: 6.5, rank: 16, packing: false },

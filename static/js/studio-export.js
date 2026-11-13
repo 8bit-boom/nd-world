@@ -14,7 +14,7 @@
 
   function query(extra) {
     // the world is named in the address (as everywhere in nd-world, `w` wins over the cookie), so two worlds never share an address
-    return 'w=' + encodeURIComponent(card.getAttribute('data-world') || '') +  worldsParam() + '&world_book=' + ($('studio-book').checked ? 1 : 0) + '&teacher=' + ($('studio-teacher').checked ? 1 : 0) + '&test=' + $('studio-test').value + '&vram=' + $('studio-hw').value + '&max_tokens=' + $('studio-maxtok').value + '&eval_limit=' + $('studio-evallimit').value + (extra || '');
+    return 'w=' + encodeURIComponent(card.getAttribute('data-world') || '') +  worldsParam() + '&world_book=' + ($('studio-book').checked ? 1 : 0) + '&teacher=' + ($('studio-teacher').checked ? 1 : 0) + '&test=' + $('studio-test').value + '&vram=' + $('studio-hw').value + '&max_tokens=' + $('studio-maxtok').value + '&eval_limit=' + $('studio-evallimit').value + '&reasoning=' + $('studio-reasoning').value + (extra || '');
   }
 
   function refresh() {
@@ -31,7 +31,7 @@
       $('studio-hwinfo').textContent = (hwi.label || '') + (hwi.ram_gb ? ' · ' + hwi.ram_gb + ' GB RAM' : '') + ' → ' + (d.model || '') + ', ' + (d.method || '') + ', context ' + d.context + ', about ' + d.est_gb + ' GB' +
         (hwi.source === 'assumed' ? ' (no card was detected here: pick yours above)' : '') + ((hwi.notes || []).length ? ' · ' + hwi.notes.join(' ') : '');
       $('studio-counts').textContent = (d.worlds > 1 ? d.worlds + ' worlds: ' : (d.world ? d.world + ': ' : '')) + d.rows + ' rows for training (' + d.chats + ' questions and answers' + (d.world_book ? ', ' + d.world_book + ' world-book pieces' : '') +
-        (d.teacher ? ', ' + d.teacher + ' written by the AI model' : '') + ')' + (d.eval ? ', ' + d.eval + ' kept for evaluation' : '') + '.' +
+        (d.teacher ? ', ' + d.teacher + ' written by the AI model' : '') + ')' + (d.eval ? ', ' + d.eval + ' kept for evaluation' : '') + (d.reasoning ? ', ' + d.reasoning + ' with a thinking block' : '') + '.' +
         (d.skipped_long ? ' ' + d.skipped_long + ' longer examples left out.' : '') + ' Settings: ' + d.model + ' ' + d.method + ', context ' + d.context + ', ' + d.epochs + ' epoch' + (d.epochs > 1 ? 's' : '') + ' (about ' + d.steps + ' steps); the zip has the settings as a YAML file to load.';
     }).catch(function () {
       $('studio-body').style.display = 'none';
@@ -39,7 +39,7 @@
     });
   }
 
-  ['studio-book', 'studio-teacher', 'studio-test', 'studio-maxtok', 'studio-evallimit', 'studio-hw'].forEach(function (id) { $(id).addEventListener('change', refresh); });
+  ['studio-book', 'studio-teacher', 'studio-test', 'studio-maxtok', 'studio-evallimit', 'studio-hw', 'studio-reasoning'].forEach(function (id) { $(id).addEventListener('change', refresh); });
   [].slice.call(document.querySelectorAll('.studio-world')).forEach(function (c) { c.addEventListener('change', refresh); });
   $('studio-allworlds').addEventListener('click', function (e) { e.preventDefault(); [].slice.call(document.querySelectorAll('.studio-world')).forEach(function (c) { c.checked = true; }); refresh(); });
   $('studio-oneworld').addEventListener('click', function (e) {

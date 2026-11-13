@@ -42,7 +42,7 @@ The settings (and the README's "Recommended for your hardware" section) are work
 nd-world sees on its own machine (`nvidia-smi` or AMD sysfs, the same reading as Settings > System's "Detected hardware"; on TrueNAS SCALE give the nd-world app the GPU, see
 `docs/GPU_SETUP.md`), else an assumed 24 GB. nd-world may run on a different computer than the one that trains (the TrueNAS server vs the PC): pick the training computer's card.
 
-`teacher/hw.rs`: the biggest of Qwen3.5 9B, Gemma 4 E4B, Qwen3.5 4B, Gemma 4 E2B, Qwen3.5 2B whose 4-bit QLoRA fits a 4096 context in the usable memory (92 % of the card minus
+`teacher/hw.rs`: the biggest of Qwen3.8 27B (dense, vision; Unsloth: QLoRA works on 24 GB, 16-bit LoRA needs about 60 GB with its weights alone about 56 GB; the 4-bit `unsloth/Qwen3.8-27B-unsloth-bnb-4bit` is what Studio loads for 4-bit), Qwen3.5 9B, Gemma 4 E4B, Qwen3.5 4B, Gemma 4 E2B, Qwen3.5 2B whose 4-bit QLoRA fits a 4096 context in the usable memory (92 % of the card minus
 1 GB), then LoRA (16-bit) when it also fits at the context the data needs, else QLoRA; the context is the data's need cut to what fits. The memory figures are Unsloth's published ones for
 each model at 2048 / batch 1 (the same numbers as ND Lore Forge's catalog), scaled for context and batch: **estimates**. A small card (12 GB or less) or a context over 8192 gets one
 sequence per step (batch 1 x accumulation 8). `max_tokens=auto` (the default) leaves out examples longer than the card trains, at most 8192; a number overrides it. Volta / Turing
@@ -71,3 +71,13 @@ The card's **Train in Unsloth Studio now** button sends the data and the same se
 `vram=studio` (the card list's "The card Unsloth Studio reports") reads the graphics card from Studio's `/api/train/hardware`, which is right when Studio runs on another computer than nd-world.
 While Studio trains on the same card, Studio unloads its chat models, so AI chat in nd-world stops answering until the job is done.
 Not done: asking Studio to export a GGUF afterwards. Studio's export routes need the checkpoint's path on Studio's disk, which the API-key routes most likely hide; export in Studio's own *Export* tab.
+
+QLoRA note: Unsloth's Qwen3.5 page says both that QLoRA is not recommended for any Qwen3.5 model and (in its sample code) that only MoE QLoRA is not recommended and dense is fine. The README tells the owner that QLoRA is fine for the dense sizes it recommends, with a little more quality loss than 16-bit.
+
+## Reasoning share (thinking blocks)
+
+Unsloth's Qwen3.8 page: to keep a model's reasoning ability, mix reasoning-style examples with direct answers and keep at least 75 % reasoning data. The export card's **Reasoning share**
+(`reasoning=0|25|50|75|100` on the address, default 0) gives that share of the rows (chosen by a hash of the question, so the same data always gives the same rows) a short thinking block
+`<think>\n...\n</think>\n\n` before the answer. The thinking is plain and grounded: what is asked, the start of what the lore says (the answer's own opening), and that the answer stays inside the lore;
+three phrasings. It keeps the thinking format alive; it is not new knowledge. A row that already has a `<think>` block is left alone. World-book rows, questions and the AI-model examples all count. With 0
+the README warns that direct-answers-only training makes a reasoning model think less. Better reasoning examples (written by a strong model) are a follow-up; the teacher examples could carry them.

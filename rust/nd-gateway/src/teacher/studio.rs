@@ -23,6 +23,8 @@ pub struct Options {
     pub max_tokens: usize,
     /// at most this many rows in `eval.jsonl` (an even sample); 0 = all of them
     pub eval_limit: usize,
+    /// share of the rows that get a short thinking block (`<think>...</think>`) before the answer, in percent (0-100); Unsloth advises at least 75 % to keep a reasoning model reasoning
+    pub reasoning: u8,
     /// the card the settings are for
     pub hw: Hardware,
 }
@@ -42,6 +44,9 @@ pub struct Built {
     /// examples left out for being longer than `max_tokens`
     pub skipped_long: usize,
     pub max_tokens: usize,
+    /// rows (training) that carry a thinking block, and the share asked for
+    pub reasoning_rows: usize,
+    pub reasoning_pct: u8,
     /// rows left out for being an exact copy of another row (or for an empty message)
     pub dropped: usize,
     /// held-out questions before the `eval_limit` was applied
@@ -70,6 +75,32 @@ fn title_of(text: &str, source: &str) -> String {
         .unwrap_or_else(|| source.split(':').nth(1).unwrap_or(source).to_string())
 }
 
+/// A short thinking block before the answer for `pct` percent of the rows (chosen by a hash of the question, so the same data always gives the same rows). The thinking is
+/// plain and grounded: what is asked, what the lore says (the start of the answer itself), and that the answer stays inside it. It keeps the thinking format alive in a
+/// reasoning model; it is not new knowledge. Returns true when the row got one.
+fn with_thinking(msgs: &mut [(String, String)], pct: u8) -> bool {
+    if pct == 0 {
+        return false;
+    }
+    let Some(last) = msgs.iter().rposition(|(r, _)| r == "assistant") else { return false };
+    if msgs[last].1.contains("<think>") || msgs[last].1.contains("</think>") {
+        return false;
+    }
+    let q = msgs.iter().rev().find(|(r, _)| r == "user").map(|(_, c)| c.clone()).unwrap_or_default();
+    if pct < 100 && super::builders::hash_num(&format!("think:{q}")) % 100 >= pct as usize {
+        return false;
+    }
+    let ask = super::builders::shorten(q.trim(), 200);
+    let facts = super::builders::shorten(msgs[last].1.trim(), 280);
+    let thinking = match super::builders::hash_num(&q) % 3 {
+        0 => format!("The player asks: {ask}\nI check what the world's lore says about this: {facts}\nI answer from that and add nothing the lore does not support."),
+        1 => format!("{ask}\nFirst, what is actually known: {facts}\nThen I put it plainly and stay inside the lore."),
+        _ => format!("Let me work out what is being asked: {ask}\nThe relevant lore: {facts}\nSo the answer follows directly from it."),
+    };
+    msgs[last].1 = format!("<think>\n{thinking}\n</think>\n\n{}", msgs[last].1);
+    true
+}
+
 fn pairs(e: &Example) -> Vec<(String, String)> {
     e.messages.iter().map(|m| (m.role.clone(), m.content.clone())).collect()
 }
@@ -83,7 +114,7 @@ pub fn build(members: &[(&'static str, Vec<u8>)], teacher: &[gen::Example], opts
     let held = held_out_sources(&chat_sources, recipe.seed, recipe.test_percent);
     let world = loaded.world_name.clone();
     let (mut train, mut eval) = (Vec::<String>::new(), Vec::<String>::new());
-    let (mut book, mut chats, mut tch, mut longest, mut total, mut skipped) = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+    let (mut book, mut chats, mut tch, mut longest, mut total, mut skipped, mut reasoning_rows) = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
     let too_long = |t: usize| opts.max_tokens > 0 && t > opts.max_tokens;
     for e in &examples {
         if let Some(text) = &e.text {
@@ -91,7 +122,8 @@ pub fn build(members: &[(&'static str, Vec<u8>)], teacher: &[gen::Example], opts
                 continue;
             }
             let title = title_of(text, &e.source);
-            let msgs = vec![("system".to_string(), system_prompt(&world)), ("user".to_string(), format!("Tell me what the lore says about {title}.")), ("assistant".to_string(), text.clone())];
+            let mut msgs = vec![("system".to_string(), system_prompt(&world)), ("user".to_string(), format!("Tell me what the lore says about {title}.")), ("assistant".to_string(), text.clone())];
+            let thought = with_thinking(&mut msgs, opts.reasoning);
             let t = approx_tokens(&msgs);
             if too_long(t) {
                 skipped += 1;
@@ -100,9 +132,11 @@ pub fn build(members: &[(&'static str, Vec<u8>)], teacher: &[gen::Example], opts
                 total += t;
                 train.push(l);
                 book += 1;
+                reasoning_rows += thought as usize;
             }
         } else {
-            let msgs = pairs(e);
+            let mut msgs = pairs(e);
+            let thought = with_thinking(&mut msgs, opts.reasoning);
             let t = approx_tokens(&msgs);
             if too_long(t) {
                 skipped += 1;
@@ -114,13 +148,15 @@ pub fn build(members: &[(&'static str, Vec<u8>)], teacher: &[gen::Example], opts
                     total += t;
                     train.push(l);
                     chats += 1;
+                    reasoning_rows += thought as usize;
                 }
             }
         }
     }
     if opts.teacher {
         for t in teacher.iter().filter(|t| t.status == "keep") {
-            let msgs: Vec<(String, String)> = t.messages.iter().map(|m| (m.role.clone(), m.content.clone())).collect();
+            let mut msgs: Vec<(String, String)> = t.messages.iter().map(|m| (m.role.clone(), m.content.clone())).collect();
+            let thought = with_thinking(&mut msgs, opts.reasoning);
             let n = approx_tokens(&msgs);
             if too_long(n) {
                 skipped += 1;
@@ -129,6 +165,7 @@ pub fn build(members: &[(&'static str, Vec<u8>)], teacher: &[gen::Example], opts
                 total += n;
                 train.push(l);
                 tch += 1;
+                reasoning_rows += thought as usize;
             }
         }
     }
@@ -142,7 +179,7 @@ pub fn build(members: &[(&'static str, Vec<u8>)], teacher: &[gen::Example], opts
     eval.retain(|l| seen.insert(l.clone()));
     let dropped = before - train.len() - eval.len();
     let eval_total = eval.len();
-    Ok(Built { train, eval, world_book: book, chats, teacher: tch, longest, total_tokens: total, world, worlds: 1, skipped_long: skipped, max_tokens: opts.max_tokens, eval_total, dropped, hw: opts.hw.clone() })
+    Ok(Built { train, eval, world_book: book, chats, teacher: tch, longest, total_tokens: total, world, worlds: 1, skipped_long: skipped, max_tokens: opts.max_tokens, eval_total, dropped, reasoning_rows, reasoning_pct: opts.reasoning, hw: opts.hw.clone() })
 }
 
 /// Several worlds in one dataset (every example carries its own world's name in its system message, so one model can hold them all).
@@ -162,6 +199,7 @@ pub fn merge(parts: Vec<Built>) -> Option<Built> {
         all.skipped_long += p.skipped_long;
         all.eval_total += p.eval_total;
         all.dropped += p.dropped;
+        all.reasoning_rows += p.reasoning_rows;
         n += 1;
     }
     all.world = match names.len() {
@@ -271,7 +309,8 @@ The memory figures are estimates from Unsloth's published numbers; if Studio run
 | Offload layers | Off | |\n\n\
 Train a first, short run to see speed and loss: in the Dataset section set *Train Split End* to about 3000, or use Max Steps 300, then do the full run.\n\n\
 ## Choosing the model\n\
-- Use an official base: **Qwen3.5 9B** (or 4B / 2B), **Gemma 4 E4B / E2B**. They have official GGUF files and, for models with an image part, the vision file, so a model trained here can still read pictures.\n\
+- **QLoRA (4-bit) is fine for these dense models**, with a little more quality loss than 16-bit; Unsloth's advice against QLoRA is for Qwen3.5 MoE models (35B-A3B and larger), and its own page is not consistent about the dense ones. 16-bit LoRA is chosen above whenever it fits with room to spare.\n\
+- Use an official base: **Qwen3.8 27B** (a dense 27B with images; QLoRA works on a 24 GB card, 16-bit LoRA needs more than 36 GB), **Qwen3.5 9B** (or 4B / 2B), **Gemma 4 E4B / E2B**. They have official GGUF files and, for models with an image part, the vision file, so a model trained here can still read pictures.\n\
 - Community merges (for example \"13B ... Heretic ... Thinking\") are riskier: their chat templates expect thinking blocks this data does not have, there is usually no official vision file, and a 13B model at 16-bit leaves almost no memory on a 32 GB card at this context. If you must, use QLoRA.\n\
 - If the model has an image part, train the **language layers only** (*Train as: Language model*; leave *Vision Layers* off if Studio shows that checkbox).\n\n\
 ## If something goes wrong\n\
@@ -285,6 +324,7 @@ Train a first, short run to see speed and loss: in the Dataset section set *Trai
 - The text of the world book is {book_note}.\n\
 - {eval_note}\n\
 - Chatting with the trained model: every training example starts with the system message `You are the game master's assistant for the tabletop world \"<world>\". ...` (see the first line of `train.jsonl`). Use that same system message, thinking off, for the best answers. Gemma 4: temperature 1.0, top_p 0.95, top_k 64 (Studio's own recommendation).\n\
+- {reasoning_note}\n\
 - Example lengths are estimates (about 3.5 characters per token).\n\
 - For more control (reviewing and editing the examples, a test page that scores the trained model against the original), use ND Lore Forge with the Training bundle.\n\
 - **GM secrets are in this data.** The trained model will repeat them: keep it away from players.\n",
@@ -307,6 +347,11 @@ Train a first, short run to see speed and loss: in the Dataset section set *Trai
         warm = st.warmup_steps, save = st.save_steps,
         eval_steps = if st.eval_steps > 0.0 { "0.1" } else { "0" },
         eval_why = if st.eval_steps > 0.0 { "an evaluation every tenth of the run (a small eval file keeps it cheap)" } else { "off: no eval file, or one too big to evaluate often" },
+        reasoning_note = if b.reasoning_pct == 0 {
+            "**Reasoning models** (Qwen3.5 / 3.8, Gemma 4 with thinking): these rows are direct answers with no thinking block. Training a reasoning model only on direct answers makes it think less step by step. Unsloth's advice is to keep at least 75 % reasoning-style examples (the export card's *Reasoning share* option), or to chat with thinking switched off.".to_string()
+        } else {
+            format!("{} of the {} training rows carry a short thinking block (`<think>` ... `</think>`) before the answer, about {} % as asked for. It is plain and grounded in the lore (what is asked, what the lore says, stay inside it): it keeps the model's thinking format alive; it is not new knowledge. Unsloth advises at least 75 % for a reasoning model. Chat with thinking switched on.", b.reasoning_rows, b.train.len(), b.reasoning_pct)
+        },
         worlds_note = if b.worlds > 1 { format!("This file holds {} worlds at once. Every example carries the name of its own world in its system message, so one model can learn all of them and still tell them apart.", b.worlds) } else { "This file holds one world. Tick several worlds on the export card to train them in one model.".to_string() },
         book_note = if b.world_book > 0 { "included as answers to \"Tell me what the lore says about <title>\" (Studio has no plain-text mode for this)" } else { "left out (it was switched off for this export)" },
         eval_note = if b.eval.is_empty() { "No questions were held out, so there is no `eval.jsonl`.".to_string() } else { "`eval.jsonl` holds questions the training never saw: add it as the Eval dataset.".to_string() })
@@ -345,7 +390,7 @@ pub fn finish(mut b: Built, limit: usize) -> Built {
 /// What the page shows before downloading: counts for the chosen options.
 pub fn summary(b: &Built) -> Value {
     let st = settings(b);
-    json!({"rows": b.train.len(), "chats": b.chats, "world_book": b.world_book, "teacher": b.teacher, "eval": b.eval.len(), "eval_total": b.eval_total, "skipped_long": b.skipped_long, "dropped": b.dropped,
+    json!({"rows": b.train.len(), "chats": b.chats, "world_book": b.world_book, "teacher": b.teacher, "eval": b.eval.len(), "eval_total": b.eval_total, "skipped_long": b.skipped_long, "dropped": b.dropped, "reasoning": b.reasoning_rows, "reasoning_pct": b.reasoning_pct,
            "worlds": b.worlds, "world": b.world, "context": st.max_seq_length, "model": st.model, "method": st.method, "est_gb": (st.est_gb * 10.0).round() / 10.0, "hardware": hw::info(&b.hw), "epochs": st.num_epochs, "steps": st.total_steps, "longest_tokens": b.longest})
 }
 
