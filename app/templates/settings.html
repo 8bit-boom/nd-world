@@ -233,6 +233,10 @@
       <div class="form-group">
         <label for="llm-url">Unsloth URL</label>
         <input id="llm-url" name="llm_url" value="{{ settings.llm_url or '' }}" placeholder="{{ env_unsloth_url or 'not set' }}">
+        <small style="color:var(--text-dim);font-size:.75rem;display:block;margin-top:.2rem">
+          Unsloth Desktop on your PC: use the address shown in Unsloth → Settings → API → Remote &amp; LAN, with LAN access started
+          (Desktop alone listens on that PC only). Leave this empty for the <code>unsloth</code> service of docker-compose.yml.
+        </small>
       </div>
       <div class="form-group">
         <label for="llm-model">Unsloth chat model</label>
@@ -1175,11 +1179,13 @@ function ndCopyRestartCmd() {
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
       const mark = s => s === 200 ? '✓' : (s == null ? '⚠' : '✗ ' + s);
+      const u = d.unsloth; // only a Python-free gateway adds it
+      const note = u ? ('<br>' + (u.unsloth ? ('✓ Unsloth ' + (u.desktop ? 'Desktop' : 'Studio') + (u.version ? ' ' + u.version : '') + '.') : '') + (u.hint ? ' ' + u.hint.replace(/&/g, '&amp;').replace(/</g, '&lt;') : '')) : '';
       st.innerHTML = (d.version ? ('Version: <b>' + d.version + '</b> — ') : '') +
         (d.results || []).map(x => '<code>' + x.path + '</code> ' + mark(x.status)).join(' · ') +
         ((d.results || []).some(x => x.path === '/api/version' && x.status === 200)
           ? ''
-          : '<br>Docker images and the Desktop app are separate release trains — version/update APIs may arrive in Desktop first; the Docker image catches up on its own schedule.');
+          : '<br>Docker images and the Desktop app are separate release trains — version/update APIs may arrive in Desktop first; the Docker image catches up on its own schedule.') + note;
     } catch (e) {
       st.textContent = '⚠ ' + e.message;
     }

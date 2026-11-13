@@ -3733,3 +3733,75 @@ def test_python_free_unsloth_studio_export_can_add_a_thinking_block_to_a_share_o
         finally:
             db.close()
 
+
+def test_python_free_unsloth_probe_names_desktop_version_and_what_to_do(client, seed):
+    """Settings' probe in the Python-free image adds an `unsloth` block (Python's probe has none: tests/test_gateway_golden.py keeps the rest byte-identical):
+    is it Unsloth, Desktop or Studio, its version (with the saved key), the root id, and in words what to do when nothing answers (LAN access off, 127.0.0.1 inside a
+    container, an IPv6 or https address, a key Unsloth did not accept, something that is not Unsloth)."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from .test_gateway_golden import _python_free_gateway
+    fixtures = os.path.join(os.path.dirname(__file__), "fixtures", "unsloth")
+    health_auth = json.load(open(os.path.join(fixtures, "health_auth.json")))
+    health_unauth = json.load(open(os.path.join(fixtures, "health_unauth.json")))
+    state = {"mode": "desktop"}
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            if self.path != "/api/health":
+                body, code = b'{"detail": "Not Found"}', 404
+            else:
+                code = 200
+                if state["mode"] == "other":
+                    body = json.dumps({"status": "ok", "service": "something else"}).encode()
+                elif state["mode"] == "studio":
+                    body = json.dumps({k: v for k, v in health_auth.items() if not k.startswith("desktop") and k not in ("supports_desktop_auth",)}).encode()
+                elif state["mode"] == "refused":
+                    body = json.dumps(health_unauth).encode()           # a key Unsloth does not know: no `version`, never a 401
+                else:
+                    body = json.dumps(health_auth if self.headers.get("Authorization") == "Bearer sk-unsloth-test" else health_unauth).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        def probe(address):
+            _settings(gm, llm_url=address, llm_model="studio", llm_api_key="sk-unsloth-test")
+            r = g.get("/api/ai/unsloth/probe")
+            assert r.status_code == 200, r.text
+            return r.json()
+        d = probe(f"http://127.0.0.1:{srv.server_port}")
+        assert [x["path"] for x in d["results"]][0] == "/api/version" and d["version"] == "2026.11.1"   # Python's own fields are untouched
+        assert d["unsloth"] == {"unsloth": True, "desktop": True, "studio_root_id": "root-0123456789ab", "version": "2026.11.1", "hint": None}, d["unsloth"]
+        state["mode"] = "studio"
+        u = probe(f"http://127.0.0.1:{srv.server_port}")["unsloth"]
+        assert u["unsloth"] is True and u["desktop"] is False and u["version"] == "2026.11.1" and u["hint"] is None, u
+        state["mode"] = "refused"
+        u = probe(f"http://127.0.0.1:{srv.server_port}")["unsloth"]
+        assert u["unsloth"] is True and u["version"] is None and "did not accept the API key" in u["hint"], u
+        state["mode"] = "other"
+        u = probe(f"http://127.0.0.1:{srv.server_port}")["unsloth"]
+        assert u["unsloth"] is False and "not Unsloth" in u["hint"], u
+        # nothing answers: refused on a loopback address (this machine, or a container), an IPv6 address in brackets, https
+        for address, words in (("http://127.0.0.1:1", "Nothing answers at http://127.0.0.1:1"),
+                               ("http://[::1]:1", "Nothing answers at http://[::1]:1"), ("https://127.0.0.1:1", "Nothing answers at https://127.0.0.1:1")):
+            u = probe(address)["unsloth"]
+            assert u["unsloth"] is False and u["hint"].startswith(words), (address, u)
+            assert "Unsloth Desktop" in u["hint"] or "container" in u["hint"], u
+        # a PC on the LAN that does not answer: the Remote & LAN card is named (192.0.2.0/24 never answers; the probe gives up after a few seconds)
+        u = probe("http://192.0.2.7:8888")["unsloth"]
+        assert "Remote & LAN" in u["hint"] and "http://192.0.2.7:8888" in u["hint"], u
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+        _settings(gm, llm_api_key_clear="1")
+        srv.shutdown()
