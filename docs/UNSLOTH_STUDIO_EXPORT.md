@@ -65,13 +65,16 @@ The card's **Train in Unsloth Studio now** button sends the data and the same se
 | Route | |
 |---|---|
 | `POST /export/unsloth-studio/train?...` | the same query as the zip; uploads `train.jsonl` / `eval.jsonl`, starts the job, answers Studio's job object plus `nd` (model, method, context, rows). `per_world=1`: one job for every world ticked |
-| `GET /export/unsloth-studio/job?id=` | the job, its last events and its checkpoint count (the card polls every 5 s) |
+| `GET /export/unsloth-studio/job?id=` | the job, its last events and its checkpoint count, and `studio: {version, tested}` (the card polls every 5 s) |
+| `GET /export/unsloth-studio/jobs` | Studio's recent jobs (`/v1/fine_tuning/jobs?limit=50`), newest first, each with the `world` whose slug starts the job's suffix `<slug>-<yyyymmdd-hhmm>` (null: started outside nd-world) |
 | `POST /export/unsloth-studio/job/cancel?id=` | stops the job in Studio |
 | `POST /export/unsloth-studio/job/{pause,resume}?id=` | answer 400 "Unsloth cannot pause a training job; cancel it and start again." without calling Studio (Studio always refuses them: "Pausing and resuming fine-tuning jobs is not supported; use cancel."). The card has no Pause / Resume buttons; the routes stay so old links are harmless |
 
 `vram=studio` (the card list's "The card Unsloth Studio reports") reads the graphics card from Studio's `/api/train/hardware`, which is right when Studio runs on another computer than nd-world.
 While Studio trains on the same card, Studio unloads its chat models, so AI chat in nd-world stops answering until the job is done.
-Not done: asking Studio to export a GGUF afterwards. Studio's export routes need the checkpoint's path on Studio's disk, which the API-key routes most likely hide; export in Studio's own *Export* tab.
+Before anything is sent the gateway probes Studio (`/v1/models` for the key, `/v1/fine_tuning/jobs?limit=1` for the API, `/api/health` for the version). Not done (owner's decision): asking Studio to export a GGUF afterwards and loading it for chat; export in Studio's own *Export* tab.
+
+Unsloth Desktop (same backend, LAN access on the PC, TrueNAS, what is not verified yet): `docs/UNSLOTH_DESKTOP.md`; the calls: `docs/UNSLOTH_API_CONTRACT.md`.
 
 QLoRA note: Unsloth's Qwen3.5 page says both that QLoRA is not recommended for any Qwen3.5 model and (in its sample code) that only MoE QLoRA is not recommended and dense is fine. The README tells the owner that QLoRA is fine for the dense sizes it recommends, with a little more quality loss than 16-bit.
 
