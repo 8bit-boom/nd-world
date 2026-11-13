@@ -3624,6 +3624,8 @@ def test_python_free_unsloth_studio_training_job_is_started_followed_and_stopped
         assert seen["auth"] == {"Bearer sk-unsloth-test"}
         assert [f[0] for f in seen["files"]] == ["train.jsonl", "eval.jsonl"] and seen["files"][0][1] == job["nd"]["rows"]
         body = seen["jobs"][0]
+        import re
+        assert re.fullmatch(re.escape(seed.world_a.slug) + r"-\d{8}-\d{4}", body["suffix"]) and len(body["suffix"]) <= 40, body["suffix"]
         assert body["training_file"] == "file-train" and body["validation_file"] == "file-eval" and body["method"] == {"type": "supervised"}
         assert body["finetune_vision_layers"] is False and body["train_on_completions"] is True and body["lora_alpha"] == body["lora_r"] and body["max_steps"] == 0
         assert body["hyperparameters"]["batch_size"] * body["gradient_accumulation_steps"] == 8 and body["packing"] is False
@@ -3805,3 +3807,88 @@ def test_python_free_unsloth_probe_names_desktop_version_and_what_to_do(client, 
         proc.wait(timeout=10)
         _settings(gm, llm_api_key_clear="1")
         srv.shutdown()
+
+
+def test_python_free_unsloth_studio_job_history_is_labelled_by_world(client, seed):
+    """`GET /export/unsloth-studio/jobs`: Studio's own job list (nothing stored in nd-world), each job labelled with the world whose slug starts its `suffix`
+    (`<slug>-<date>`, the slug cut to Studio's characters, so an accented slug still matches), "started outside nd-world" otherwise, newest first. A `null` data
+    list, junk entries and 1000 jobs do not decline the route; the card has the list and the page script reads it."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from app.database import SessionLocal
+    from app.models import World
+    from .test_gateway_golden import _python_free_gateway
+    state = {"data": []}
+    seen = {"paths": []}
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            seen["paths"].append(self.path)
+            code, obj = 404, {"detail": "nope"}
+            if self.path.startswith("/v1/fine_tuning/jobs?"):
+                code, obj = 200, {"object": "list", "data": state["data"], "has_more": False}
+            body = json.dumps(obj).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    db = SessionLocal()
+    try:
+        db.add(World(name="Cafe Ete", slug="café-été"))
+        db.commit()
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        _settings(gm, llm_api_key_clear="1")
+        assert g.get("/export/unsloth-studio/jobs").status_code == 409                       # no key: said in words
+        _settings(gm, llm_url=f"http://127.0.0.1:{srv.server_port}", llm_model="studio", llm_api_key="sk-unsloth-test")
+        a, b = seed.world_a.slug, seed.world_b.slug
+        state["data"] = [
+            {"id": "ftjob_old", "status": "succeeded", "created_at": 1000, "model": "unsloth/Qwen3.5-2B", "suffix": f"{b}-20261101-0900"},
+            {"id": "ftjob_new", "status": "running", "created_at": 3000, "model": "unsloth/Qwen3.5-2B", "suffix": f"{a}-20261113-1200"},
+            {"id": "ftjob_acc", "status": "succeeded", "created_at": 2500, "model": "m", "suffix": "caf-t-20261112-0800"},
+            {"id": "ftjob_other", "status": "failed", "created_at": 2000, "model": "m", "suffix": "somebody-elses"},
+            {"id": "ftjob_q0123", "status": "queued", "created_at": 2900, "model": "m"},
+            "junk", None, {"status": "running"}, {"id": "../etc", "status": "x"},
+        ]
+        r = g.get("/export/unsloth-studio/jobs")
+        assert r.status_code == 200, r.text
+        jobs = r.json()["jobs"]
+        assert [j["id"] for j in jobs] == ["ftjob_new", "ftjob_q0123", "ftjob_acc", "ftjob_other", "ftjob_old"], jobs
+        by = {j["id"]: j for j in jobs}
+        assert by["ftjob_new"]["world"] == a and by["ftjob_old"]["world"] == b and by["ftjob_acc"]["world"] == "café-été"
+        assert by["ftjob_other"]["world"] is None and by["ftjob_other"]["label"] == "started outside nd-world" and by["ftjob_q0123"]["world"] is None
+        assert by["ftjob_new"]["status"] == "running" and by["ftjob_new"]["model"] == "unsloth/Qwen3.5-2B"
+        assert any(p.startswith("/v1/fine_tuning/jobs?limit=50") for p in seen["paths"])
+        # a null list, and a thousand jobs (50 newest are kept)
+        state["data"] = None
+        assert g.get("/export/unsloth-studio/jobs").json() == {"jobs": []}
+        state["data"] = [{"id": f"ftjob_{i}", "status": "succeeded", "created_at": i, "suffix": f"{a}-x"} for i in range(1000)]
+        jobs = g.get("/export/unsloth-studio/jobs").json()["jobs"]
+        assert len(jobs) == 50 and jobs[0]["id"] == "ftjob_999" and all(j["world"] == a for j in jobs)
+        # a Studio that is too old for the API, and not the GM
+        state["data"] = []
+        anon = httpx.Client(base_url=url, follow_redirects=False)
+        assert anon.get("/export/unsloth-studio/jobs").status_code != 200
+        # the card carries the list and the script reads it
+        assert 'id="studio-history-list"' in g.get("/export").text and "/export/unsloth-studio/jobs" in g.get("/static/js/studio-export.js").text
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+        _settings(gm, llm_api_key_clear="1")
+        srv.shutdown()
+        db = SessionLocal()
+        try:
+            db.query(World).filter(World.slug == "café-été").delete(synchronize_session=False)
+            db.commit()
+        finally:
+            db.close()

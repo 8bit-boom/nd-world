@@ -16,15 +16,30 @@ use super::studio::{Built, Settings};
 /// Studio's base learning rate: a job's `learning_rate_multiplier` scales it
 const BASE_LR: f64 = 2e-4;
 
+/// The part of a job's `suffix` that names the world: the slug cut to Studio's allowed characters ([A-Za-z0-9_-]) and 24 of them, "nd-world" when nothing is left.
+/// The job history matches on `<prefix>-`, so a slug with accented letters still finds its jobs (it is filtered the same way on both sides).
+pub fn suffix_prefix(slug: &str) -> String {
+    let p: String = slug.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(24).collect();
+    if p.is_empty() { "nd-world".to_string() } else { p }
+}
+
+/// `yyyymmdd-hhmm` (UTC): makes the suffix of two runs of one world different.
+fn stamp() -> String {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let (y, m, d) = crate::writes::civil_from_days(secs.div_euclid(86400));
+    let rem = secs.rem_euclid(86400);
+    format!("{y:04}{m:02}{d:02}-{:02}{:02}", rem / 3600, rem % 3600 / 60)
+}
+
 /// The job body for `POST /v1/fine_tuning/jobs`.
 pub fn job_body(st: &Settings, slug: &str, training_file: &str, validation_file: Option<&str>) -> Value {
-    let suffix: String = slug.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(40).collect();
+    let suffix = format!("{}-{}", suffix_prefix(slug), stamp());
     let mut v = json!({
         "model": st.repo,
         "training_file": training_file,
         "hyperparameters": {"n_epochs": st.num_epochs, "batch_size": st.batch_size, "learning_rate_multiplier": ((st.learning_rate / BASE_LR) * 1000.0).round() / 1000.0},
         "method": {"type": "supervised"},
-        "suffix": if suffix.is_empty() { "nd-world".to_string() } else { suffix },
+        "suffix": suffix,
         "seed": 3407,
         // the rest of studio-settings.yaml
         "training_type": "LoRA/QLoRA",
@@ -192,6 +207,32 @@ pub async fn job(base: &str, key: &str, id: &str) -> Result<Value, String> {
 
 /// What the old pause / resume links answer: Studio itself always refuses them (400 "not supported; use cancel").
 pub const PAUSE_REFUSED: &str = "Unsloth cannot pause a training job; cancel it and start again.";
+
+/// Studio's recent fine-tuning jobs, newest first, each labelled with the world whose slug starts its `suffix` (`<slug>-<date>`); `world: null` = started
+/// outside nd-world. Nothing is kept by nd-world: Studio's list is the history, so it survives a page reload and a gateway restart. A job waiting in
+/// Studio's queue (`ftjob_q...`) lives only in Studio's memory and is gone from the list after a Studio restart.
+pub async fn history(base: &str, key: &str, slugs: &[String]) -> Result<Value, String> {
+    let (s, b) = call("GET", &format!("{base}/v1/fine_tuning/jobs?limit=50"), key, None, Vec::new(), 30).await?;
+    if s != 200 {
+        return Err(problem(s, &b));
+    }
+    let v: Value = serde_json::from_slice(&b).map_err(|_| "Studio's answer could not be read.".to_string())?;
+    Ok(json!({"jobs": label_jobs(&v["data"], slugs)}))
+}
+
+/// The rows of `history`: tolerant of `data: null`, of entries that are not objects and of more rows than asked for (50 are kept).
+pub fn label_jobs(data: &Value, slugs: &[String]) -> Vec<Value> {
+    let mut rows: Vec<&Value> = data.as_array().map(|a| a.iter().filter(|j| j.is_object() && j["id"].as_str().is_some_and(safe_id)).collect()).unwrap_or_default();
+    rows.sort_by(|a, b| b["created_at"].as_f64().unwrap_or(0.0).partial_cmp(&a["created_at"].as_f64().unwrap_or(0.0)).unwrap_or(std::cmp::Ordering::Equal));
+    rows.into_iter().take(50).map(|j| {
+        let suffix = j["suffix"].as_str().unwrap_or("");
+        let world = slugs.iter().filter(|s| suffix.starts_with(&format!("{}-", suffix_prefix(s)))).max_by_key(|s| suffix_prefix(s).len());
+        json!({
+            "id": j["id"], "status": j["status"].as_str().unwrap_or("unknown"), "created_at": j["created_at"].clone(), "model": j["model"].as_str().unwrap_or(""),
+            "world": world, "label": if world.is_some() { Value::Null } else { json!("started outside nd-world") }
+        })
+    }).collect()
+}
 
 /// `cancel` only.
 pub async fn act(base: &str, key: &str, id: &str, action: &str) -> Result<Value, String> {

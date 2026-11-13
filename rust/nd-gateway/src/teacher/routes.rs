@@ -209,10 +209,10 @@ fn no_store(mut r: Response<Body>) -> Response<Body> {
     r
 }
 
-/// `POST /export/unsloth-studio/train` (same query as the zip), `GET /export/unsloth-studio/job?id=`, `POST /export/unsloth-studio/job/cancel?id=` (`job/pause` and `job/resume` only answer 400: Studio cannot pause):
+/// `POST /export/unsloth-studio/train` (same query as the zip), `GET /export/unsloth-studio/job?id=`, `GET /export/unsloth-studio/jobs` (Studio's recent jobs, labelled by world), `POST /export/unsloth-studio/job/cancel?id=` (`job/pause` and `job/resume` only answer 400: Studio cannot pause):
 /// train on the Unsloth Studio Settings points at. GM only.
 pub async fn studio_train(cfg: Arc<Config>, uri: Uri, headers: HeaderMap, detected: Value, action: &'static str) -> Option<Response<Body>> {
-    let method = if action == "job" { "GET" } else { "POST" };
+    let method = if matches!(action, "job" | "jobs") { "GET" } else { "POST" };
     let target = studio_target(&cfg, method, &uri, &headers).await?;
     if matches!(action, "pause" | "resume") {
         // Studio always answers these two with 400 "not supported; use cancel": answered here without calling Studio (old links stay harmless)
@@ -228,6 +228,11 @@ pub async fn studio_train(cfg: Arc<Config>, uri: Uri, headers: HeaderMap, detect
     });
     match action {
         "job" => Some(answer(super::train::job(&base, &key, &id).await)),
+        "jobs" => {
+            let (cfg3, uri3, headers3) = (cfg.clone(), uri.clone(), headers.clone());
+            let slugs = tokio::task::spawn_blocking(move || all_slugs(&cfg3, &uri3, &headers3)).await.ok()??;
+            Some(answer(super::train::history(&base, &key, &slugs).await))
+        }
         "cancel" => Some(answer(super::train::act(&base, &key, &id, action).await)),
         _ if query_flag(&uri, "per_world", false) => {
             // one adapter per world: one job for every world chosen (Unsloth Studio queues them, and trains several of the same model together when it can)
@@ -304,6 +309,14 @@ fn chosen_slugs(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Vec<Stri
     let mut st = db.prepare("SELECT slug FROM worlds ORDER BY id").ok()?;
     let all: Vec<String> = st.query_map([], |r| r.get::<_, String>(0)).ok()?.filter_map(|r| r.ok()).collect();
     Some(all.into_iter().filter(|s| query_flag(uri, "worlds_all", false) || named.contains(s)).collect())
+}
+
+/// Every world's slug (the job history labels a job with the world whose slug starts its suffix).
+fn all_slugs(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Vec<String>> {
+    let (db, _) = gm_world(cfg, "GET", uri, headers)?;
+    let mut st = db.prepare("SELECT slug FROM worlds ORDER BY id").ok()?;
+    let all: Vec<String> = st.query_map([], |r| r.get::<_, String>(0)).ok()?.filter_map(|r| r.ok()).collect();
+    Some(all)
 }
 
 /// The same query asking for one world only.
