@@ -42,6 +42,8 @@ pub struct Built {
     /// examples left out for being longer than `max_tokens`
     pub skipped_long: usize,
     pub max_tokens: usize,
+    /// rows left out for being an exact copy of another row (or for an empty message)
+    pub dropped: usize,
     /// held-out questions before the `eval_limit` was applied
     pub eval_total: usize,
     /// the card the settings are for
@@ -54,7 +56,8 @@ fn approx_tokens(messages: &[(String, String)]) -> usize {
 }
 
 fn chatml(messages: &[(String, String)]) -> Option<String> {
-    if !messages.iter().any(|(r, _)| r == "assistant") {
+    // an assistant turn is needed, and none may be empty (Studio's trainer would learn an empty answer)
+    if !messages.iter().any(|(r, _)| r == "assistant") || messages.iter().any(|(_, c)| c.trim().is_empty()) {
         return None;
     }
     let msgs: Vec<Value> = messages.iter().map(|(r, c)| json!({"role": r, "content": c})).collect();
@@ -132,8 +135,14 @@ pub fn build(members: &[(&'static str, Vec<u8>)], teacher: &[gen::Example], opts
     if train.is_empty() {
         return Err("This world has nothing to export yet.".into());
     }
+    let before = train.len() + eval.len();
+    let mut seen = std::collections::HashSet::new();
+    train.retain(|l| seen.insert(l.clone()));
+    // a held-out question is never also a training row
+    eval.retain(|l| seen.insert(l.clone()));
+    let dropped = before - train.len() - eval.len();
     let eval_total = eval.len();
-    Ok(Built { train, eval, world_book: book, chats, teacher: tch, longest, total_tokens: total, world, worlds: 1, skipped_long: skipped, max_tokens: opts.max_tokens, eval_total, hw: opts.hw.clone() })
+    Ok(Built { train, eval, world_book: book, chats, teacher: tch, longest, total_tokens: total, world, worlds: 1, skipped_long: skipped, max_tokens: opts.max_tokens, eval_total, dropped, hw: opts.hw.clone() })
 }
 
 /// Several worlds in one dataset (every example carries its own world's name in its system message, so one model can hold them all).
@@ -152,6 +161,7 @@ pub fn merge(parts: Vec<Built>) -> Option<Built> {
         all.total_tokens += p.total_tokens;
         all.skipped_long += p.skipped_long;
         all.eval_total += p.eval_total;
+        all.dropped += p.dropped;
         n += 1;
     }
     all.world = match names.len() {
@@ -180,6 +190,10 @@ pub struct Settings {
     pub method: &'static str,
     pub est_gb: f64,
     pub hw_label: String,
+    /// LoRA rank / alpha (Studio's defaults for the model family: alpha equals the rank) and packing
+    pub lora_r: usize,
+    pub lora_alpha: usize,
+    pub packing: bool,
 }
 
 /// The context the data needs: the next power of two over the longest kept example.
@@ -201,14 +215,15 @@ pub fn settings(b: &Built) -> Settings {
     let save_steps = (total_steps / 10).div_ceil(50).max(1) * 50;
     let eval_steps = if !b.eval.is_empty() && b.eval.len() <= 1000 { 0.1 } else { 0.0 };
     Settings { max_seq_length, num_epochs, learning_rate: if rows >= 20000 { 1e-4 } else { 2e-4 }, batch_size, grad_accum, warmup_steps, save_steps: save_steps.min(2000), eval_steps, steps_per_epoch, total_steps,
-               model: plan.model.map(|m| m.name.to_string()).unwrap_or_else(|| "(none fits)".to_string()), repo: plan.model.map(|m| m.repo.to_string()).unwrap_or_default(), method: plan.method, est_gb: plan.est_gb, hw_label: b.hw.label.clone() }
+               model: plan.model.map(|m| m.name.to_string()).unwrap_or_else(|| "(none fits)".to_string()), repo: plan.model.map(|m| m.repo.to_string()).unwrap_or_default(), method: plan.method, est_gb: plan.est_gb, hw_label: b.hw.label.clone(),
+               lora_r: plan.model.map(|m| m.rank).unwrap_or(16), lora_alpha: plan.model.map(|m| m.rank).unwrap_or(16), packing: plan.model.map(|m| m.packing).unwrap_or(false) }
 }
 
 /// The file Studio's "Load YAML" reads (the same keys Studio's own "Save YAML" writes). Only settings: the model and the dataset are chosen on the page.
 pub fn settings_yaml(s: &Settings) -> String {
     let head = format!("# nd-world: recommended for {}\n# {}, {}, context {}, about {:.0} GB of memory (an estimate). Load with Train -> Configuration -> Load YAML.\n", s.hw_label, s.model, s.method, s.max_seq_length, s.est_gb);
-    head + &format!("training:\n  max_seq_length: {}\n  num_epochs: {}\n  learning_rate: {}\n  embedding_learning_rate: null\n  batch_size: {}\n  gradient_accumulation_steps: {}\n  warmup_steps: {}\n  max_steps: 0\n  save_steps: {}\n  eval_steps: {}\n  early_stopping_patience: 0\n  weight_decay: 0.001\n  random_seed: 3407\n  packing: false\n  train_on_completions: true\n  gradient_checkpointing: unsloth\n  offload_layers: 0\n  offload_vram_gb: null\n  offload_vram_gb_per_device: {{}}\n  prefetch_depth: 2\n  optim: adamw_8bit\n  lr_scheduler_type: linear\nlora:\n  lora_r: 16\n  lora_alpha: 32\n  lora_dropout: 0\n  target_modules:\n    - q_proj\n    - k_proj\n    - v_proj\n    - o_proj\n    - gate_proj\n    - up_proj\n    - down_proj\n  use_rslora: false\n  use_loftq: false\n  use_dora: false\nlogging:\n  enable_wandb: false\n  wandb_project: llm-finetuning\n  enable_tensorboard: false\n  tensorboard_dir: runs\n  log_frequency: 10\n",
-        s.max_seq_length, s.num_epochs, if s.learning_rate < 1.5e-4 { "0.0001" } else { "0.0002" }, s.batch_size, s.grad_accum, s.warmup_steps, s.save_steps, if s.eval_steps > 0.0 { "0.1" } else { "0" })
+    head + &format!("training:\n  max_seq_length: {}\n  num_epochs: {}\n  learning_rate: {}\n  embedding_learning_rate: null\n  batch_size: {}\n  gradient_accumulation_steps: {}\n  warmup_steps: {}\n  max_steps: 0\n  save_steps: {}\n  eval_steps: {}\n  early_stopping_patience: {}\n  weight_decay: 0.001\n  random_seed: 3407\n  packing: {}\n  train_on_completions: true\n  gradient_checkpointing: unsloth\n  offload_layers: 0\n  offload_vram_gb: null\n  offload_vram_gb_per_device: {{}}\n  prefetch_depth: 2\n  optim: adamw_8bit\n  lr_scheduler_type: linear\nlora:\n  lora_r: {}\n  lora_alpha: {}\n  lora_dropout: 0\n  target_modules:\n    - q_proj\n    - k_proj\n    - v_proj\n    - o_proj\n    - gate_proj\n    - up_proj\n    - down_proj\n  use_rslora: false\n  use_loftq: false\n  use_dora: false\n  finetune_vision_layers: false\n  finetune_language_layers: true\n  finetune_attention_modules: true\n  finetune_mlp_modules: true\nlogging:\n  enable_wandb: false\n  wandb_project: llm-finetuning\n  enable_tensorboard: false\n  tensorboard_dir: runs\n  log_frequency: 10\n",
+        s.max_seq_length, s.num_epochs, if s.learning_rate < 1.5e-4 { "0.0001" } else { "0.0002" }, s.batch_size, s.grad_accum, s.warmup_steps, s.save_steps, if s.eval_steps > 0.0 { "0.1" } else { "0" }, if s.eval_steps > 0.0 { 3 } else { 0 }, s.packing, s.lora_r, s.lora_alpha)
 }
 
 pub fn readme(b: &Built, nd_build: &str) -> String {
@@ -242,16 +257,17 @@ The memory figures are estimates from Unsloth's published numbers; if Studio run
 | Warmup Steps | **{warm}** | about 3 % of the steps |\n\
 | Save Steps | **{save}** | a checkpoint about every tenth of the run (not every 30 steps: that fills the disk) |\n\
 | Eval Steps | **{eval_steps}** | {eval_why} |\n\
-| Early Stopping Patience | 0 | off |\n\
+| Early Stopping Patience | **{patience}** | {patience_why} |\n\
 | Weight Decay | 0.001 | |\n\
 | Seed | 3407 | |\n\
 | Optimizer / LR Scheduler | AdamW 8-bit / linear | |\n\
-| Rank / Alpha / Dropout | 16 / 32 / 0 | rank 16 is plenty for a world; alpha twice the rank |\n\
+| Rank / Alpha / Dropout | **{lora_r} / {lora_alpha} / 0** | Studio's own default for this model; alpha equal to the rank is what Unsloth recommends |\n\
 | Target Modules | q, k, v, o, gate, up, down | all seven |\n\
 | LoRA variant | LoRA | |\n\
 | Gradient Checkpointing | Unsloth | least memory |\n\
-| Enable packing | **off** | packing glues examples (and worlds) together; leave it off until a first run looks healthy |\n\
+| Enable packing | **{packing_txt}** | {packing_why} |\n\
 | Assistant completions only | **on** | the model learns the answers, not the questions |\n\
+| Vision Layers | **off** | the image part stays untouched, so pictures still work after training (language, attention and MLP layers are trained) |\n\
 | Offload layers | Off | |\n\n\
 Train a first, short run to see speed and loss: in the Dataset section set *Train Split End* to about 3000, or use Max Steps 300, then do the full run.\n\n\
 ## Choosing the model\n\
@@ -262,11 +278,13 @@ Train a first, short run to see speed and loss: in the Dataset section set *Trai
 - **\"Failed to format ChatML dataset ... Operation not permitted ... /workspace/.cache/huggingface/datasets/...\"** (Studio in a container, for example on TrueNAS SCALE): the folder behind `/workspace` refuses the `chmod` / `chown` calls the dataset cache needs (typically a dataset with NFSv4 ACLs and ACL mode *Restricted*). The data is fine. Easiest fix: give the container the environment variable `HF_DATASETS_CACHE=/tmp/hf-datasets` (TrueNAS: Apps, your Unsloth app, Edit, Environment Variables), so the cache lives inside the container, and restart the app. The other fix: on the dataset set *ACL Type* POSIX (or *ACL Mode* Passthrough), make the app's user the owner and apply recursively. To check: in a shell in the container, `touch /workspace/.cache/t && chmod 644 /workspace/.cache/t` fails with \"Operation not permitted\" when this is the cause.\n\
 - **Out of memory:** lower *Context Length* one step, keep batch size 1 with accumulation 8, use QLoRA, and free the card first (Ollama keeps models loaded: `ollama stop <model>`).\n\
 - **The loss turns into nan** (Volta / Turing cards, which have no bf16): halve the learning rate.\n\
+- **The trained model answers oddly or never stops:** the most common cause is the wrong chat template or stop token at inference (the model's own, not another one). In Ollama / llama.cpp use the template that comes with the GGUF.\n\
 - **Studio does not recognise the dataset:** set *Target Format* to `chatml` instead of Auto.\n\n\
 ## Notes\n\
 - {worlds_note}\n\
 - The text of the world book is {book_note}.\n\
 - {eval_note}\n\
+- Chatting with the trained model: every training example starts with the system message `You are the game master's assistant for the tabletop world \"<world>\". ...` (see the first line of `train.jsonl`). Use that same system message, thinking off, for the best answers. Gemma 4: temperature 1.0, top_p 0.95, top_k 64 (Studio's own recommendation).\n\
 - Example lengths are estimates (about 3.5 characters per token).\n\
 - For more control (reviewing and editing the examples, a test page that scores the trained model against the original), use ND Lore Forge with the Training bundle.\n\
 - **GM secrets are in this data.** The trained model will repeat them: keep it away from players.\n",
@@ -274,7 +292,7 @@ Train a first, short run to see speed and loss: in the Dataset section set *Trai
         book = if b.world_book > 0 { format!(", {} world-book pieces turned into answers", b.world_book) } else { String::new() },
         teacher = if b.teacher > 0 { format!(", {} written and checked by this world's AI model", b.teacher) } else { String::new() },
         eval = if b.eval.is_empty() { String::new() } else { format!(", {} held-out questions in `eval.jsonl`{}", b.eval.len(), if b.eval_total > b.eval.len() { format!(" (an even sample of {})", b.eval_total) } else { String::new() }) },
-        skipped = if b.skipped_long > 0 { format!("\n**{} examples longer than {} tokens were left out**, so the context can stay small. (The export card can keep them, at a much larger context.)\n", b.skipped_long, b.max_tokens) } else { String::new() },
+        skipped = if b.dropped > 0 { format!("\n{} exact duplicate rows were removed.\n", b.dropped) } else { String::new() } + &if b.skipped_long > 0 { format!("\n**{} examples longer than {} tokens were left out**, so the context can stay small. (The export card can keep them, at a much larger context.)\n", b.skipped_long, b.max_tokens) } else { String::new() },
         hw_label = b.hw.label, rec_model = st.model, rec_repo = st.repo, rec_method = st.method, est_gb = st.est_gb, vram = b.hw.vram_gb,
         method_why = if st.method == "LoRA" { " (16-bit weights: it fits this card at this context)" } else { " (4-bit weights: the 16-bit method would not fit at this context)" },
         hw_notes = { let n = hw::notes_for(&b.hw.name); if n.is_empty() { String::new() } else { n.iter().map(|x| format!("- {x}\n")).collect::<String>() } },
@@ -282,6 +300,10 @@ Train a first, short run to see speed and loss: in the Dataset section set *Trai
         ctx = st.max_seq_length, tok = b.longest, epochs = st.num_epochs, spe = st.steps_per_epoch, total = st.total_steps, lr = lr,
         lr_why = if st.learning_rate < 1.5e-4 { "a long run over a big dataset: the lower rate is steadier" } else { "the usual rate for a small dataset" },
         bs = st.batch_size, ga = st.grad_accum, bs_why = if st.batch_size == 1 { "a long context: one sequence at a time, the same 8 per update" } else { "two sequences at a time, eight per update" },
+        patience = if st.eval_steps > 0.0 { 3 } else { 0 }, patience_why = if st.eval_steps > 0.0 { "stops when three evaluations in a row do not improve (the eval file is there for this)" } else { "off: there is no evaluation to watch" },
+        lora_r = st.lora_r, lora_alpha = st.lora_alpha,
+        packing_txt = if st.packing { "on" } else { "off" },
+        packing_why = if st.packing { "faster; examples are packed into full sequences" } else { "Studio turns it off for this model family too; examples are not glued together" },
         warm = st.warmup_steps, save = st.save_steps,
         eval_steps = if st.eval_steps > 0.0 { "0.1" } else { "0" },
         eval_why = if st.eval_steps > 0.0 { "an evaluation every tenth of the run (a small eval file keeps it cheap)" } else { "off: no eval file, or one too big to evaluate often" },
@@ -323,6 +345,32 @@ pub fn finish(mut b: Built, limit: usize) -> Built {
 /// What the page shows before downloading: counts for the chosen options.
 pub fn summary(b: &Built) -> Value {
     let st = settings(b);
-    json!({"rows": b.train.len(), "chats": b.chats, "world_book": b.world_book, "teacher": b.teacher, "eval": b.eval.len(), "eval_total": b.eval_total, "skipped_long": b.skipped_long,
+    json!({"rows": b.train.len(), "chats": b.chats, "world_book": b.world_book, "teacher": b.teacher, "eval": b.eval.len(), "eval_total": b.eval_total, "skipped_long": b.skipped_long, "dropped": b.dropped,
            "worlds": b.worlds, "world": b.world, "context": st.max_seq_length, "model": st.model, "method": st.method, "est_gb": (st.est_gb * 10.0).round() / 10.0, "hardware": hw::info(&b.hw), "epochs": st.num_epochs, "steps": st.total_steps, "longest_tokens": b.longest})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn m(r: &str, c: &str) -> (String, String) {
+        (r.to_string(), c.to_string())
+    }
+
+    #[test]
+    fn a_row_needs_an_answer_and_no_empty_message() {
+        assert!(chatml(&[m("system", "s"), m("user", "q"), m("assistant", "a")]).is_some());
+        assert!(chatml(&[m("system", "s"), m("user", "q")]).is_none());
+        assert!(chatml(&[m("system", "s"), m("user", "q"), m("assistant", "  \n")]).is_none());
+    }
+
+    #[test]
+    fn the_family_defaults_follow_studio() {
+        // alpha equals the rank (Studio's Qwen3.5 16, Gemma 4 8); packing off for both
+        for m in hw::MODELS.iter() {
+            assert!(m.rank == 16 || m.rank == 8);
+            assert!(!m.packing, "{}", m.name);
+            assert_eq!(m.rank, if m.name.starts_with("Gemma") { 8 } else { 16 });
+        }
+    }
 }

@@ -496,8 +496,26 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
         // the card(s) this machine sees (nvidia-smi / AMD sysfs, as the Settings page's "Detected hardware" reads them): the settings are for it unless another card is picked
         let detected = tuning::detect_hardware(None, "").await;
+        let detected = teacher::routes::detected_for(&app.cfg, &uri, &headers, detected).await;
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || teacher::routes::studio(&cfg, &uri, &headers, &detected)).await {
             return resp;
+        }
+    }
+    if config::python_free() && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        let action = match (req.method().as_str(), req.uri().path()) {
+            ("POST", "/export/unsloth-studio/train") => Some("train"),
+            ("GET", "/export/unsloth-studio/job") => Some("job"),
+            ("POST", "/export/unsloth-studio/job/cancel") => Some("cancel"),
+            ("POST", "/export/unsloth-studio/job/pause") => Some("pause"),
+            ("POST", "/export/unsloth-studio/job/resume") => Some("resume"),
+            _ => None,
+        };
+        if let Some(action) = action {
+            let detected = tuning::detect_hardware(None, "").await;
+            let detected = teacher::routes::detected_for(&app.cfg, req.uri(), req.headers(), detected).await;
+            if let Some(resp) = teacher::routes::studio_train(app.cfg.clone(), req.uri().clone(), req.headers().clone(), detected, action).await {
+                return resp;
+            }
         }
     }
     if req.method() == axum::http::Method::GET && config::python_free() && req.uri().path() == "/export/teacher/status" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
