@@ -141,6 +141,9 @@
       <label style="display:block">Leave out examples longer than <select id="studio-maxtok"><option value="auto" selected>(fit my training card)</option><option value="0">(keep all)</option><option>2048</option><option>4096</option><option>8192</option><option>16384</option></select> tokens
         <span style="font-size:.8rem;color:var(--text-dim)">(a few very long examples force a huge context length; leaving them out keeps training fast and light)</span></label>
       <label style="display:block">Evaluation file: at most <select id="studio-evallimit"><option value="0">(all)</option><option>100</option><option selected>300</option><option>1000</option></select> questions</label>
+      <label style="display:block"><strong>Reasoning share</strong>
+        <select id="studio-reasoning"><option value="0" selected>0 % (direct answers only)</option><option value="25">25 %</option><option value="50">50 %</option><option value="75">75 % (Unsloth's advice for a reasoning model)</option><option value="100">100 %</option></select>
+        <span style="font-size:.8rem;color:var(--text-dim)">Qwen3.5 / 3.8 and Gemma 4 can think before they answer. Trained only on direct answers they think less; this adds a short thinking block (what is asked, what the lore says) to that share of the rows. Chat with thinking switched on after that.</span></label>
       <div id="studio-counts" style="margin-top:.4rem;font-size:.85rem;color:var(--text-dim)"></div>
       <div style="margin-top:.6rem"><a class="btn-primary" id="studio-download" href="#" download>Download for Unsloth Studio</a>
         <button type="button" class="btn-primary" id="studio-train" title="Sends the data and these settings to the Unsloth Studio set in Settings (needs its API key) and starts the training there">Train in Unsloth Studio now</button></div>

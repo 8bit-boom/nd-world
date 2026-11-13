@@ -3495,9 +3495,11 @@ def test_python_free_unsloth_studio_export_recommends_settings_for_the_chosen_ca
         by = {gb: info(f"vram={gb}") for gb in (8, 12, 16, 24, 32, 48, 80)}
         assert all(v["hardware"]["source"] == "chosen" and v["hardware"]["vram_gb"] == gb for gb, v in by.items())
         assert [by[gb]["model"] for gb in (8, 12, 16, 24)] == ["Qwen3.5 2B", "Qwen3.5 4B", "Gemma 4 E4B", "Qwen3.5 9B"]
+        # the biggest card that fits Qwen3.8 27B (Unsloth: QLoRA on 24 GB, 16-bit LoRA over 36 GB) gets it
+        assert by[32]["model"] == "Qwen3.8 27B" and by[32]["method"] == "QLoRA" and by[80]["model"] == "Qwen3.8 27B" and by[80]["method"] == "QLoRA", (by[32], by[80])      # 16-bit LoRA would need about 60 GB plus the activations: too tight even on 80 GB
         # (for this small world the data needs only a 2048 context, so even a small card affords 16-bit LoRA; the tight ones get 4-bit)
-        assert [by[gb]["method"] for gb in (8, 12, 16, 24, 32, 48, 80)] == ["LoRA", "QLoRA", "QLoRA", "QLoRA", "LoRA", "LoRA", "LoRA"]
-        assert all(by[gb]["est_gb"] <= gb for gb in by) and by[80]["model"] == "Qwen3.5 9B"
+        assert [by[gb]["method"] for gb in (8, 12, 16, 24)] == ["LoRA", "QLoRA", "QLoRA", "QLoRA"]
+        assert all(by[gb]["est_gb"] <= gb for gb in by)
         # the files follow the card
         def files(gb):
             z = zipfile.ZipFile(io.BytesIO(g.get(f"/export/unsloth-studio.zip?vram={gb}").content))
@@ -3506,8 +3508,8 @@ def test_python_free_unsloth_studio_export_recommends_settings_for_the_chosen_ca
         y32, r32 = files(32)
         cfg8, cfg32 = yaml.safe_load(y8), yaml.safe_load(y32)
         assert (cfg8["training"]["batch_size"], cfg8["training"]["gradient_accumulation_steps"]) == (1, 8)
-        assert y8.startswith("# nd-world: recommended for 8 GB") and "Qwen3.5 2B, LoRA" in y8.splitlines()[1] and "Qwen3.5 9B, LoRA" in y32.splitlines()[1]
-        assert "## Recommended for your hardware" in r8 and "**Qwen3.5 2B** (`unsloth/Qwen3.5-2B`)" in r8 and "**Qwen3.5 9B** (`unsloth/Qwen3.5-9B`)" in r32
+        assert y8.startswith("# nd-world: recommended for 8 GB") and "Qwen3.5 2B, LoRA" in y8.splitlines()[1] and "Qwen3.8 27B, QLoRA" in y32.splitlines()[1]
+        assert "## Recommended for your hardware" in r8 and "**Qwen3.5 2B** (`unsloth/Qwen3.5-2B`)" in r8 and "**Qwen3.8 27B** (`unsloth/Qwen3.8-27B`)" in r32
         for label in ("8 GB", "12 GB", "16 GB (Tesla T10", "24 GB (RTX 3090", "32 GB (RTX 5090", "48 GB", "80 GB (A100"):
             assert label in r8, label
         # an old card is told it has no bf16 (only when the card is known: the notes come with the detected name)
@@ -3636,6 +3638,52 @@ def test_python_free_unsloth_studio_training_job_is_started_followed_and_stopped
         db = SessionLocal()
         try:
             db.query(Entity).filter(Entity.name.like("TrainA Place%") | Entity.name.like("TrainB Place%")).delete(synchronize_session=False)
+            db.commit()
+        finally:
+            db.close()
+
+
+def test_python_free_unsloth_studio_export_can_add_a_thinking_block_to_a_share_of_the_rows(client, seed):
+    """`reasoning=<percent>`: that share of the rows (chosen by a hash of the question, so the same data gives the same rows) gets a short grounded `<think>` block before the
+    answer; 0 leaves the rows as they were and the README warns about direct-answers-only training; 100 gives every row one."""
+    import io
+    import zipfile
+    from app.database import SessionLocal
+    from app.models import Entity
+    from .test_gateway_golden import _python_free_gateway
+    db = SessionLocal()
+    try:
+        db.add_all([Entity(world_id=seed.world_a.id, kind="location", name=f"Think Place {i}", summary=f"Think place {i}.", visible_to_players=True,
+                           body=f"# Think Place {i}\n\nThink body text number {i}, with a few details about the place.") for i in range(40)])
+        db.commit()
+    finally:
+        db.close()
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        def rows(pct):
+            z = zipfile.ZipFile(io.BytesIO(g.get(f"/export/unsloth-studio.zip?max_tokens=0&reasoning={pct}").content))
+            return [json.loads(x) for x in z.read("train.jsonl").decode().splitlines()], z.read("README.md").decode("utf-8")
+        def info(pct):
+            return g.get(f"/export/unsloth-studio.zip?max_tokens=0&reasoning={pct}&info=1").json()
+        none, r0 = rows(0)
+        assert not any("<think>" in r["messages"][-1]["content"] for r in none) and "direct answers with no thinking block" in r0 and info(0)["reasoning"] == 0
+        some, r75 = rows(75)
+        n = sum("<think>" in r["messages"][-1]["content"] for r in some)
+        assert len(some) == len(none) and 0.55 * len(some) <= n <= 0.95 * len(some), (n, len(some))
+        assert info(75)["reasoning"] == n and info(75)["reasoning_pct"] == 75 and f"{n} of the {len(some)} training rows carry a short thinking block" in r75
+        t = next(r["messages"][-1]["content"] for r in some if "<think>" in r["messages"][-1]["content"])
+        assert t.startswith("<think>\n") and "\n</think>\n\n" in t and len(t.split("</think>")[1].strip()) > 0
+        assert rows(75)[0] == some                                                  # the same rows every time
+        every, _ = rows(100)
+        assert all("<think>" in r["messages"][-1]["content"] for r in every)
+        # system and user messages are untouched
+        assert [r["messages"][:-1] for r in every] == [r["messages"][:-1] for r in none]
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+        db = SessionLocal()
+        try:
+            db.query(Entity).filter(Entity.name.like("Think Place%")).delete(synchronize_session=False)
             db.commit()
         finally:
             db.close()

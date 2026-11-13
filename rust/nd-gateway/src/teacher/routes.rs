@@ -149,7 +149,7 @@ fn studio_built(cfg: &Config, uri: &Uri, headers: &HeaderMap, detected: &Value) 
         _ => super::hw::auto_max_tokens(hw.vram_gb),
     };
     let opts = super::studio::Options { world_book: query_flag(uri, "world_book", true), teacher: query_flag(uri, "teacher", true), test_percent: query_num(uri, "test", 10),
-                                          max_tokens, eval_limit: query_count(uri, "eval_limit", 300), hw };
+                                          max_tokens, eval_limit: query_count(uri, "eval_limit", 300), reasoning: query_count(uri, "reasoning", 0).min(100) as u8, hw };
     let db_dir = cfg.db_path.parent()?.to_path_buf();
     let build_one = |w: &Map<String, Value>| -> Result<super::studio::Built, String> {
         let wid = w.get("id").and_then(|v| v.as_i64()).ok_or("no world")?;
