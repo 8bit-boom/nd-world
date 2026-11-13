@@ -137,7 +137,8 @@ fn query_count(uri: &Uri, key: &str, default: usize) -> usize {
 /// `GET /export/unsloth-studio.zip?w=<world slug>&world_book=1&teacher=1&test=10[&worlds=a,b,c | &worlds_all=1][&vram=<GB of the card>][&max_tokens=auto|N][&eval_limit=300][&info=1]`: the world's training examples as chatml JSONL for the Train page of
 /// Unsloth Studio / Unsloth Desktop, zipped with a README (`info=1`: only the counts, as JSON; `worlds=a,b` or `worlds_all=1`: several worlds (or every world of the server) combined in one file; `w` picks the world like everywhere else in nd-world). GM only, for the active world; answered here only
 /// without Python (no Python counterpart: the hybrid image answers "Not available here").
-pub fn studio(cfg: &Config, uri: &Uri, headers: &HeaderMap, detected: &Value) -> Option<Response<Body>> {
+/// The data the query asks for (one world, several or all) and the file-name slug; `Err` is the answer to give instead.
+fn studio_built(cfg: &Config, uri: &Uri, headers: &HeaderMap, detected: &Value) -> Option<Result<(super::studio::Built, String), Response<Body>>> {
     let (db, world) = gm_world(cfg, "GET", uri, headers)?;
     // the card the settings are for: the one picked on the page (`vram=<GB>`), else the one nd-world sees on its own machine, else an assumed 24 GB
     let chosen = uri.query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("vram="))).and_then(|v| v.parse::<f64>().ok()).filter(|g| (0.0..=1024.0).contains(g));
@@ -168,16 +169,23 @@ pub fn studio(cfg: &Config, uri: &Uri, headers: &HeaderMap, detected: &Value) ->
         let n = parts.len();
         match super::studio::merge(parts) {
             Some(b) => (b, if all { "all-worlds".to_string() } else if n == 1 { rows.iter().find_map(|w| w.get("slug").and_then(|v| v.as_str()).map(str::to_string)).unwrap_or_default() } else { format!("{n}-worlds") }),
-            None => return Some(no_store(detail(StatusCode::UNPROCESSABLE_ENTITY, "None of those worlds has anything to export yet."))),
+            None => return Some(Err(no_store(detail(StatusCode::UNPROCESSABLE_ENTITY, "None of those worlds has anything to export yet.")))),
         }
     } else {
         let slug = world.get("slug").and_then(|v| v.as_str())?.to_string();
         match build_one(&world) {
             Ok(b) => (b, slug),
-            Err(e) => return Some(no_store(detail(StatusCode::UNPROCESSABLE_ENTITY, &e))),
+            Err(e) => return Some(Err(no_store(detail(StatusCode::UNPROCESSABLE_ENTITY, &e)))),
         }
     };
-    let built = super::studio::finish(built, opts.eval_limit);
+    Some(Ok((super::studio::finish(built, opts.eval_limit), slug)))
+}
+
+pub fn studio(cfg: &Config, uri: &Uri, headers: &HeaderMap, detected: &Value) -> Option<Response<Body>> {
+    let (built, slug) = match studio_built(cfg, uri, headers, detected)? {
+        Ok(x) => x,
+        Err(r) => return Some(r),
+    };
     if query_flag(uri, "info", false) {
         return Some(no_store(reply(StatusCode::OK, super::studio::summary(&built))));
     }
@@ -199,4 +207,104 @@ fn no_store(mut r: Response<Body>) -> Response<Body> {
     r.headers_mut().insert(header::CACHE_CONTROL, "private, no-store".parse().unwrap());
     r.headers_mut().insert(header::VARY, "Cookie".parse().unwrap());
     r
+}
+
+/// `POST /export/unsloth-studio/train` (same query as the zip), `GET /export/unsloth-studio/job?id=`, `POST /export/unsloth-studio/job/{cancel,pause,resume}?id=`:
+/// train on the Unsloth Studio Settings points at. GM only.
+pub async fn studio_train(cfg: Arc<Config>, uri: Uri, headers: HeaderMap, detected: Value, action: &'static str) -> Option<Response<Body>> {
+    let method = if action == "job" { "GET" } else { "POST" };
+    let target = studio_target(&cfg, method, &uri, &headers).await?;
+    let Some((base, key)) = target else {
+        return Some(no_store(detail(StatusCode::CONFLICT, "No Unsloth Studio API key is saved. Add the Studio address and key in Settings first.")));
+    };
+    let id = uri.query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("id="))).unwrap_or("").to_string();
+    let answer = |r: Result<Value, String>| no_store(match r {
+        Ok(v) => reply(StatusCode::OK, v),
+        Err(e) => detail(StatusCode::BAD_GATEWAY, &e),
+    });
+    match action {
+        "job" => Some(answer(super::train::job(&base, &key, &id).await)),
+        "cancel" | "pause" | "resume" => Some(answer(super::train::act(&base, &key, &id, action).await)),
+        _ if query_flag(&uri, "per_world", false) => {
+            // one adapter per world: one job for every world chosen (Unsloth Studio queues them, and trains several of the same model together when it can)
+            let (cfg3, uri3, headers3) = (cfg.clone(), uri.clone(), headers.clone());
+            let slugs = tokio::task::spawn_blocking(move || chosen_slugs(&cfg3, &uri3, &headers3)).await.ok()??;
+            if slugs.is_empty() {
+                return Some(no_store(detail(StatusCode::UNPROCESSABLE_ENTITY, "Tick at least one world.")));
+            }
+            let mut jobs = Vec::new();
+            for slug in slugs {
+                let one = with_single_world(&uri, &slug);
+                let (cfg4, headers4, d4) = (cfg.clone(), headers.clone(), detected.clone());
+                let built = tokio::task::spawn_blocking(move || studio_built(&cfg4, &one, &headers4, &d4)).await.ok()??;
+                let Ok((built, slug)) = built else { jobs.push(json!({"world": slug, "error": "Nothing to export yet."})); continue };
+                let st = super::studio::settings(&built);
+                if st.repo.is_empty() {
+                    return Some(no_store(detail(StatusCode::UNPROCESSABLE_ENTITY, "No model fits the chosen card; pick a larger one.")));
+                }
+                match super::train::start(&base, &key, &built, &slug, &st).await {
+                    Ok(mut j) => { j["world"] = json!(slug); j["nd"] = json!({"model": st.model, "method": st.method, "context": st.max_seq_length, "rows": built.train.len(), "eval": built.eval.len()}); jobs.push(j) }
+                    Err(e) => { jobs.push(json!({"world": slug, "error": e})); break }
+                }
+            }
+            Some(no_store(reply(StatusCode::OK, json!({"jobs": jobs, "id": jobs.iter().find_map(|j| j["id"].as_str()).unwrap_or(""), "status": "queued", "per_world": true}))))
+        }
+        _ => {
+            let (cfg3, uri3, headers3) = (cfg.clone(), uri.clone(), headers.clone());
+            let built = tokio::task::spawn_blocking(move || studio_built(&cfg3, &uri3, &headers3, &detected)).await.ok()??;
+            let (built, slug) = match built {
+                Ok(x) => x,
+                Err(r) => return Some(r),
+            };
+            let st = super::studio::settings(&built);
+            if st.repo.is_empty() {
+                return Some(no_store(detail(StatusCode::UNPROCESSABLE_ENTITY, "No model fits the chosen card; pick a larger one.")));
+            }
+            let r = super::train::start(&base, &key, &built, &slug, &st).await.map(|mut j| {
+                j["nd"] = json!({"model": st.model, "method": st.method, "context": st.max_seq_length, "rows": built.train.len(), "eval": built.eval.len()});
+                j
+            });
+            Some(answer(r))
+        }
+    }
+}
+
+/// The Studio address and API key Settings holds (outer None: not the GM; inner None: no key saved - an Ollama address must never get a Bearer).
+async fn studio_target(cfg: &Arc<Config>, method: &'static str, uri: &Uri, headers: &HeaderMap) -> Option<Option<(String, String)>> {
+    let (cfg2, uri2, headers2) = (cfg.clone(), uri.clone(), headers.clone());
+    tokio::task::spawn_blocking(move || {
+        let (db, _) = gm_world(&cfg2, method, &uri2, &headers2)?;
+        let b = crate::ai::backend(&db);
+        Some(b.filter(|b| !b.key.is_empty()).map(|b| (b.base_url(), b.key.clone())))
+    }).await.ok()?
+}
+
+/// `vram=studio` on the card list: the card is the one Unsloth Studio reports (it may run on another computer than nd-world); otherwise what nd-world detected itself.
+pub async fn detected_for(cfg: &Arc<Config>, uri: &Uri, headers: &HeaderMap, local: Value) -> Value {
+    let wants = uri.query().is_some_and(|q| q.split('&').any(|kv| kv == "vram=studio"));
+    if !wants {
+        return local;
+    }
+    let Some(Some((base, key))) = studio_target(cfg, "GET", uri, headers).await else { return local };
+    super::train::hardware(&base, &key).await.ok().filter(|h| h["gpus"].as_array().is_some_and(|a| !a.is_empty())).unwrap_or(local)
+}
+
+/// The slugs of the worlds the query names (`worlds=a,b`, `worlds_all=1`, else the active world), in the database's order.
+fn chosen_slugs(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Vec<String>> {
+    let (db, world) = gm_world(cfg, "POST", uri, headers)?;
+    let named: Vec<String> = uri.query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("worlds="))).unwrap_or("").split(',')
+        .map(|x| x.trim().to_string()).filter(|x| !x.is_empty() && x.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')).collect();
+    if !query_flag(uri, "worlds_all", false) && named.is_empty() {
+        return Some(vec![world.get("slug").and_then(|v| v.as_str())?.to_string()]);
+    }
+    let mut st = db.prepare("SELECT slug FROM worlds ORDER BY id").ok()?;
+    let all: Vec<String> = st.query_map([], |r| r.get::<_, String>(0)).ok()?.filter_map(|r| r.ok()).collect();
+    Some(all.into_iter().filter(|s| query_flag(uri, "worlds_all", false) || named.contains(s)).collect())
+}
+
+/// The same query asking for one world only.
+fn with_single_world(uri: &Uri, slug: &str) -> Uri {
+    let kept: Vec<&str> = uri.query().unwrap_or("").split('&').filter(|kv| !kv.is_empty() && !kv.starts_with("worlds=") && !kv.starts_with("worlds_all=") && !kv.starts_with("w=") && !kv.starts_with("per_world=")).collect();
+    let q = if kept.is_empty() { format!("worlds={slug}") } else { format!("{}&worlds={slug}", kept.join("&")) };
+    format!("{}?{q}", uri.path()).parse().unwrap_or_else(|_| uri.clone())
 }

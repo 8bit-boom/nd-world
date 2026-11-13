@@ -407,6 +407,7 @@ them after each batch; the phase is done when both are empty and the steps below
   empty list / object on both sides, accented and rich text is plain UTF-8.
 - **Teacher examples** (`GET /export/teacher/status`, `POST /export/teacher/start|stop|clear`, `teacher/` module): a Python-free-only feature with no Python counterpart (like the King in Yellow generator): the hybrid image answers "Not available here". The AI calls use the Settings backend through `generate_chat`; results are files next to the database. See `docs/TEACHER_EXAMPLES.md`.
 - **Export for Unsloth Studio** (`GET /export/unsloth-studio.zip`, `teacher/studio.rs`): a Python-free-only feature with no Python counterpart (like the teacher examples): the hybrid image answers "Not available here". Built from `training_members` (the same data as the Training Bundle) with the deterministic builders; reads the teacher examples when there are any. See `docs/UNSLOTH_STUDIO_EXPORT.md`.
+- **Train in Unsloth Studio** (`POST /export/unsloth-studio/train`, `GET /export/unsloth-studio/job`, `POST /export/unsloth-studio/job/{cancel,pause,resume}`, `teacher/train.rs`): Python-free only, no Python counterpart (the hybrid image answers "Not available here"); talks to the Unsloth Studio of Settings with its API key. See `docs/UNSLOTH_STUDIO_EXPORT.md`.
 
 - **The instance backup zip** (`GET /admin/backup.zip`, export.rs `admin_backup`): a VACUUM INTO snapshot of the database
   (taken next to the database, never inside the walked uploads tree), the manifest with the table counts, every uploaded

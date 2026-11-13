@@ -49,3 +49,25 @@ sequence per step (batch 1 x accumulation 8). `max_tokens=auto` (the default) le
 cards (V100, T10, T4, RTX 20) get a note: no bf16, training runs in fp16. The README lists every tier (8 / 12 / 16 / 24 / 32 / 48 / 80 GB) with its model, method and context.
 
 The README ends with an "If something goes wrong" section: the dataset-cache `Operation not permitted` error of Studio in a container on TrueNAS SCALE (set `HF_DATASETS_CACHE=/tmp/hf-datasets`, or fix the dataset's ACL type / mode), out of memory, `nan` loss on cards without bf16, and the Target Format.
+
+## Defaults that follow Unsloth Studio's own
+
+The YAML and README use Studio's per-model defaults (read from its source, `studio/backend/assets/configs/model_defaults`): LoRA rank 16 / alpha 16 for Qwen3.5, rank 8 / alpha 8 for
+Gemma 4 (alpha equal to the rank is also what Unsloth's docs recommend), packing **off** for both families, and the vision layers **off** (`finetune_vision_layers: false`, language /
+attention / MLP layers on) so a model with an image part still reads pictures. Early stopping (patience 3) is on when there is an `eval.jsonl`. Exact duplicate rows and any message with
+an empty text are left out (counted in the README).
+
+## Train in Unsloth Studio from nd-world
+
+The card's **Train in Unsloth Studio now** button sends the data and the same settings straight to the Studio set in Settings (address and API key), through Studio's OpenAI-style fine-tuning API
+(`/v1/files`, `/v1/fine_tuning/jobs`; read from Studio's source, not in its public docs, so a Studio that is too old answers 404 and nd-world says to use the zip). Routes (Python-free, GM only):
+
+| Route | |
+|---|---|
+| `POST /export/unsloth-studio/train?...` | the same query as the zip; uploads `train.jsonl` / `eval.jsonl`, starts the job, answers Studio's job object plus `nd` (model, method, context, rows). `per_world=1`: one job for every world ticked |
+| `GET /export/unsloth-studio/job?id=` | the job, its last events and its checkpoint count (the card polls every 5 s) |
+| `POST /export/unsloth-studio/job/{cancel,pause,resume}?id=` | Studio's job actions |
+
+`vram=studio` (the card list's "The card Unsloth Studio reports") reads the graphics card from Studio's `/api/train/hardware`, which is right when Studio runs on another computer than nd-world.
+While Studio trains on the same card, Studio unloads its chat models, so AI chat in nd-world stops answering until the job is done.
+Not done: asking Studio to export a GGUF afterwards. Studio's export routes need the checkpoint's path on Studio's disk, which the API-key routes most likely hide; export in Studio's own *Export* tab.

@@ -133,7 +133,7 @@
       <label style="display:block"><input type="checkbox" id="studio-teacher" checked> Include the examples this world's AI model wrote (when there are any)</label>
       <label style="display:block">Keep <select id="studio-test"><option>0</option><option selected>10</option><option>20</option><option>30</option></select> % of the questions out of training as <code>eval.jsonl</code></label>
       <label style="display:block"><strong>Training card</strong>
-        <select id="studio-hw"><option value="">This machine (detected)</option><option value="8">8 GB</option><option value="12">12 GB</option>
+        <select id="studio-hw"><option value="">This machine (detected)</option><option value="studio">The card Unsloth Studio reports (needs its API key in Settings)</option><option value="8">8 GB</option><option value="12">12 GB</option>
           <option value="16">16 GB (Tesla T10 / V100 16 GB, RTX 4060 Ti 16 GB)</option><option value="24">24 GB (RTX 3090 / 4090)</option>
           <option value="32">32 GB (RTX 5090, V100 32 GB)</option><option value="48">48 GB (RTX 6000 Ada, A6000)</option><option value="80">80 GB (A100 / H100)</option></select>
         <span style="font-size:.8rem;color:var(--text-dim)">the settings and the README are worked out for this card. Train on another computer than the one nd-world runs on? Pick its card.</span></label>
@@ -142,7 +142,15 @@
         <span style="font-size:.8rem;color:var(--text-dim)">(a few very long examples force a huge context length; leaving them out keeps training fast and light)</span></label>
       <label style="display:block">Evaluation file: at most <select id="studio-evallimit"><option value="0">(all)</option><option>100</option><option selected>300</option><option>1000</option></select> questions</label>
       <div id="studio-counts" style="margin-top:.4rem;font-size:.85rem;color:var(--text-dim)"></div>
-      <div style="margin-top:.6rem"><a class="btn-primary" id="studio-download" href="#" download>Download for Unsloth Studio</a></div>
+      <div style="margin-top:.6rem"><a class="btn-primary" id="studio-download" href="#" download>Download for Unsloth Studio</a>
+        <button type="button" class="btn-primary" id="studio-train" title="Sends the data and these settings to the Unsloth Studio set in Settings (needs its API key) and starts the training there">Train in Unsloth Studio now</button></div>
+      <label style="display:block;margin-top:.3rem"><input type="checkbox" id="studio-perworld"> With several worlds ticked, <em>Train now</em> starts one model per world (instead of one model for all). Unsloth Studio queues them.</label>
+      <div id="studio-job" style="display:none;margin-top:.5rem;font-size:.9rem">
+        <div id="studio-jobline"></div>
+        <div id="studio-jobevents" style="font-size:.8rem;color:var(--text-dim);white-space:pre-wrap"></div>
+        <button type="button" class="btn-secondary" id="studio-pause">Pause</button> <button type="button" class="btn-secondary" id="studio-resume">Resume</button> <button type="button" class="btn-secondary" id="studio-cancel">Cancel</button>
+      </div>
+      <p style="font-size:.8rem;color:var(--text-dim);margin-top:.3rem">"Train now" needs the Studio address and API key in Settings. While Studio trains on the same graphics card, AI chat in nd-world stops answering until it is done.</p>
       <p style="font-size:.8rem;color:var(--text-dim);margin-top:.5rem">The data contains GM secrets, and a model trained on it will repeat them. Keep that model away from players.</p>
     </div>
   </div>

@@ -48,5 +48,49 @@
     [].slice.call(document.querySelectorAll('.studio-world')).forEach(function (c) { c.checked = c.value === me; });
     refresh();
   });
+
+  // "Train in Unsloth Studio now": POST /export/unsloth-studio/train with the same query as the zip; the job is followed every 5 s
+  var jobId = '', timer = null;
+  function api(method, path) {
+    return fetch(path, { method: method, credentials: 'same-origin' }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) { if (!r.ok) throw new Error(j.detail || ('Error ' + r.status)); return j; });
+    });
+  }
+  function showJob(j) {
+    var done = ['succeeded', 'failed', 'cancelled'].indexOf(j.status) >= 0;
+    $('studio-job').style.display = '';
+    $('studio-jobline').textContent = 'Studio job ' + j.id + ': ' + j.status + (j.nd ? ' (' + j.nd.model + ', ' + j.nd.method + ', context ' + j.nd.context + ', ' + j.nd.rows + ' rows)' : '') +
+      (j.checkpoints ? ' · ' + j.checkpoints + ' checkpoint' + (j.checkpoints > 1 ? 's' : '') : '') + (j.error && j.error.message ? ' · ' + j.error.message : '');
+    $('studio-jobevents').textContent = (j.events || []).map(function (e) { return e.message; }).join('\n');
+    ['studio-pause', 'studio-resume', 'studio-cancel'].forEach(function (id) { $(id).disabled = done; });
+    if (done && timer) { clearInterval(timer); timer = null; }
+  }
+  function follow() {
+    if (!jobId) return;
+    api('GET', '/export/unsloth-studio/job?id=' + encodeURIComponent(jobId)).then(showJob).catch(function (e) { $('studio-jobline').textContent = 'Studio: ' + e.message; });
+  }
+  $('studio-train').addEventListener('click', function () {
+    var b = $('studio-train');
+    b.disabled = true;
+    $('studio-job').style.display = '';
+    $('studio-jobline').textContent = 'Sending the data to Unsloth Studio …';
+    api('POST', '/export/unsloth-studio/train?' + query() + ($('studio-perworld').checked ? '&per_world=1' : '')).then(function (j) {
+      if (j.jobs) {
+        var started = j.jobs.filter(function (x) { return x.id; }), failed = j.jobs.filter(function (x) { return x.error; });
+        $('studio-jobline').textContent = 'Started ' + started.length + ' job' + (started.length === 1 ? '' : 's') + ' in Unsloth Studio (' + started.map(function (x) { return x.world; }).join(', ') + ')' + (failed.length ? ' · not started: ' + failed.map(function (x) { return x.world + ' (' + x.error + ')'; }).join('; ') : '') + '. Following the first one.';
+        if (!j.id) return;
+      }
+      jobId = j.id; if (!j.jobs) showJob(j);
+      if (timer) clearInterval(timer);
+      timer = setInterval(follow, 5000);
+    }).catch(function (e) { $('studio-jobline').textContent = e.message; }).then(function () { b.disabled = false; });
+  });
+  ['pause', 'resume', 'cancel'].forEach(function (a) {
+    $('studio-' + a).addEventListener('click', function () {
+      if (!jobId) return;
+      if (a === 'cancel' && !window.confirm('Stop this training job in Unsloth Studio?')) return;
+      api('POST', '/export/unsloth-studio/job/' + a + '?id=' + encodeURIComponent(jobId)).then(follow).catch(function (e) { $('studio-jobline').textContent = 'Studio: ' + e.message; });
+    });
+  });
   refresh();
 })();

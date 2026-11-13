@@ -5,6 +5,7 @@ import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import httpx
 import pytest
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD
@@ -3451,12 +3452,16 @@ def test_python_free_unsloth_studio_export_has_a_settings_file_and_limits_for_le
         assert set(cfg["training"]) == {"max_seq_length", "num_epochs", "learning_rate", "embedding_learning_rate", "batch_size", "gradient_accumulation_steps", "warmup_steps",
             "max_steps", "save_steps", "eval_steps", "early_stopping_patience", "weight_decay", "random_seed", "packing", "train_on_completions", "gradient_checkpointing",
             "offload_layers", "offload_vram_gb", "offload_vram_gb_per_device", "prefetch_depth", "optim", "lr_scheduler_type"}
-        assert set(cfg["lora"]) == {"lora_r", "lora_alpha", "lora_dropout", "target_modules", "use_rslora", "use_loftq", "use_dora"}
+        assert set(cfg["lora"]) == {"lora_r", "lora_alpha", "lora_dropout", "target_modules", "use_rslora", "use_loftq", "use_dora",
+            "finetune_vision_layers", "finetune_language_layers", "finetune_attention_modules", "finetune_mlp_modules"}
+        # Studio's own defaults for the family: alpha equals the rank (Qwen3.5 16, Gemma 4 8), packing off for both, the image part left alone
+        assert cfg["lora"]["finetune_vision_layers"] is False and cfg["lora"]["finetune_language_layers"] is True
+        assert cfg["lora"]["lora_r"] in (16, 8)
         t = cfg["training"]
         assert t["packing"] is False and t["train_on_completions"] is True and t["max_steps"] == 0 and t["gradient_checkpointing"] == "unsloth" and t["optim"] == "adamw_8bit"
         assert t["max_seq_length"] == limited["context"] and (t["max_seq_length"] & (t["max_seq_length"] - 1)) == 0 and 2048 <= t["max_seq_length"] <= 32768
         assert t["batch_size"] * t["gradient_accumulation_steps"] == 8 and t["num_epochs"] >= 1 and t["save_steps"] >= 50 and t["warmup_steps"] >= 5
-        assert cfg["lora"]["target_modules"] == ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"] and cfg["lora"]["lora_alpha"] == 2 * cfg["lora"]["lora_r"]
+        assert cfg["lora"]["target_modules"] == ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"] and cfg["lora"]["lora_alpha"] == cfg["lora"]["lora_r"]
         # the README says it all: the table, the Load YAML step, the model advice, what was left out
         readme = z.read("README.md").decode("utf-8")
         for needle in ("Load YAML", "studio-settings.yaml", "Context Length", "Save Steps", "Enable packing", "Assistant completions only", "Choosing the model", f"**{t['max_seq_length']}**"):
@@ -3512,3 +3517,125 @@ def test_python_free_unsloth_studio_export_recommends_settings_for_the_chosen_ca
     finally:
         proc.terminate()
         proc.wait(timeout=10)
+
+
+def test_python_free_unsloth_studio_training_job_is_started_followed_and_stopped(client, seed):
+    """"Train in Unsloth Studio": the gateway uploads train.jsonl / eval.jsonl to Studio's /v1/files, starts /v1/fine_tuning/jobs with the YAML's settings as
+    extra fields, and relays the job, its events, cancel/pause/resume; Studio's own errors and a missing key are explained in words."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from .test_gateway_golden import _python_free_gateway
+    seen = {"auth": set(), "files": [], "jobs": [], "acts": []}
+    state = {"job_status": 200, "queue": False}
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _send(self, code, obj):
+            body = json.dumps(obj).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            seen["auth"].add(self.headers.get("Authorization"))
+            raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            if self.path == "/v1/files":
+                assert self.headers["Content-Type"].startswith("multipart/form-data; boundary=")
+                text = raw.decode("utf-8", "replace")
+                assert 'name="purpose"' in text and "fine-tune" in text
+                name = text.split('filename="')[1].split('"')[0]
+                seen["files"].append((name, text.count('{"messages"')))
+                return self._send(200, {"id": f"file-{name.split('.')[0]}", "object": "file", "purpose": "fine-tune"})
+            if self.path == "/v1/fine_tuning/jobs":
+                if state["job_status"] != 200:
+                    return self._send(state["job_status"], {"error": {"message": "Unknown parameter(s): nope"}})
+                seen["jobs"].append(json.loads(raw))
+                return self._send(200, {"id": "ftjob-1", "object": "fine_tuning.job", "status": "queued" if state["queue"] else "running"})
+            for act in ("cancel", "pause", "resume"):
+                if self.path == f"/v1/fine_tuning/jobs/ftjob-1/{act}":
+                    seen["acts"].append(act)
+                    return self._send(200, {"id": "ftjob-1", "status": "cancelled" if act == "cancel" else "running"})
+            self._send(404, {"detail": "nope"})
+
+        def do_GET(self):
+            seen["auth"].add(self.headers.get("Authorization"))
+            if self.path == "/api/train/hardware":
+                return self._send(200, {"available": True, "devices": [{"name": "NVIDIA Test 12", "vram_total_gb": 12.0, "vram_used_gb": 1.0}]})
+            if self.path == "/v1/fine_tuning/jobs/ftjob-1":
+                return self._send(200, {"id": "ftjob-1", "status": "running", "trained_tokens": 1200})
+            if self.path.startswith("/v1/fine_tuning/jobs/ftjob-1/events"):
+                return self._send(200, {"data": [{"message": "Step 5/100 loss 1.2"}]})
+            if self.path == "/v1/fine_tuning/jobs/ftjob-1/checkpoints":
+                return self._send(200, {"data": [{"id": "c1"}, {"id": "c2"}]})
+            self._send(404, {"detail": "nope"})
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    from app.database import SessionLocal
+    from app.models import Entity
+    db = SessionLocal()
+    try:
+        for w, tag in ((seed.world_a.id, "TrainA"), (seed.world_b.id, "TrainB")):
+            db.add_all([Entity(world_id=w, kind="location", name=f"{tag} Place {i}", summary=f"{tag} place {i}.", visible_to_players=True,
+                               body=f"# {tag} Place {i}\n\n{tag} body text number {i}.") for i in range(6)])
+        db.commit()
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        # no key saved: said in words, nothing sent
+        _settings(gm, llm_api_key_clear="1")
+        r = g.post("/export/unsloth-studio/train")
+        assert r.status_code == 409 and "API key" in r.json()["detail"]
+        _settings(gm, llm_url=f"http://127.0.0.1:{srv.server_port}", llm_model="studio", llm_api_key="sk-unsloth-test")
+        r = g.post("/export/unsloth-studio/train?vram=24&max_tokens=0&eval_limit=5")
+        assert r.status_code == 200, r.text
+        job = r.json()
+        assert job["id"] == "ftjob-1" and job["status"] == "running" and job["nd"]["rows"] > 0 and job["nd"]["model"]
+        assert seen["auth"] == {"Bearer sk-unsloth-test"}
+        assert [f[0] for f in seen["files"]] == ["train.jsonl", "eval.jsonl"] and seen["files"][0][1] == job["nd"]["rows"]
+        body = seen["jobs"][0]
+        assert body["training_file"] == "file-train" and body["validation_file"] == "file-eval" and body["method"] == {"type": "supervised"}
+        assert body["finetune_vision_layers"] is False and body["train_on_completions"] is True and body["lora_alpha"] == body["lora_r"] and body["max_steps"] == 0
+        assert body["hyperparameters"]["batch_size"] * body["gradient_accumulation_steps"] == 8 and body["packing"] is False
+        # the card Studio reports (it may run on another computer): the settings are worked out for it
+        info = g.get("/export/unsloth-studio.zip?vram=studio&info=1").json()
+        assert info["hardware"]["vram_gb"] == 12.0 and "Unsloth Studio" in info["hardware"]["label"] and info["hardware"]["source"] == "detected", info["hardware"]
+        # follow it
+        j = g.get("/export/unsloth-studio/job?id=ftjob-1").json()
+        assert j["status"] == "running" and j["events"][0]["message"].startswith("Step 5") and j["checkpoints"] == 2
+        assert g.get("/export/unsloth-studio/job?id=../etc").status_code == 502
+        for act in ("pause", "resume", "cancel"):
+            assert g.post(f"/export/unsloth-studio/job/{act}?id=ftjob-1").status_code == 200
+        assert seen["acts"] == ["pause", "resume", "cancel"]
+        # one model per world: one job for each world ticked, named for it
+        slugs = [seed.world_a.slug, seed.world_b.slug]
+        before = len(seen["jobs"])
+        r = g.post(f"/export/unsloth-studio/train?vram=24&worlds={','.join(slugs)}&per_world=1")
+        assert r.status_code == 200, r.text
+        pj = r.json()
+        assert pj["per_world"] is True and [j.get("world") for j in pj["jobs"]] == slugs and all(j.get("id") == "ftjob-1" for j in pj["jobs"]), pj
+        assert len(seen["jobs"]) - before == 2 and seen["jobs"][before]["suffix"] != seen["jobs"][before + 1]["suffix"]
+        # Studio's own words for a refusal
+        state["job_status"] = 400
+        r = g.post("/export/unsloth-studio/train?vram=24")
+        assert r.status_code == 502 and "Unknown parameter" in r.json()["detail"]
+        # not the GM: no access
+        anon = httpx.Client(base_url=url, follow_redirects=False)
+        assert anon.post("/export/unsloth-studio/train").status_code != 200
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+        _settings(gm, llm_api_key_clear="1")
+        srv.shutdown()
+        db = SessionLocal()
+        try:
+            db.query(Entity).filter(Entity.name.like("TrainA Place%") | Entity.name.like("TrainB Place%")).delete(synchronize_session=False)
+            db.commit()
+        finally:
+            db.close()

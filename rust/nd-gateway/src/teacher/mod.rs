@@ -11,3 +11,4 @@ pub mod hw;
 pub mod routes;
 pub mod split;
 pub mod studio;
+pub mod train;

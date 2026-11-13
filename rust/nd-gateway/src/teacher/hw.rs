@@ -9,15 +9,18 @@ pub struct ModelRow {
     /// memory for a 16-bit LoRA / a 4-bit QLoRA at a 2048 context, batch 1, in GB
     pub lora_gb: f64,
     pub qlora_gb: f64,
+    /// Studio's own default LoRA rank for the family (alpha equals it) and whether Studio packs examples for it
+    pub rank: usize,
+    pub packing: bool,
 }
 
 /// In order of preference: the biggest model that still trains with a usable context.
 pub const MODELS: [ModelRow; 5] = [
-    ModelRow { name: "Qwen3.5 9B", repo: "unsloth/Qwen3.5-9B", lora_gb: 22.0, qlora_gb: 12.0 },
-    ModelRow { name: "Gemma 4 E4B", repo: "unsloth/gemma-4-E4B-it", lora_gb: 17.0, qlora_gb: 10.0 },
-    ModelRow { name: "Qwen3.5 4B", repo: "unsloth/Qwen3.5-4B", lora_gb: 10.0, qlora_gb: 6.5 },
-    ModelRow { name: "Gemma 4 E2B", repo: "unsloth/gemma-4-E2B-it", lora_gb: 10.0, qlora_gb: 8.0 },
-    ModelRow { name: "Qwen3.5 2B", repo: "unsloth/Qwen3.5-2B", lora_gb: 5.0, qlora_gb: 3.5 },
+    ModelRow { name: "Qwen3.5 9B", repo: "unsloth/Qwen3.5-9B", lora_gb: 22.0, qlora_gb: 12.0, rank: 16, packing: false },
+    ModelRow { name: "Gemma 4 E4B", repo: "unsloth/gemma-4-E4B-it", lora_gb: 17.0, qlora_gb: 10.0, rank: 8, packing: false },
+    ModelRow { name: "Qwen3.5 4B", repo: "unsloth/Qwen3.5-4B", lora_gb: 10.0, qlora_gb: 6.5, rank: 16, packing: false },
+    ModelRow { name: "Gemma 4 E2B", repo: "unsloth/gemma-4-E2B-it", lora_gb: 10.0, qlora_gb: 8.0, rank: 8, packing: false },
+    ModelRow { name: "Qwen3.5 2B", repo: "unsloth/Qwen3.5-2B", lora_gb: 5.0, qlora_gb: 3.5, rank: 16, packing: false },
 ];
 
 pub const LADDER: [usize; 5] = [2048, 4096, 8192, 16384, 32768];
@@ -123,7 +126,8 @@ pub fn resolve(detected: &Value, chosen_gb: Option<f64>) -> Hardware {
         return Hardware { vram_gb: gb, source: "chosen", label: format!("{tier} (chosen)"), name: String::new(), detected: detected.clone() };
     }
     if let Some((name, gb)) = detected_best(detected) {
-        return Hardware { vram_gb: gb, source: "detected", label: format!("{name}, {gb:.0} GB (detected on the machine nd-world runs on)"), name, detected: detected.clone() };
+        let whose = if detected["from"] == "studio" { "reported by Unsloth Studio" } else { "detected on the machine nd-world runs on" };
+        return Hardware { vram_gb: gb, source: "detected", label: format!("{name}, {gb:.0} GB ({whose})"), name, detected: detected.clone() };
     }
     Hardware { vram_gb: 24.0, source: "assumed", label: "24 GB (assumed: no graphics card was detected on this machine)".to_string(), name: String::new(), detected: detected.clone() }
 }
