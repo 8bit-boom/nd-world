@@ -1,0 +1,9 @@
+{
+ "id": "ftjob_q0123456789abcdef",
+ "object": "fine_tuning.job",
+ "status": "queued",
+ "model": "unsloth/Qwen3.5-2B",
+ "suffix": "world-20261113-1200",
+ "training_file": "file-0123456789abcdef0123456789abcdef",
+ "fine_tuned_model": null
+}
