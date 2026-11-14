@@ -4819,7 +4819,11 @@ async fn npc_speak(n: NpcSpeak) -> Response<Body> {
             }
         };
         let (t_model, t_voice, _, t_lang) = crate::tts::prefs(&n.cfg);
-        let Ok((audio, ctype)) = crate::tts::speech(&n.b, &n.text, &t_model, &t_voice, &hint, &t_lang).await else { return crash() };
+        let (audio, ctype) = match crate::tts::speech(&n.b, &n.text, &t_model, &t_voice, &hint, &t_lang).await {
+            Ok(x) => x,
+            // Python's tts() raises Studio's own status and message; say why instead of a bare 500
+            Err((code, m)) => return err(StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_GATEWAY), &m),
+        };
         let ext = crate::tts::audio_extension(&ctype);
         let Some(dir) = n.cfg.db_path.parent().map(|d| d.join("uploads").join("npc-talk")) else { return crash() };
         let name = format!("npc{}-u{}-m{}{ext}", n.eid, n.uid, n.index);
