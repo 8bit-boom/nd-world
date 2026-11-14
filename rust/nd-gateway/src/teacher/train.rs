@@ -1,5 +1,5 @@
 //! Train in Unsloth Studio from nd-world: upload the export's `train.jsonl` / `eval.jsonl` to Studio's OpenAI-style fine-tuning API (`/v1/files`,
-//! `/v1/fine_tuning/jobs`, read from Studio's source: studio/backend/routes/openai_fine_tuning.py) and follow, cancel, pause or resume the job.
+//! `/v1/fine_tuning/jobs`, read from Studio's source: studio/backend/routes/openai_fine_tuning.py) and follow or cancel the job (Studio refuses pause and resume).
 //! The same settings as `studio-settings.yaml` ride along as extra fields of the job (any `TrainingStartRequest` field is accepted at the top level).
 //! Python-free only; the Studio address and key are the ones Settings already holds.
 use std::time::Duration;
@@ -16,15 +16,30 @@ use super::studio::{Built, Settings};
 /// Studio's base learning rate: a job's `learning_rate_multiplier` scales it
 const BASE_LR: f64 = 2e-4;
 
+/// The part of a job's `suffix` that names the world: the slug cut to Studio's allowed characters ([A-Za-z0-9_-]) and 24 of them, "nd-world" when nothing is left.
+/// The job history matches on `<prefix>-`, so a slug with accented letters still finds its jobs (it is filtered the same way on both sides).
+pub fn suffix_prefix(slug: &str) -> String {
+    let p: String = slug.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(24).collect();
+    if p.is_empty() { "nd-world".to_string() } else { p }
+}
+
+/// `yyyymmdd-hhmm` (UTC): makes the suffix of two runs of one world different.
+fn stamp() -> String {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let (y, m, d) = crate::writes::civil_from_days(secs.div_euclid(86400));
+    let rem = secs.rem_euclid(86400);
+    format!("{y:04}{m:02}{d:02}-{:02}{:02}", rem / 3600, rem % 3600 / 60)
+}
+
 /// The job body for `POST /v1/fine_tuning/jobs`.
 pub fn job_body(st: &Settings, slug: &str, training_file: &str, validation_file: Option<&str>) -> Value {
-    let suffix: String = slug.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(40).collect();
+    let suffix = format!("{}-{}", suffix_prefix(slug), stamp());
     let mut v = json!({
         "model": st.repo,
         "training_file": training_file,
         "hyperparameters": {"n_epochs": st.num_epochs, "batch_size": st.batch_size, "learning_rate_multiplier": ((st.learning_rate / BASE_LR) * 1000.0).round() / 1000.0},
         "method": {"type": "supervised"},
-        "suffix": if suffix.is_empty() { "nd-world".to_string() } else { suffix },
+        "suffix": suffix,
         "seed": 3407,
         // the rest of studio-settings.yaml
         "training_type": "LoRA/QLoRA",
@@ -85,7 +100,7 @@ async fn call(method: &str, url: &str, key: &str, content_type: Option<&str>, bo
 /// Studio's own wording of an error, else the status.
 fn problem(status: u16, body: &[u8]) -> String {
     if status == 401 || status == 403 {
-        return "Studio refused the API key - create a new one in Studio (Settings -> API) and save it in nd-world's Settings.".to_string();
+        return KEY_REFUSED.to_string();
     }
     if status == 404 {
         return "This Studio has no fine-tuning API (it is older than the one nd-world expects). Download the zip and load it on Studio's Train page instead.".to_string();
@@ -105,8 +120,51 @@ async fn upload(base: &str, key: &str, name: &str, lines: &[String]) -> Result<S
     v["id"].as_str().map(str::to_string).ok_or_else(|| "Studio's answer to the upload had no file id.".to_string())
 }
 
+/// What a Unsloth (Studio or Desktop) answers to the three cheap probes. Features are probed, never the version alone: Desktop updates itself.
+pub struct Caps {
+    pub version: Option<String>,
+}
+
+/// Versions nd-world has been checked against (docs/UNSLOTH_API_CONTRACT.md, "Tested versions"). Empty until the owner's checklist on a real Desktop records one;
+/// the card says "not checked by nd-world yet" for any other version, and the job is still tried.
+pub const TESTED_VERSIONS: &[&str] = &[];
+
+const KEY_REFUSED: &str = "Unsloth refused the API key - create a new one in Unsloth (Settings -> API) and save it in nd-world's Settings; Unsloth shows a key only once.";
+
+/// Probe before sending any data: the key works (`/v1/models` answers 401 on a bad key; `/api/health` never does), the fine-tuning API exists (404: too old), the version.
+pub async fn capabilities(base: &str, key: &str) -> Result<Caps, String> {
+    let (s, _) = call("GET", &format!("{base}/v1/models"), key, None, Vec::new(), 30).await?;
+    if s == 401 || s == 403 {
+        return Err(KEY_REFUSED.to_string());
+    }
+    let (s, b) = call("GET", &format!("{base}/v1/fine_tuning/jobs?limit=1"), key, None, Vec::new(), 30).await?;
+    if s != 200 {
+        return Err(problem(s, &b));
+    }
+    Ok(Caps { version: version(base, key).await })
+}
+
+/// The version the authenticated `/api/health` reports (a bad key gets the unauthenticated body without one).
+pub async fn version(base: &str, key: &str) -> Option<String> {
+    let (s, b) = call("GET", &format!("{base}/api/health"), key, None, Vec::new(), 15).await.ok()?;
+    if s != 200 {
+        return None;
+    }
+    let v: Value = serde_json::from_slice(&b).ok()?;
+    v["version"].as_str().or_else(|| v["studio_version"].as_str()).map(|x| x.chars().take(40).collect())
+}
+
+/// `{"version", "tested"}` for the card.
+pub fn studio_note(version: Option<&str>) -> Value {
+    match version {
+        Some(v) => json!({"version": v, "tested": TESTED_VERSIONS.contains(&v)}),
+        None => Value::Null,
+    }
+}
+
 /// Upload both files and start the job. The answer is Studio's job object, with `queued` shown as such when Studio is busy.
 pub async fn start(base: &str, key: &str, b: &Built, slug: &str, st: &Settings) -> Result<Value, String> {
+    let caps = capabilities(base, key).await?;
     let train = upload(base, key, "train.jsonl", &b.train).await?;
     let eval = if b.eval.is_empty() { None } else { Some(upload(base, key, "eval.jsonl", &b.eval).await?) };
     let body = job_body(st, slug, &train, eval.as_deref());
@@ -114,7 +172,9 @@ pub async fn start(base: &str, key: &str, b: &Built, slug: &str, st: &Settings) 
     if s != 200 {
         return Err(format!("Studio did not start the job: {}", problem(s, &r)));
     }
-    serde_json::from_slice(&r).map_err(|_| "Studio's answer to the job could not be read.".to_string())
+    let mut job: Value = serde_json::from_slice(&r).map_err(|_| "Studio's answer to the job could not be read.".to_string())?;
+    job["studio"] = studio_note(caps.version.as_deref());
+    Ok(job)
 }
 
 fn safe_id(id: &str) -> bool {
@@ -131,6 +191,7 @@ pub async fn job(base: &str, key: &str, id: &str) -> Result<Value, String> {
         return Err(problem(s, &b));
     }
     let mut v: Value = serde_json::from_slice(&b).map_err(|_| "Studio's answer could not be read.".to_string())?;
+    v["studio"] = studio_note(version(base, key).await.as_deref());
     if let Ok((200, e)) = call("GET", &format!("{base}/v1/fine_tuning/jobs/{id}/events?limit=8"), key, None, Vec::new(), 30).await {
         if let Ok(ev) = serde_json::from_slice::<Value>(&e) {
             v["events"] = ev["data"].clone();
@@ -144,9 +205,38 @@ pub async fn job(base: &str, key: &str, id: &str) -> Result<Value, String> {
     Ok(v)
 }
 
-/// `cancel`, `pause` or `resume`.
+/// What the old pause / resume links answer: Studio itself always refuses them (400 "not supported; use cancel").
+pub const PAUSE_REFUSED: &str = "Unsloth cannot pause a training job; cancel it and start again.";
+
+/// Studio's recent fine-tuning jobs, newest first, each labelled with the world whose slug starts its `suffix` (`<slug>-<date>`); `world: null` = started
+/// outside nd-world. Nothing is kept by nd-world: Studio's list is the history, so it survives a page reload and a gateway restart. A job waiting in
+/// Studio's queue (`ftjob_q...`) lives only in Studio's memory and is gone from the list after a Studio restart.
+pub async fn history(base: &str, key: &str, slugs: &[String]) -> Result<Value, String> {
+    let (s, b) = call("GET", &format!("{base}/v1/fine_tuning/jobs?limit=50"), key, None, Vec::new(), 30).await?;
+    if s != 200 {
+        return Err(problem(s, &b));
+    }
+    let v: Value = serde_json::from_slice(&b).map_err(|_| "Studio's answer could not be read.".to_string())?;
+    Ok(json!({"jobs": label_jobs(&v["data"], slugs)}))
+}
+
+/// The rows of `history`: tolerant of `data: null`, of entries that are not objects and of more rows than asked for (50 are kept).
+pub fn label_jobs(data: &Value, slugs: &[String]) -> Vec<Value> {
+    let mut rows: Vec<&Value> = data.as_array().map(|a| a.iter().filter(|j| j.is_object() && j["id"].as_str().is_some_and(safe_id)).collect()).unwrap_or_default();
+    rows.sort_by(|a, b| b["created_at"].as_f64().unwrap_or(0.0).partial_cmp(&a["created_at"].as_f64().unwrap_or(0.0)).unwrap_or(std::cmp::Ordering::Equal));
+    rows.into_iter().take(50).map(|j| {
+        let suffix = j["suffix"].as_str().unwrap_or("");
+        let world = slugs.iter().filter(|s| suffix.starts_with(&format!("{}-", suffix_prefix(s)))).max_by_key(|s| suffix_prefix(s).len());
+        json!({
+            "id": j["id"], "status": j["status"].as_str().unwrap_or("unknown"), "created_at": j["created_at"].clone(), "model": j["model"].as_str().unwrap_or(""),
+            "world": world, "label": if world.is_some() { Value::Null } else { json!("started outside nd-world") }
+        })
+    }).collect()
+}
+
+/// `cancel` only.
 pub async fn act(base: &str, key: &str, id: &str, action: &str) -> Result<Value, String> {
-    if !safe_id(id) || !matches!(action, "cancel" | "pause" | "resume") {
+    if !safe_id(id) || action != "cancel" {
         return Err("That is not a job action.".into());
     }
     let (s, b) = call("POST", &format!("{base}/v1/fine_tuning/jobs/{id}/{action}"), key, Some("application/json"), b"{}".to_vec(), 60).await?;
@@ -193,7 +283,9 @@ mod tests {
         let j = job_body(&st(), "my world!", "file-a", Some("file-b"));
         assert_eq!(j["model"], "unsloth/Qwen3.5-9B");
         assert_eq!(j["hyperparameters"]["learning_rate_multiplier"], 0.5);
-        assert_eq!(j["suffix"], "myworld");
+        // the slug (cut to Studio's characters) then `-yyyymmdd-hhmm`, so two runs of one world differ
+        let suffix = j["suffix"].as_str().unwrap();
+        assert!(suffix.starts_with("myworld-") && suffix.len() == "myworld-".len() + 13 && suffix["myworld-".len()..].chars().all(|c| c.is_ascii_digit() || c == '-'), "{suffix}");
         assert_eq!(j["load_in_4bit"], true);
         assert_eq!(j["finetune_vision_layers"], false);
         assert_eq!(j["validation_file"], "file-b");

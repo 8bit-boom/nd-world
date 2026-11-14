@@ -2,7 +2,7 @@
 //! read-only passthroughs the AI page and Settings call - the model hub list, image-model status, auto-switch and per-model overrides, the
 //! consolidated status card, the key check, the version and the diagnostic probe. Each asks Studio exactly what Python asks and answers with
 //! Studio's own JSON (or Python's wording for an error); the key-death banner state is kept here, in memory, as Python keeps it. Studio
-//! answering over https, a body that is not the shape Python reads, or anything Python would fail on is left to Python (None).
+//! answering over https is served here too (the client speaks TLS, ai::backend accepts it); a body that is not the shape Python reads, or anything Python would fail on is left to Python (None).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -158,7 +158,7 @@ struct Gate {
     saved_url: String,
 }
 
-/// `GET /api/ai/unsloth/...` for a signed-in GM; None = Python's (anyone else, a Studio over https, ...)
+/// `GET /api/ai/unsloth/...` for a signed-in GM; None = Python's (anyone else, an address that is not http(s), ...)
 pub async fn route(cfg: Arc<Config>, uri: Uri, headers: HeaderMap) -> Option<Response<Body>> {
     // GET /api/ai/imagegen/models with Studio as the image backend (app/ai.py imagegen_models): the image models Studio has cached
     if let Some(token) = uri.path().strip_prefix("/api/ai/unsloth/check/") {
@@ -210,7 +210,7 @@ pub async fn route(cfg: Arc<Config>, uri: Uri, headers: HeaderMap) -> Option<Res
         let res = if effective_key.is_empty() {
             json!({"ok": false, "status": 0, "url": url, "message": "No Studio API key is set."})
         } else {
-            gate.backend.as_ref()?; // https and the like: Python's
+            gate.backend.as_ref()?; // an address that is not http(s): Python's (https is served here, net::connector speaks TLS)
             let res = crate::studio_key::verify_key(&url, &effective_key).await;
             match res.get("status").and_then(|s| s.as_i64()) {
                 Some(401) => note_auth_failure(),
@@ -231,7 +231,7 @@ pub async fn route(cfg: Arc<Config>, uri: Uri, headers: HeaderMap) -> Option<Res
         return ok(&Value::Object(info));
     }
 
-    let b = gate.backend.as_ref()?; // no key is apis.rs's 400; https is Python's
+    let b = gate.backend.as_ref()?; // no key is apis.rs's 400; an address that is not http(s) is Python's
     match path.as_str() {
         "imagegen-models" => {
             let default = std::env::var("UNSLOTH_IMAGE_MODEL").unwrap_or_default();
@@ -270,7 +270,7 @@ fn text_field(body: &Map<String, Value>, key: &str) -> Option<String> {
 }
 
 /// `POST /api/ai/unsloth/...` actions for a signed-in GM: hub download, image load (file name given) / unload, auto-switch and per-model
-/// overrides. None: Python's (anyone else, a body that is not a JSON object, a Studio over https, ...).
+/// overrides. None: Python's (anyone else, a body that is not a JSON object, an address that is not http(s), ...).
 pub async fn post(cfg: Arc<Config>, uri: Uri, headers: HeaderMap, body: &[u8]) -> Option<Response<Body>> {
     let path = uri.path().strip_prefix("/api/ai/unsloth/")?.to_string();
     let check = matches!(path.as_str(), "stt-check" | "tts-check") && crate::config::python_free();
@@ -811,7 +811,8 @@ async fn probe(b: &Backend) -> Option<Response<Body>> {
     let one = |path: &'static str| async move {
         let uri: hyper::Uri = format!("{}{}", base_url(b), path).parse().ok()?;
         let res = tokio::time::timeout(std::time::Duration::from_secs(6), crate::studio_key::studio_get(uri, &b.key)).await;
-        Some(match res {
+        let health = if path == "/api/health" { match &res { Ok(Ok((200, body))) => serde_json::from_slice::<Value>(body).ok(), _ => None } } else { None };
+        Some((health, match res {
             Err(_) | Ok(Err(_)) => {
                 let class = match res {
                     Err(_) => "ReadTimeout",
@@ -837,12 +838,65 @@ async fn probe(b: &Backend) -> Option<Response<Body>> {
                 }
                 out
             }
-        })
+        }))
     };
     let results = futures_util::future::join_all(PROBE_PATHS.iter().map(|p| one(p))).await;
-    let raw: Vec<Value> = results.into_iter().collect::<Option<_>>()?;
+    let pairs: Vec<(Option<Value>, Value)> = results.into_iter().collect::<Option<_>>()?;
+    let health = pairs.iter().find_map(|(h, _)| h.clone());
+    let raw: Vec<Value> = pairs.into_iter().map(|(_, r)| r).collect();
     let version = raw.iter().find_map(|r| r.get("version").cloned()).unwrap_or(Value::Null);
-    ok(&json!({"results": raw, "version": version}))
+    let mut out = json!({"results": raw, "version": version});
+    if crate::config::python_free() {
+        // Python-free only (Python's probe has no such block): is it Unsloth, Desktop or Studio, and in words what to do when nothing answers
+        out["unsloth"] = unsloth_note(&base_url(b), &raw, health.as_ref(), std::path::Path::new("/.dockerenv").exists());
+    }
+    ok(&out)
+}
+
+/// The host of a base URL, without the port and the IPv6 brackets.
+fn host_of(url: &str) -> String {
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let auth = rest.split(['/', '?']).next().unwrap_or("");
+    let auth = auth.rsplit('@').next().unwrap_or(auth);
+    if let Some(v6) = auth.strip_prefix('[') {
+        return v6.split(']').next().unwrap_or("").to_string();
+    }
+    auth.split(':').next().unwrap_or("").to_string()
+}
+
+fn is_loopback(host: &str) -> bool {
+    host == "localhost" || host == "::1" || host.starts_with("127.") || host == "0.0.0.0"
+}
+
+/// The extra block of the Python-free probe: `{"unsloth": bool, "desktop": bool, "studio_root_id", "version", "hint"}`.
+/// `health` is the body of `/api/health` when it answered 200 (with the saved key: a key Unsloth does not know gets the unauthenticated body, without `version`).
+pub(crate) fn unsloth_note(url: &str, results: &[Value], health: Option<&Value>, in_container: bool) -> Value {
+    let service = health.and_then(|h| h["service"].as_str()).unwrap_or("");
+    let is_unsloth = service == "Unsloth UI Backend";
+    let version = health.and_then(|h| h["version"].as_str().or_else(|| h["studio_version"].as_str())).map(str::to_string);
+    let desktop = is_unsloth && health.is_some_and(|h| !h["desktop_owner"].is_null() || !h["desktop_protocol_version"].is_null());
+    let root = if is_unsloth { health.and_then(|h| h["studio_root_id"].as_str()).map(str::to_string) } else { None };
+    let health_row = results.iter().find(|r| r["path"] == "/api/health");
+    let nothing_answers = results.iter().all(|r| r["status"].is_null());
+    let host = host_of(url);
+    let hint = if is_unsloth && version.is_none() {
+        Some("Unsloth answers, but it did not accept the API key saved here. Create a new key in Unsloth (Settings -> API), paste it above and press Save & verify key; Unsloth shows a key only once.".to_string())
+    } else if health.is_some() && !is_unsloth {
+        Some(format!("Something else answers at {url} (not Unsloth)."))
+    } else if nothing_answers {
+        Some(if is_loopback(&host) && in_container {
+            format!("Nothing answers at {url}. Inside a container 127.0.0.1 and localhost are the container itself: use the address of the computer Unsloth runs on (for example http://192.168.1.20:8888).")
+        } else if is_loopback(&host) {
+            format!("Nothing answers at {url}. Open Unsloth Desktop (it serves only while it is open) and check the address in Unsloth -> Settings -> API.")
+        } else {
+            format!("Nothing answers at {url}. If Unsloth Desktop runs on your PC: in Unsloth open Settings -> API -> Remote & LAN and press Start on LAN access (and switch on Start automatically), then use http://<PC address>:<port>. Desktop alone listens on that PC only.")
+        })
+    } else if health_row.is_some_and(|r| r["status"].is_null()) || health_row.is_some_and(|r| r["status"] == 404) {
+        Some(format!("Something answers at {url}, but not like Unsloth (no /api/health). Check the address and the port."))
+    } else {
+        None
+    };
+    json!({"unsloth": is_unsloth, "desktop": desktop, "studio_root_id": root, "version": version, "hint": hint})
 }
 
 /// `_ctx_of`: the first positive context length among an entry's known keys

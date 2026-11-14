@@ -1,0 +1,10 @@
+{
+ "available": true,
+ "devices": [
+  {
+   "name": "NVIDIA GeForce RTX 5090",
+   "vram_total_gb": 32.0,
+   "vram_used_gb": 1.0
+  }
+ ]
+}

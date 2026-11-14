@@ -1,0 +1,24 @@
+{
+ "outputs_dir": "/home/user/.unsloth/studio/outputs",
+ "models": [
+  {
+   "name": "run1",
+   "base_model": "unsloth/Qwen3.5-2B",
+   "peft_type": "LoRA",
+   "lora_rank": 16,
+   "is_quantized": false,
+   "checkpoints": [
+    {
+     "display_name": "checkpoint-100",
+     "path": "/home/user/.unsloth/studio/outputs/run1/checkpoint-100",
+     "loss": 1.2
+    },
+    {
+     "display_name": "run1",
+     "path": "/home/user/.unsloth/studio/outputs/run1",
+     "loss": 1.1
+    }
+   ]
+  }
+ ]
+}

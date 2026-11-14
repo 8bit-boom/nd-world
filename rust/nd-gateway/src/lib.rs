@@ -506,6 +506,7 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         let action = match (req.method().as_str(), req.uri().path()) {
             ("POST", "/export/unsloth-studio/train") => Some("train"),
             ("GET", "/export/unsloth-studio/job") => Some("job"),
+            ("GET", "/export/unsloth-studio/jobs") => Some("jobs"),
             ("POST", "/export/unsloth-studio/job/cancel") => Some("cancel"),
             ("POST", "/export/unsloth-studio/job/pause") => Some("pause"),
             ("POST", "/export/unsloth-studio/job/resume") => Some("resume"),

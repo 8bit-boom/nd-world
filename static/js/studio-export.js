@@ -60,10 +60,33 @@
     var done = ['succeeded', 'failed', 'cancelled'].indexOf(j.status) >= 0;
     $('studio-job').style.display = '';
     $('studio-jobline').textContent = 'Studio job ' + j.id + ': ' + j.status + (j.nd ? ' (' + j.nd.model + ', ' + j.nd.method + ', context ' + j.nd.context + ', ' + j.nd.rows + ' rows)' : '') +
-      (j.checkpoints ? ' · ' + j.checkpoints + ' checkpoint' + (j.checkpoints > 1 ? 's' : '') : '') + (j.error && j.error.message ? ' · ' + j.error.message : '');
+      (j.checkpoints ? ' · ' + j.checkpoints + ' checkpoint' + (j.checkpoints > 1 ? 's' : '') : '') + (j.error && j.error.message ? ' · ' + j.error.message : '') +
+      (j.studio && j.studio.version ? ' · Unsloth ' + j.studio.version + (j.studio.tested ? '' : ' (not checked by nd-world yet)') : '');
     $('studio-jobevents').textContent = (j.events || []).map(function (e) { return e.message; }).join('\n');
-    ['studio-pause', 'studio-resume', 'studio-cancel'].forEach(function (id) { $(id).disabled = done; });
-    if (done && timer) { clearInterval(timer); timer = null; }
+    $('studio-cancel').disabled = done;
+    if (done && timer) { clearInterval(timer); timer = null; loadHistory(); }
+  }
+  function when(t) { return typeof t === 'number' && t > 0 ? new Date(t * 1000).toLocaleString() : ''; }
+  function loadHistory() {
+    api('GET', '/export/unsloth-studio/jobs').then(function (d) {
+      var box = $('studio-history'), ul = $('studio-history-list');
+      var jobs = d.jobs || [];
+      box.style.display = jobs.length ? '' : 'none';
+      ul.textContent = '';
+      jobs.slice(0, 15).forEach(function (j) {
+        var li = document.createElement('li');
+        li.appendChild(document.createTextNode((j.world || j.label) + ' · ' + j.status + (j.model ? ' · ' + j.model : '') + (when(j.created_at) ? ' · ' + when(j.created_at) : '') + ' '));
+        var b = document.createElement('button');
+        b.type = 'button'; b.className = 'btn-secondary'; b.textContent = 'Follow';
+        b.addEventListener('click', function () {
+          jobId = j.id; follow();
+          if (timer) clearInterval(timer);
+          timer = setInterval(follow, 5000);
+        });
+        li.appendChild(b);
+        ul.appendChild(li);
+      });
+    }).catch(function () { $('studio-history').style.display = 'none'; });
   }
   function follow() {
     if (!jobId) return;
@@ -83,9 +106,10 @@
       jobId = j.id; if (!j.jobs) showJob(j);
       if (timer) clearInterval(timer);
       timer = setInterval(follow, 5000);
+      loadHistory();
     }).catch(function (e) { $('studio-jobline').textContent = e.message; }).then(function () { b.disabled = false; });
   });
-  ['pause', 'resume', 'cancel'].forEach(function (a) {
+  ['cancel'].forEach(function (a) {
     $('studio-' + a).addEventListener('click', function () {
       if (!jobId) return;
       if (a === 'cancel' && !window.confirm('Stop this training job in Unsloth Studio?')) return;
@@ -93,4 +117,5 @@
     });
   });
   refresh();
+  loadHistory();
 })();

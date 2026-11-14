@@ -1,0 +1,36 @@
+{
+ "object": "list",
+ "has_more": false,
+ "data": [
+  {
+   "id": "ftevent_run1_step2",
+   "object": "fine_tuning.job.event",
+   "type": "metrics",
+   "message": "Step 2/2 loss 1.1",
+   "data": {
+    "step": 2,
+    "total_steps": 2,
+    "train_loss": 1.1,
+    "learning_rate": 0.0001,
+    "grad_norm": 0.9,
+    "valid_loss": 1.2,
+    "epoch": 1.0
+   }
+  },
+  {
+   "id": "ftevent_run1_step1",
+   "object": "fine_tuning.job.event",
+   "type": "metrics",
+   "message": "Step 1/2 loss 1.4",
+   "data": {
+    "step": 1,
+    "total_steps": 2,
+    "train_loss": 1.4,
+    "learning_rate": 0.0002,
+    "grad_norm": 1.1,
+    "valid_loss": null,
+    "epoch": 0.5
+   }
+  }
+ ]
+}

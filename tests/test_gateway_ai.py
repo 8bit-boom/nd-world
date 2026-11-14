@@ -3523,12 +3523,12 @@ def test_python_free_unsloth_studio_export_recommends_settings_for_the_chosen_ca
 
 def test_python_free_unsloth_studio_training_job_is_started_followed_and_stopped(client, seed):
     """"Train in Unsloth Studio": the gateway uploads train.jsonl / eval.jsonl to Studio's /v1/files, starts /v1/fine_tuning/jobs with the YAML's settings as
-    extra fields, and relays the job, its events, cancel/pause/resume; Studio's own errors and a missing key are explained in words."""
+    extra fields, and relays the job, its events and cancel (pause/resume are refused locally: Studio always says no); Studio's own errors and a missing key are explained in words."""
     import threading
     from http.server import BaseHTTPRequestHandler, HTTPServer
     from .test_gateway_golden import _python_free_gateway
     seen = {"auth": set(), "files": [], "jobs": [], "acts": []}
-    state = {"job_status": 200, "queue": False}
+    state = {"job_status": 200, "queue": False, "old": False, "bad_key": False}
 
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -3555,18 +3555,40 @@ def test_python_free_unsloth_studio_training_job_is_started_followed_and_stopped
             if self.path == "/v1/fine_tuning/jobs":
                 if state["job_status"] != 200:
                     return self._send(state["job_status"], {"error": {"message": "Unknown parameter(s): nope"}})
-                seen["jobs"].append(json.loads(raw))
+                job = json.loads(raw)
+                # Studio's own check (routes/openai_fine_tuning.py): any key besides the OpenAI-shaped ones must be a TrainingStartRequest field, and not a managed one
+                spec = json.load(open(os.path.join(os.path.dirname(__file__), "fixtures", "unsloth", "training_start_fields.json")))
+                openai_keys = {"model", "training_file", "validation_file", "hyperparameters", "method", "suffix", "seed", "integrations"}
+                unknown = sorted(k for k in job if k not in openai_keys and (k not in spec["fields"] or k in spec["managed"]))
+                if unknown:
+                    return self._send(400, {"error": {"message": "Unknown parameter(s): " + ", ".join(unknown)}})
+                seen["jobs"].append(job)
                 return self._send(200, {"id": "ftjob-1", "object": "fine_tuning.job", "status": "queued" if state["queue"] else "running"})
             for act in ("cancel", "pause", "resume"):
                 if self.path == f"/v1/fine_tuning/jobs/ftjob-1/{act}":
                     seen["acts"].append(act)
-                    return self._send(200, {"id": "ftjob-1", "status": "cancelled" if act == "cancel" else "running"})
+                    if act != "cancel":   # Studio's real answer (routes/openai_fine_tuning.py)
+                        return self._send(400, {"error": {"message": "Pausing and resuming fine-tuning jobs is not supported; use cancel."}})
+                    return self._send(200, {"id": "ftjob-1", "status": "cancelled"})
             self._send(404, {"detail": "nope"})
 
         def do_GET(self):
             seen["auth"].add(self.headers.get("Authorization"))
             if self.path == "/api/train/hardware":
                 return self._send(200, {"available": True, "devices": [{"name": "NVIDIA Test 12", "vram_total_gb": 12.0, "vram_used_gb": 1.0}]})
+            if self.path == "/v1/models":
+                if state["bad_key"]:
+                    return self._send(401, {"detail": "Invalid API key"})
+                return self._send(200, {"object": "list", "data": []})
+            if self.path == "/api/health":   # a key Studio does not know gets the unauthenticated body, never a 401
+                body = {"status": "healthy", "service": "Unsloth UI Backend"}
+                if self.headers.get("Authorization") == "Bearer sk-unsloth-test":
+                    body.update({"version": "2026.11.1", "studio_version": "2026.11.1"})
+                return self._send(200, body)
+            if self.path.startswith("/v1/fine_tuning/jobs?"):
+                if state["old"]:
+                    return self._send(404, {"detail": "Not Found"})
+                return self._send(200, {"object": "list", "data": [], "has_more": False})
             if self.path == "/v1/fine_tuning/jobs/ftjob-1":
                 return self._send(200, {"id": "ftjob-1", "status": "running", "trained_tokens": 1200})
             if self.path.startswith("/v1/fine_tuning/jobs/ftjob-1/events"):
@@ -3602,6 +3624,8 @@ def test_python_free_unsloth_studio_training_job_is_started_followed_and_stopped
         assert seen["auth"] == {"Bearer sk-unsloth-test"}
         assert [f[0] for f in seen["files"]] == ["train.jsonl", "eval.jsonl"] and seen["files"][0][1] == job["nd"]["rows"]
         body = seen["jobs"][0]
+        import re
+        assert re.fullmatch(re.escape(seed.world_a.slug) + r"-\d{8}-\d{4}", body["suffix"]) and len(body["suffix"]) <= 40, body["suffix"]
         assert body["training_file"] == "file-train" and body["validation_file"] == "file-eval" and body["method"] == {"type": "supervised"}
         assert body["finetune_vision_layers"] is False and body["train_on_completions"] is True and body["lora_alpha"] == body["lora_r"] and body["max_steps"] == 0
         assert body["hyperparameters"]["batch_size"] * body["gradient_accumulation_steps"] == 8 and body["packing"] is False
@@ -3612,9 +3636,17 @@ def test_python_free_unsloth_studio_training_job_is_started_followed_and_stopped
         j = g.get("/export/unsloth-studio/job?id=ftjob-1").json()
         assert j["status"] == "running" and j["events"][0]["message"].startswith("Step 5") and j["checkpoints"] == 2
         assert g.get("/export/unsloth-studio/job?id=../etc").status_code == 502
-        for act in ("pause", "resume", "cancel"):
-            assert g.post(f"/export/unsloth-studio/job/{act}?id=ftjob-1").status_code == 200
-        assert seen["acts"] == ["pause", "resume", "cancel"]
+        # pause / resume: Studio always refuses, so the gateway answers 400 itself and never calls Studio; cancel is relayed
+        for act in ("pause", "resume"):
+            r = g.post(f"/export/unsloth-studio/job/{act}?id=ftjob-1")
+            assert r.status_code == 400 and r.json()["detail"] == "Unsloth cannot pause a training job; cancel it and start again.", r.text
+        assert seen["acts"] == []
+        assert g.post("/export/unsloth-studio/job/cancel?id=ftjob-1").status_code == 200
+        assert seen["acts"] == ["cancel"]
+        # the card offers Cancel only
+        card = g.get("/export").text
+        assert 'id="studio-cancel"' in card and 'id="studio-pause"' not in card and 'id="studio-resume"' not in card
+        assert "studio-pause" not in g.get("/static/js/studio-export.js").text
         # one model per world: one job for each world ticked, named for it
         slugs = [seed.world_a.slug, seed.world_b.slug]
         before = len(seen["jobs"])
@@ -3623,6 +3655,21 @@ def test_python_free_unsloth_studio_training_job_is_started_followed_and_stopped
         pj = r.json()
         assert pj["per_world"] is True and [j.get("world") for j in pj["jobs"]] == slugs and all(j.get("id") == "ftjob-1" for j in pj["jobs"]), pj
         assert len(seen["jobs"]) - before == 2 and seen["jobs"][before]["suffix"] != seen["jobs"][before + 1]["suffix"]
+        # the stand-in rejects an unknown or managed key like Studio does, so a misspelt field in job_body would fail here
+        bad = httpx.post(f"http://127.0.0.1:{srv.server_port}/v1/fine_tuning/jobs", json={"model": "m", "lora_rank": 8, "project_name": "x"})
+        assert bad.status_code == 400 and bad.json()["error"]["message"] == "Unknown parameter(s): lora_rank, project_name"
+        # the capabilities probe runs before any data is sent: the version is on the card, an old Studio gets the zip advice, a refused key says so
+        assert job["studio"] == {"version": "2026.11.1", "tested": False}, job
+        assert g.get("/export/unsloth-studio/job?id=ftjob-1").json()["studio"]["version"] == "2026.11.1"
+        files_before = len(seen["files"])
+        state["old"] = True
+        r = g.post("/export/unsloth-studio/train?vram=24")
+        assert r.status_code == 502 and "no fine-tuning API" in r.json()["detail"] and "zip" in r.json()["detail"], r.text
+        state["old"], state["bad_key"] = False, True
+        r = g.post("/export/unsloth-studio/train?vram=24")
+        assert r.status_code == 502 and "refused the API key" in r.json()["detail"], r.text
+        state["bad_key"] = False
+        assert len(seen["files"]) == files_before, "nothing is uploaded when the probe fails"
         # Studio's own words for a refusal
         state["job_status"] = 400
         r = g.post("/export/unsloth-studio/train?vram=24")
@@ -3684,6 +3731,164 @@ def test_python_free_unsloth_studio_export_can_add_a_thinking_block_to_a_share_o
         db = SessionLocal()
         try:
             db.query(Entity).filter(Entity.name.like("Think Place%")).delete(synchronize_session=False)
+            db.commit()
+        finally:
+            db.close()
+
+
+def test_python_free_unsloth_probe_names_desktop_version_and_what_to_do(client, seed):
+    """Settings' probe in the Python-free image adds an `unsloth` block (Python's probe has none: tests/test_gateway_golden.py keeps the rest byte-identical):
+    is it Unsloth, Desktop or Studio, its version (with the saved key), the root id, and in words what to do when nothing answers (LAN access off, 127.0.0.1 inside a
+    container, an IPv6 or https address, a key Unsloth did not accept, something that is not Unsloth)."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from .test_gateway_golden import _python_free_gateway
+    fixtures = os.path.join(os.path.dirname(__file__), "fixtures", "unsloth")
+    health_auth = json.load(open(os.path.join(fixtures, "health_auth.json")))
+    health_unauth = json.load(open(os.path.join(fixtures, "health_unauth.json")))
+    state = {"mode": "desktop"}
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            if self.path != "/api/health":
+                body, code = b'{"detail": "Not Found"}', 404
+            else:
+                code = 200
+                if state["mode"] == "other":
+                    body = json.dumps({"status": "ok", "service": "something else"}).encode()
+                elif state["mode"] == "studio":
+                    body = json.dumps({k: v for k, v in health_auth.items() if not k.startswith("desktop") and k not in ("supports_desktop_auth",)}).encode()
+                elif state["mode"] == "refused":
+                    body = json.dumps(health_unauth).encode()           # a key Unsloth does not know: no `version`, never a 401
+                else:
+                    body = json.dumps(health_auth if self.headers.get("Authorization") == "Bearer sk-unsloth-test" else health_unauth).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        def probe(address):
+            _settings(gm, llm_url=address, llm_model="studio", llm_api_key="sk-unsloth-test")
+            r = g.get("/api/ai/unsloth/probe")
+            assert r.status_code == 200, r.text
+            return r.json()
+        d = probe(f"http://127.0.0.1:{srv.server_port}")
+        assert [x["path"] for x in d["results"]][0] == "/api/version" and d["version"] == "2026.11.1"   # Python's own fields are untouched
+        assert d["unsloth"] == {"unsloth": True, "desktop": True, "studio_root_id": "root-0123456789ab", "version": "2026.11.1", "hint": None}, d["unsloth"]
+        state["mode"] = "studio"
+        u = probe(f"http://127.0.0.1:{srv.server_port}")["unsloth"]
+        assert u["unsloth"] is True and u["desktop"] is False and u["version"] == "2026.11.1" and u["hint"] is None, u
+        state["mode"] = "refused"
+        u = probe(f"http://127.0.0.1:{srv.server_port}")["unsloth"]
+        assert u["unsloth"] is True and u["version"] is None and "did not accept the API key" in u["hint"], u
+        state["mode"] = "other"
+        u = probe(f"http://127.0.0.1:{srv.server_port}")["unsloth"]
+        assert u["unsloth"] is False and "not Unsloth" in u["hint"], u
+        # nothing answers: refused on a loopback address (this machine, or a container), an IPv6 address in brackets, https
+        for address, words in (("http://127.0.0.1:1", "Nothing answers at http://127.0.0.1:1"),
+                               ("http://[::1]:1", "Nothing answers at http://[::1]:1"), ("https://127.0.0.1:1", "Nothing answers at https://127.0.0.1:1")):
+            u = probe(address)["unsloth"]
+            assert u["unsloth"] is False and u["hint"].startswith(words), (address, u)
+            assert "Unsloth Desktop" in u["hint"] or "container" in u["hint"], u
+        # a PC on the LAN that does not answer: the Remote & LAN card is named (192.0.2.0/24 never answers; the probe gives up after a few seconds)
+        u = probe("http://192.0.2.7:8888")["unsloth"]
+        assert "Remote & LAN" in u["hint"] and "http://192.0.2.7:8888" in u["hint"], u
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+        _settings(gm, llm_api_key_clear="1")
+        srv.shutdown()
+
+
+def test_python_free_unsloth_studio_job_history_is_labelled_by_world(client, seed):
+    """`GET /export/unsloth-studio/jobs`: Studio's own job list (nothing stored in nd-world), each job labelled with the world whose slug starts its `suffix`
+    (`<slug>-<date>`, the slug cut to Studio's characters, so an accented slug still matches), "started outside nd-world" otherwise, newest first. A `null` data
+    list, junk entries and 1000 jobs do not decline the route; the card has the list and the page script reads it."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from app.database import SessionLocal
+    from app.models import World
+    from .test_gateway_golden import _python_free_gateway
+    state = {"data": []}
+    seen = {"paths": []}
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            seen["paths"].append(self.path)
+            code, obj = 404, {"detail": "nope"}
+            if self.path.startswith("/v1/fine_tuning/jobs?"):
+                code, obj = 200, {"object": "list", "data": state["data"], "has_more": False}
+            body = json.dumps(obj).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    db = SessionLocal()
+    try:
+        db.add(World(name="Cafe Ete", slug="café-été"))
+        db.commit()
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        _settings(gm, llm_api_key_clear="1")
+        assert g.get("/export/unsloth-studio/jobs").status_code == 409                       # no key: said in words
+        _settings(gm, llm_url=f"http://127.0.0.1:{srv.server_port}", llm_model="studio", llm_api_key="sk-unsloth-test")
+        a, b = seed.world_a.slug, seed.world_b.slug
+        state["data"] = [
+            {"id": "ftjob_old", "status": "succeeded", "created_at": 1000, "model": "unsloth/Qwen3.5-2B", "suffix": f"{b}-20261101-0900"},
+            {"id": "ftjob_new", "status": "running", "created_at": 3000, "model": "unsloth/Qwen3.5-2B", "suffix": f"{a}-20261113-1200"},
+            {"id": "ftjob_acc", "status": "succeeded", "created_at": 2500, "model": "m", "suffix": "caf-t-20261112-0800"},
+            {"id": "ftjob_other", "status": "failed", "created_at": 2000, "model": "m", "suffix": "somebody-elses"},
+            {"id": "ftjob_q0123", "status": "queued", "created_at": 2900, "model": "m"},
+            "junk", None, {"status": "running"}, {"id": "../etc", "status": "x"},
+        ]
+        r = g.get("/export/unsloth-studio/jobs")
+        assert r.status_code == 200, r.text
+        jobs = r.json()["jobs"]
+        assert [j["id"] for j in jobs] == ["ftjob_new", "ftjob_q0123", "ftjob_acc", "ftjob_other", "ftjob_old"], jobs
+        by = {j["id"]: j for j in jobs}
+        assert by["ftjob_new"]["world"] == a and by["ftjob_old"]["world"] == b and by["ftjob_acc"]["world"] == "café-été"
+        assert by["ftjob_other"]["world"] is None and by["ftjob_other"]["label"] == "started outside nd-world" and by["ftjob_q0123"]["world"] is None
+        assert by["ftjob_new"]["status"] == "running" and by["ftjob_new"]["model"] == "unsloth/Qwen3.5-2B"
+        assert any(p.startswith("/v1/fine_tuning/jobs?limit=50") for p in seen["paths"])
+        # a null list, and a thousand jobs (50 newest are kept)
+        state["data"] = None
+        assert g.get("/export/unsloth-studio/jobs").json() == {"jobs": []}
+        state["data"] = [{"id": f"ftjob_{i}", "status": "succeeded", "created_at": i, "suffix": f"{a}-x"} for i in range(1000)]
+        jobs = g.get("/export/unsloth-studio/jobs").json()["jobs"]
+        assert len(jobs) == 50 and jobs[0]["id"] == "ftjob_999" and all(j["world"] == a for j in jobs)
+        # a Studio that is too old for the API, and not the GM
+        state["data"] = []
+        anon = httpx.Client(base_url=url, follow_redirects=False)
+        assert anon.get("/export/unsloth-studio/jobs").status_code != 200
+        # the card carries the list and the script reads it
+        assert 'id="studio-history-list"' in g.get("/export").text and "/export/unsloth-studio/jobs" in g.get("/static/js/studio-export.js").text
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+        _settings(gm, llm_api_key_clear="1")
+        srv.shutdown()
+        db = SessionLocal()
+        try:
+            db.query(World).filter(World.slug == "café-été").delete(synchronize_session=False)
             db.commit()
         finally:
             db.close()
