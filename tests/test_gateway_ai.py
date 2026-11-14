@@ -37,6 +37,7 @@ class _Fake:
         self.reply_seq = None           # answers to give in turn first (then `reply`)
         self.embed_fail = False
         self.loras = []
+        self.lora_gets = []
         self.reject_thinking = None     # an error message: a 400 for any request asking for Thinking
         fake = self
 
@@ -66,7 +67,9 @@ class _Fake:
                     self.wfile.write(body)
                     return
                 if self.path.startswith("/api/models/loras"):
-                    fake.requests.append({"auth": self.headers.get("Authorization"), "body": {"get": self.path}})
+                    # not in `requests`: only the gateway asks (and caches the answer for 30 s), so recording it would make every
+                    # request-for-request comparison with Python depend on whether an earlier test warmed that cache
+                    fake.lora_gets.append(self.path)
                     body = json.dumps({"loras": fake.loras, "outputs_dir": "/o"}).encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
