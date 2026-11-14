@@ -636,6 +636,15 @@ pub async fn ai_models_route(cfg: Arc<Config>, uri: Uri, headers: HeaderMap) -> 
             result.push((ll, json!({"id": id, "label": format!("{id} (Studio hub)"), "loaded": loaded, "builtin": false, "fine_tuned": true})));
         }
     }
+    // the models fine-tuned in Studio (training runs and GGUF exports): /api/models/loras, which /v1/models does not list at all
+    for ft in fine_tunes(&b).await {
+        let ll = ft.id.to_ascii_lowercase();
+        if result.iter().any(|r| ll == r.0) {
+            continue;
+        }
+        let loaded = listed.iter().any(|m| m.1 && m.0.eq_ignore_ascii_case(&ft.id));
+        result.push((ll, json!({"id": ft.id, "label": format!("{} (fine-tuned, {})", ft.name, if ft.gguf { "GGUF" } else { "LoRA" }), "loaded": loaded, "builtin": false, "fine_tuned": true})));
+    }
     let models: Vec<Value> = result.into_iter().map(|r| r.1).collect();
     ok(&json!({
         "models": models, "default": b.model,
@@ -1118,4 +1127,69 @@ async fn poll_check(cfg: &Arc<Config>, uri: &Uri, headers: &HeaderMap, token: &s
     };
     let answer = wait_slot(&slot, 25).await.unwrap_or_else(|| pending_answer(token, started));
     ok(&answer)
+}
+
+/// A model fine-tuned in Studio: the id to ask for (a training run's name, or an export's file path), a readable name, GGUF or LoRA
+pub(crate) struct FineTune {
+    pub id: String,
+    pub name: String,
+    pub gguf: bool,
+}
+
+/// `GET /api/models/loras`: the training runs and exports Studio's own picker lists as "Fine-tuned" (30 s kept; empty when Studio does not answer)
+pub(crate) async fn fine_tunes(b: &Backend) -> Vec<FineTune> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<Option<(std::time::Instant, String, Vec<(String, String, bool)>)>>> = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    let key = base_url(b);
+    if let Some((at, k, rows)) = cache.lock().ok().and_then(|c| c.clone()) {
+        if k == key && at.elapsed() < std::time::Duration::from_secs(30) {
+            return rows.into_iter().map(|(id, name, gguf)| FineTune { id, name, gguf }).collect();
+        }
+    }
+    let got = tokio::time::timeout(std::time::Duration::from_secs(20), get(b, "/api/models/loras", &[])).await;
+    let Ok(Ok(v)) = got else {
+        if let Ok(mut c) = cache.lock() {
+            *c = Some((std::time::Instant::now(), key, vec![])); // a Studio that does not answer is not asked again for a while
+        }
+        return vec![];
+    };
+    let mut rows = vec![];
+    for l in v.get("loras").and_then(|l| l.as_array()).cloned().unwrap_or_default() {
+        let name = l.get("display_name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+        let path = l.get("adapter_path").and_then(|n| n.as_str()).unwrap_or("").to_string();
+        let gguf = l.get("export_type").and_then(|n| n.as_str()) == Some("gguf");
+        // a training run answers to its folder name; an export is loaded by its file
+        let id = if l.get("source").and_then(|n| n.as_str()) == Some("training") { name.clone() } else { path };
+        if !id.is_empty() && !name.is_empty() {
+            rows.push((id, name, gguf));
+        }
+    }
+    if let Ok(mut c) = cache.lock() {
+        *c = Some((std::time::Instant::now(), key, rows.clone()));
+    }
+    rows.into_iter().map(|(id, name, gguf)| FineTune { id, name, gguf }).collect()
+}
+
+/// A chat for a fine-tuned model: Studio does not list it in /v1/models, so it is loaded first (`POST /api/inference/load`, minutes for a big
+/// one) and the id Studio serves it under is what the chat asks for. None when `requested` is not a fine-tune, or the load failed (the chat
+/// then asks for the name as given and shows Studio's own answer).
+pub(crate) async fn load_fine_tune(b: &Backend, requested: &str) -> Option<String> {
+    let ft = fine_tunes(b).await;
+    let found = ft.iter().find(|f| f.id == requested || f.name == requested)?;
+    // already the loaded one?
+    if let Some(listed) = v1_models(b).await {
+        if let Some(m) = listed.iter().find(|m| m.1 && (m.0 == found.id || m.0 == found.name)) {
+            return Some(m.0.clone());
+        }
+    }
+    let req = crate::ai::backend_request(b, "POST", "/api/inference/load", Some(&json!({"model_path": found.id})))?;
+    let work = async {
+        use http_body_util::BodyExt;
+        let resp = crate::ai::client().request(req).await.ok()?;
+        let status = resp.status().as_u16();
+        let bytes = resp.into_body().collect().await.ok()?.to_bytes();
+        (status < 400).then(|| serde_json::from_slice::<Value>(&bytes).ok()).flatten()
+    };
+    let v = tokio::time::timeout(std::time::Duration::from_secs(900), work).await.ok().flatten()?;
+    v.get("model").and_then(|m| m.as_str()).filter(|m| !m.is_empty()).map(str::to_string)
 }

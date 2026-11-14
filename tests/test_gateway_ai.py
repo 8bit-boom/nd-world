@@ -36,6 +36,7 @@ class _Fake:
         self.delay = 0                  # seconds before that answer
         self.reply_seq = None           # answers to give in turn first (then `reply`)
         self.embed_fail = False
+        self.loras = []
         self.reject_thinking = None     # an error message: a 400 for any request asking for Thinking
         fake = self
 
@@ -60,6 +61,15 @@ class _Fake:
                     body = fake.png
                     self.send_response(200)
                     self.send_header("Content-Type", "image/png")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if self.path.startswith("/api/models/loras"):
+                    fake.requests.append({"auth": self.headers.get("Authorization"), "body": {"get": self.path}})
+                    body = json.dumps({"loras": fake.loras, "outputs_dir": "/o"}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
                     self.wfile.write(body)
@@ -111,6 +121,14 @@ class _Fake:
                     return
                 if self.path == "/v1/videos":
                     body = json.dumps(fake.video_reply).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if self.path == "/api/inference/load":
+                    body = json.dumps({"status": "loaded", "model": "served-ft", "display_name": "ft", "inference": {}}).encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(body)))
@@ -3892,3 +3910,27 @@ def test_python_free_unsloth_studio_job_history_is_labelled_by_world(client, see
             db.commit()
         finally:
             db.close()
+
+
+def test_fine_tuned_models_are_listed_and_loaded_before_a_chat(client, seed, studio):
+    """A model fine-tuned in Studio (not in /v1/models): listed from /api/models/loras, and a chat that asks for it loads it first and then asks
+    for the id Studio serves it under."""
+    base = str(client.base_url)
+    studio.loras = [{"display_name": "Run_A_17", "adapter_path": "/opt/unsloth-studio/outputs/Run_A_17", "source": "training", "export_type": "lora"},
+                    {"display_name": "Run_A_17-GGUF", "adapter_path": "/opt/unsloth-studio/exports/Run_A_17-GGUF/m.Q4_K_M.gguf", "source": "exported", "export_type": "gguf"}]
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    g = _via(gm, base)
+    import time
+    time.sleep(0.1)
+    r = g.get("/api/ai/models")
+    assert r.status_code == 200 and r.headers.get("x-nd-served-by") == "gateway"
+    by = {m["id"]: m for m in r.json()["models"]}
+    assert by["Run_A_17"]["fine_tuned"] and "LoRA" in by["Run_A_17"]["label"]
+    assert by["/opt/unsloth-studio/exports/Run_A_17-GGUF/m.Q4_K_M.gguf"]["fine_tuned"] and "GGUF" in by["/opt/unsloth-studio/exports/Run_A_17-GGUF/m.Q4_K_M.gguf"]["label"]
+    studio.script = [_delta(content="Hi"), {"choices": [{"delta": {}, "finish_reason": "stop"}]}]
+    studio.requests.clear()
+    r = g.post("/api/ai/stream", json={"messages": [{"role": "user", "content": "hello"}], "system": "", "model": "Run_A_17", "surface": "chat", "think": False})
+    assert r.status_code == 200 and "Hi" in r.text, r.text[:300]
+    bodies = [q["body"] for q in studio.requests]
+    assert any(b.get("model_path") == "Run_A_17" for b in bodies), bodies
+    assert any(b.get("model") == "served-ft" and b.get("messages") for b in bodies), bodies

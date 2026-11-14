@@ -574,7 +574,21 @@ fn run(job: Job) -> Response<Body> {
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
     tokio::spawn(async move {
         let Job { backend, requested, system, messages, think, extra, cache: key, on_done, detached } = job;
-        let (model, note) = resolve_model(&backend, &requested).await;
+        // a model fine-tuned in Studio is loaded first (that can take minutes: keep-alives go out meanwhile)
+        let fine = async {
+            let load = crate::studio::load_fine_tune(&backend, &requested);
+            tokio::pin!(load);
+            loop {
+                tokio::select! {
+                    r = &mut load => break r,
+                    _ = tokio::time::sleep(HEARTBEAT) => { if tx.send(": keep-alive\n\n".into()).await.is_err() { break None; } }
+                }
+            }
+        }.await;
+        let (model, note) = match fine {
+            Some(served) => (served, None),
+            None => resolve_model(&backend, &requested).await,
+        };
         if let Some(n) = note {
             let _ = tx.send(sse(&json!({"note": n}))).await;
         }
