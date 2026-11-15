@@ -30,7 +30,7 @@ from .. import retrieval as _retrieval
 from ..constants import KINDS
 from ..database import get_app_settings, get_db
 from ..deps import get_world_ctx, can_edit_content, check_llm_cooldown, world_can_view_section
-from ..models import AiProject, AudioJob, ChatJob, ChatSession, Entity, ImageJob, PromptPreset, User, World, entity_player_access
+from ..models import AiProject, AiProjectFile, AudioJob, ChatJob, ChatSession, Entity, ImageJob, PromptPreset, User, World, entity_player_access
 from ..rendering import strip_gm_only as _strip_gm_only
 from ..uploads import (
     copy_upload_bounded, unique_upload_filename, reassemble_upload_chunks, save_upload_chunk,
@@ -1062,9 +1062,13 @@ def api_chat_projects_list(request: Request, db=Depends(get_db), active_world: s
     by_project: dict = {}
     for c in chats:
         by_project.setdefault(c.project_id, []).append({"id": c.id, "title": c.title})
+    files_by_project: dict = {}
+    for f in (db.query(AiProjectFile.id, AiProjectFile.project_id, AiProjectFile.name, AiProjectFile.size)
+              .filter(AiProjectFile.world_id == world.id).order_by(AiProjectFile.id).all()):
+        files_by_project.setdefault(f.project_id, []).append({"id": f.id, "name": f.name, "size": f.size or 0})
     return {"projects": [
         {"id": p.id, "name": p.name, "notes": p.notes or "",
-         "chats": by_project.get(p.id, [])}
+         "chats": by_project.get(p.id, []), "files": files_by_project.get(p.id, [])}
         for p in projects
     ]}
 
@@ -1111,6 +1115,7 @@ def api_chat_project_delete(project_id: int, request: Request, db=Depends(get_db
     db.query(ChatSession).filter(
         ChatSession.project_id == project_id, ChatSession.world_id == world.id,
     ).update({ChatSession.project_id: None}, synchronize_session=False)
+    db.query(AiProjectFile).filter(AiProjectFile.project_id == project_id).delete(synchronize_session=False)
     db.delete(project)
     db.commit()
     return {"ok": True}

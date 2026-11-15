@@ -162,6 +162,81 @@ function setActiveProject(pid) {
   _activeProjectId = pid || null;
   const p = _findProject(_activeProjectId);
   _activeProjectNotes = p ? (p.notes || '') : '';
+  _projectFilesCache = null;   // the files' text is fetched again for the next message
+}
+
+// ── Project files ─────────────────────────────────────────────────────────────
+// Text files (txt, md, html, json, csv, pdf, docx ...) attached to a project: the server keeps only their text, and it rides into the system prompt
+// of every chat in the project, after the notes, up to PROJECT_FILES_BUDGET characters (what does not fit is named, so the model knows it is missing).
+const PROJECT_FILES_BUDGET = 60000;
+const PROJECT_FILE_ACCEPT = '.txt,.md,.markdown,.html,.htm,.json,.jsonl,.csv,.tsv,.xml,.yaml,.yml,.toml,.ini,.log,.rst,.tex,.srt,.vtt,.pdf,.docx,text/*';
+let _projectFilesCache = null;   // { id, files: [{name, text}] } for the active project
+
+async function _projectFilesContext(signal) {
+  if (!_activeProjectId) return '';
+  const p = _findProject(_activeProjectId);
+  if (!p || !(p.files || []).length) return '';
+  if (!_projectFilesCache || _projectFilesCache.id !== _activeProjectId) {
+    try {
+      const r = await fetch('/api/ai/projects/' + _activeProjectId + '/files', { signal });
+      const d = await r.json();
+      _projectFilesCache = { id: _activeProjectId, files: d.files || [] };
+    } catch (e) {
+      if (e.name === 'AbortError') throw e;
+      return '';
+    }
+  }
+  let left = PROJECT_FILES_BUDGET;
+  const parts = [];
+  const skipped = [];
+  for (const f of _projectFilesCache.files) {
+    const text = f.text || '';
+    if (left < 500) { skipped.push(f.name); continue; }
+    const head = '### File: ' + f.name + '\n';
+    if (text.length + head.length <= left) {
+      parts.push(head + text);
+      left -= text.length + head.length;
+    } else {
+      parts.push(head + text.slice(0, left - head.length) + '\n[… cut here: the rest does not fit]');
+      left = 0;
+    }
+  }
+  let out = '\n\nProject files (reference material attached to this project; use it when it is relevant):\n\n' + parts.join('\n\n');
+  if (skipped.length) out += '\n\n(Not included, there was no room: ' + skipped.join(', ') + ')';
+  return out;
+}
+
+async function addProjectFiles(p, fileList) {
+  const files = [...fileList];
+  if (!files.length) return;
+  const errors = [];
+  let done = 0;
+  const label = (n) => { const b = document.getElementById('project-add-' + p.id); if (b) b.textContent = n; };
+  for (const f of files) {
+    label('Reading ' + (++done) + '/' + files.length + '…');
+    const fd = new FormData();
+    fd.append('file', f, f.name);
+    try {
+      const r = await fetch('/api/ai/projects/' + p.id + '/files', { method: 'POST', body: fd });
+      if (!r.ok) {
+        let why = 'HTTP ' + r.status;
+        try { const d = await r.json(); if (d.detail) why = d.detail; } catch (_) {}
+        errors.push(f.name + ': ' + why);
+      }
+    } catch (e) {
+      errors.push(f.name + ': ' + e.message);
+    }
+  }
+  _projectFilesCache = null;
+  await loadProjects();
+  if (errors.length) alert(errors.join('\n'));
+}
+
+async function deleteProjectFile(p, f) {
+  if (!confirm('Remove “' + f.name + '” from the project?')) return;
+  await fetch('/api/ai/projects/' + p.id + '/files/' + f.id + '/delete', { method: 'POST' });
+  _projectFilesCache = null;
+  await loadProjects();
 }
 
 async function loadProjects() {
@@ -201,7 +276,7 @@ function renderProjects() {
     head.className = 'session-link' + (p.id === _activeProjectId ? ' active' : '');
     head.style.textAlign = 'left';
     head.textContent = (open ? '▾ ' : '▸ ') + p.name + ' (' + p.chats.length + ')';
-    head.title = 'Chats in “' + p.name + '” — its notes are added to every chat here';
+    head.title = 'Chats in “' + p.name + '” — its notes' + ((p.files || []).length ? ' and files' : '') + ' are added to every chat here';
     head.onclick = () => {
       if (open) _openProjects.delete(p.id); else _openProjects.add(p.id);
       renderProjects();
@@ -254,6 +329,39 @@ function renderProjects() {
       item.appendChild(del2);
       el.appendChild(item);
     }
+    for (const f of (p.files || [])) {
+      const item = document.createElement('div');
+      item.className = 'session-item';
+      const label = document.createElement('span');
+      label.className = 'session-link';
+      label.style.cssText = 'cursor:default;opacity:.85';
+      label.textContent = '📄 ' + f.name;
+      label.title = f.name + ' — ' + f.size.toLocaleString() + ' characters; its text is added to every chat in this project';
+      const delF = document.createElement('button');
+      delF.className = 'session-del';
+      delF.textContent = '✕';
+      delF.title = 'Remove this file from the project';
+      delF.onclick = (e) => { e.stopPropagation(); deleteProjectFile(p, f); };
+      item.appendChild(label);
+      item.appendChild(delF);
+      el.appendChild(item);
+    }
+    const picker = document.createElement('input');
+    picker.type = 'file';
+    picker.multiple = true;
+    picker.accept = PROJECT_FILE_ACCEPT;
+    picker.style.display = 'none';
+    picker.onchange = () => { const picked = [...picker.files]; picker.value = ''; addProjectFiles(p, picked); };
+    el.appendChild(picker);
+    const addb = document.createElement('button');
+    addb.className = 'new-chat-btn';
+    addb.id = 'project-add-' + p.id;
+    addb.textContent = '+ Add files';
+    addb.title = 'Attach text files (txt, md, html, json, csv, pdf, docx …): their text is added to every chat in this project';
+    addb.onclick = () => picker.click();
+    addb.ondragover = (e) => { e.preventDefault(); };
+    addb.ondrop = (e) => { e.preventDefault(); addProjectFiles(p, e.dataTransfer.files); };
+    el.appendChild(addb);
     const nb = document.createElement('button');
     nb.className = 'new-chat-btn';
     nb.textContent = '+ New chat here';
@@ -1483,6 +1591,7 @@ async function buildChatMessagesWithContext(extraUserMsg, signal) {
 
   let presetSystem = _chatPresetSystemExtra ? WORLD_SYSTEM + '\n\n' + _chatPresetSystemExtra : WORLD_SYSTEM;
   if (_activeProjectNotes) presetSystem += '\n\nProject notes:\n' + _activeProjectNotes;
+  presetSystem += await _projectFilesContext(signal);
   return { messages: messagesWithCtx, system: presetSystem };
 }
 

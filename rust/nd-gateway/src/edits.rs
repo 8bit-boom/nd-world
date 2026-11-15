@@ -180,6 +180,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/admin/backup/restore/cancel", crate::restore::cancel),
     ("/api/ai/sessions", ai_chat_session_save),
     ("/api/ai/projects", ai_chat_project_create),
+    ("/api/ai/projects/{}/files/{}/delete", ai_project_file_delete),
     ("/api/kiy/plays", kiy_play_save),
     ("/api/characters/roll", characters_roll),
     ("/api/ai/imagegen/star", imagegen_star),
@@ -437,6 +438,7 @@ const UPLOAD_ROUTES: &[(&str, Handler)] = &[
     ("/api/ai/attachments/audio-jobs/chunk", attach_audio_job_chunk),
     ("/api/sessions/ai/audio-jobs/chunk", session_audio_job_chunk),
     ("/api/ai/attachments/upload", attach_upload),
+    ("/api/ai/projects/{}/files", ai_project_file_add),
     ("/api/ai/attachments/upload/chunk", attach_chunk),
     ("/api/maps/props/upload", props_upload),
     ("/maps/schematic/import-uvtt", import_uvtt),
@@ -8406,6 +8408,60 @@ fn ai_chat_project_delete(c: &mut Ctx, id: &str) -> Option<Response<Body>> {
     }
     // Ungroup, never delete: a project is an arrangement, the chats are content.
     c.db.execute("UPDATE chat_sessions SET project_id = NULL WHERE project_id = ?1 AND world_id = ?2", rusqlite::params![id, wid]).ok()?;
+    // its attached files are only the project's: they go with it
+    c.db.execute("DELETE FROM ai_project_files WHERE project_id = ?1", rusqlite::params![id]).ok()?;
+    json_response(&json!({"ok": true}))
+}
+
+/// `POST /api/ai/projects/<id>/files` (GM): one file in the form field "file" is read and only its text kept (docs: project_files.rs);
+/// answers `{id, name, size}`, or a 400 `{"detail": why}` the page shows as it is
+fn ai_project_file_add(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    use crate::project_files as pf;
+    if !c.p.is_gm {
+        return Some(crate::idpages::refusal(403));
+    }
+    let Some(wid) = c.world_id() else { return Some(crate::idpages::refusal(404)) };
+    let pid = *ids.first()?;
+    let known: Option<i64> = c.db.query_row("SELECT id FROM ai_projects WHERE id = ?1 AND world_id = ?2", rusqlite::params![pid, wid], |r| r.get(0)).ok();
+    if known.is_none() {
+        return Some(crate::idpages::refusal(404));
+    }
+    let Some(part) = one_file(c, "file") else { return Some(detail400("Send one file at a time, in the \"file\" field")) };
+    let part = part.clone();
+    let base = part.filename.rsplit(['/', '\\']).next().unwrap_or("").trim();
+    let name: String = if base.is_empty() { "file".to_string() } else { base.chars().take(256).collect() };
+    if part.len > pf::MAX_FILE_BYTES {
+        return Some(detail400(&format!("“{name}” is too big ({} MB at most per file)", pf::MAX_FILE_BYTES / (1024 * 1024))));
+    }
+    let bytes = c.upload.as_ref()?.read_part(&part, pf::MAX_FILE_BYTES as usize)?;
+    let (count, total): (i64, i64) = c.db.query_row("SELECT COUNT(*), COALESCE(SUM(size), 0) FROM ai_project_files WHERE project_id = ?1", rusqlite::params![pid], |r| Ok((r.get(0)?, r.get(1)?))).ok()?;
+    if count >= pf::MAX_FILES {
+        return Some(detail400(&format!("A project holds {} files at most — remove one first", pf::MAX_FILES)));
+    }
+    let text = match pf::extract(&name, &bytes) {
+        Ok(t) => t,
+        Err(why) => return Some(detail400(&why)),
+    };
+    let chars = text.chars().count() as i64;
+    if total + chars > pf::MAX_TOTAL_CHARS {
+        return Some(detail400("This project's files would be too long together — remove one first"));
+    }
+    let id = orm::insert(&c.db, "ai_project_files", &[("project_id", Sql::Integer(pid)), ("world_id", Sql::Integer(wid)), ("name", s(&name)), ("size", Sql::Integer(chars)),
+        ("text", s(&text)), ("created_at", s(&utc_now()))])?;
+    json_response(&json!({"id": id, "name": name, "size": chars}))
+}
+
+/// `POST /api/ai/projects/<id>/files/<file id>/delete` (GM)
+fn ai_project_file_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    if !c.p.is_gm {
+        return Some(crate::idpages::refusal(403));
+    }
+    let Some(wid) = c.world_id() else { return Some(crate::idpages::refusal(404)) };
+    let (pid, fid) = (*ids.first()?, *ids.get(1)?);
+    let n = c.db.execute("DELETE FROM ai_project_files WHERE id = ?1 AND project_id = ?2 AND world_id = ?3", rusqlite::params![fid, pid, wid]).ok()?;
+    if n == 0 {
+        return Some(crate::idpages::refusal(404));
+    }
     json_response(&json!({"ok": true}))
 }
 

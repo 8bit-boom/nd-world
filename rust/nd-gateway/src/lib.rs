@@ -61,6 +61,7 @@ pub mod assets;
 pub mod tags;
 pub mod net;
 pub mod pdftext;
+pub mod project_files;
 pub mod sheet_import;
 pub mod startup;
 pub mod restore;

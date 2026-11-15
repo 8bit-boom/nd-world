@@ -1886,6 +1886,25 @@ class AiProject(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class AiProjectFile(Base):
+    """A text file attached to an AI chat project (the /ai sidebar's Projects
+    section, like Unsloth's project files): its extracted text rides into the
+    system prompt of every chat in the project, next to the project's notes.
+    The gateway reads the upload (txt, md, html, json, csv, pdf, docx ...) and
+    keeps only the text here, so the original is never stored. GM-only,
+    per-world; deleted with its project. A brand-new table (create_all /
+    the gateway's schema heal covers it; no migration code needed)."""
+    __tablename__ = "ai_project_files"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("ai_projects.id"), nullable=False, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    name = Column(String(256), default="")
+    size = Column(Integer, default=0)       # characters of text kept
+    text = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class EntityVoiceHint(Base):
     """A per-NPC cached TTS delivery-style instruction ("gruff, weary old
     harbor-master, low pitch, slow pace") derived ONCE by the chat model

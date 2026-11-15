@@ -1170,6 +1170,12 @@ pub(crate) async fn fine_tunes(b: &Backend) -> Vec<FineTune> {
     rows.into_iter().map(|(id, name, gguf)| FineTune { id, name, gguf }).collect()
 }
 
+/// The context length a fine-tune is loaded with (`max_seq_length`): Studio's own default is small, and a chat carrying world lore (RAG) does not fit in it.
+/// STUDIO_LOAD_CONTEXT overrides (tokens); 16384 by default.
+fn load_context() -> i64 {
+    std::env::var("STUDIO_LOAD_CONTEXT").ok().and_then(|v| v.trim().parse::<i64>().ok()).filter(|n| (512..=1_048_576).contains(n)).unwrap_or(16384)
+}
+
 /// A chat for a fine-tuned model: Studio does not list it in /v1/models, so it is loaded first (`POST /api/inference/load`, minutes for a big
 /// one) and the id Studio serves it under is what the chat asks for. None when `requested` is not a fine-tune, or the load failed (the chat
 /// then asks for the name as given and shows Studio's own answer).
@@ -1182,7 +1188,7 @@ pub(crate) async fn load_fine_tune(b: &Backend, requested: &str) -> Option<Strin
             return Some(m.0.clone());
         }
     }
-    let req = crate::ai::backend_request(b, "POST", "/api/inference/load", Some(&json!({"model_path": found.id})))?;
+    let req = crate::ai::backend_request(b, "POST", "/api/inference/load", Some(&json!({"model_path": found.id, "max_seq_length": load_context()})))?;
     let work = async {
         use http_body_util::BodyExt;
         let resp = crate::ai::client().request(req).await.ok()?;

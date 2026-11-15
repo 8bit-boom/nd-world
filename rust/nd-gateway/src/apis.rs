@@ -30,6 +30,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/api/backups" => backups_list(&cfg, uri, headers),
         "/api/ai/sessions" => ai_chat_sessions(&cfg, uri, headers),
         "/api/ai/projects" => ai_chat_projects(&cfg, uri, headers),
+        path if id_between(path, "/api/ai/projects/", "/files").is_some() => ai_project_files(&cfg, uri, headers, id_between(path, "/api/ai/projects/", "/files")?),
         "/api/ai/imagegen/models/downloaded" => imagegen_downloaded(&cfg, uri, headers),
         "/api/ai/imagegen/models/downloaded" | "/api/perf/summary" | "/api/perf/recent" => perf_empty(&cfg, uri, headers),
         "/api/ai/imagegen/tags/sources" | "/api/ai/imagegen/tags/status" | "/api/ai/imagegen/tags" => imagegen_tags_empty(&cfg, uri, headers),
@@ -122,7 +123,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
 
 pub fn is_get(path: &str) -> bool {
     matches!(path, "/api/hover-preview/config" | "/api/audio-jobs" | "/api/entities/picker" | "/api/cockpit/workspace" | "/api/cockpit/player-board" | "/api/calendar/search" | "/calendar/event-jump" | "/api/me" | "/api/view-prefs" | "/api/dice/history" | "/api/display/state" | "/rules/download.md" | "/api/ai/imagegen/jobs" | "/api/ai/imagegen/model-templates" | "/api/ai/world-summary")
-        || id_between(path, "/pages/", "/download").is_some() || tpl_export_path(path).is_some() || export_json_path(path).is_some()
+        || id_between(path, "/api/ai/projects/", "/files").is_some() || id_between(path, "/pages/", "/download").is_some() || tpl_export_path(path).is_some() || export_json_path(path).is_some()
         || session_media_id(path).is_some() || id_between(path, "/api/ai/assist-job/", "").is_some() || id_between(path, "/api/entity/", "/preview").is_some() || id_between(path, "/entity/", "/download.md").is_some()
         || id_between(path, "/api/ai/imagegen/jobs/", "").is_some() || path.starts_with("/api/ai/ollama/upload/status/")
         || (path.starts_with("/worlds/switch/") && path.len() > "/worlds/switch/".len() && !path["/worlds/switch/".len()..].contains('/')) || vitals_id(path).is_some() || audio_job_id(path).is_some() || pack_world(path).is_some()
@@ -3541,14 +3542,37 @@ fn ai_chat_projects(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Resp
         let pid = c.get("project_id").and_then(|v| v.as_i64())?;
         grouped.entry(pid).or_default().push(json!({"id": c.get("id"), "title": c.get("title")}));
     }
+    let files = rows_of(&db, "SELECT id, project_id, name, size FROM ai_project_files WHERE world_id = ?1 ORDER BY id", &[&wid])?;
+    let mut files_of: std::collections::HashMap<i64, Vec<Value>> = std::collections::HashMap::new();
+    for f in &files {
+        let pid = f.get("project_id").and_then(|v| v.as_i64())?;
+        files_of.entry(pid).or_default().push(json!({"id": f.get("id"), "name": f.get("name"), "size": f.get("size").and_then(|v| v.as_i64()).unwrap_or(0)}));
+    }
     let list: Vec<Value> = projects
         .iter()
         .map(|r| {
             let pid = r.get("id").and_then(|v| v.as_i64())?;
-            Some(json!({"id": r.get("id"), "name": r.get("name"), "notes": r.get("notes"), "chats": grouped.get(&pid).cloned().unwrap_or_default()}))
+            Some(json!({"id": r.get("id"), "name": r.get("name"), "notes": r.get("notes"), "chats": grouped.get(&pid).cloned().unwrap_or_default(),
+                "files": files_of.get(&pid).cloned().unwrap_or_default()}))
         })
         .collect::<Option<Vec<_>>>()?;
     crate::edits::json_response(&json!({"projects": list}))
+}
+
+/// `GET /api/ai/projects/<id>/files`: the project's attached files with their text, oldest first. GM only. (Gateway-only: the Python app has no project files.)
+fn ai_project_files(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    let Some(wid) = world_id_of(&p) else { return Some(crate::idpages::refusal(404)) };
+    let known = rows_of(&db, "SELECT id FROM ai_projects WHERE id = ?1 AND world_id = ?2", &[&id, &wid])?;
+    if known.is_empty() {
+        return Some(crate::idpages::refusal(404));
+    }
+    let files = rows_of(&db, "SELECT id, name, size, text FROM ai_project_files WHERE project_id = ?1 AND world_id = ?2 ORDER BY id", &[&id, &wid])?;
+    let list: Vec<Value> = files.iter().map(|f| json!({"id": f.get("id"), "name": f.get("name"), "size": f.get("size"), "text": f.get("text")})).collect();
+    crate::edits::json_response(&json!({"files": list}))
 }
 
 /// `GET /api/ai/recap-instructions`: the world's standing recap instructions. GM only.

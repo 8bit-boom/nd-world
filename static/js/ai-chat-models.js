@@ -168,8 +168,11 @@ function mpRender(models, available) {
 
     const sdot = document.createElement('span');
     sdot.id = 'mp-dot-' + btoa(m.id).replace(/[^a-z0-9]/gi,'');
-    sdot.style.cssText = 'width:9px;height:9px;border-radius:50%;flex-shrink:0;margin-top:.35rem;background:' + (m.loaded ? '#4f4' : '#444');
-    sdot.title = m.loaded ? 'Downloaded (see 🧠 Resident in Memory above for what\'s actually loaded)' : 'Not downloaded';
+    // A model fine-tuned in Studio lives on Studio's disk (Studio loads it when a chat asks for it): it counts as downloaded, and there is nothing to pull
+    const onDisk = !!(m.loaded || m.fine_tuned);
+    sdot.style.cssText = 'width:9px;height:9px;border-radius:50%;flex-shrink:0;margin-top:.35rem;background:' + (onDisk ? '#4f4' : '#444');
+    sdot.title = m.fine_tuned ? 'Fine-tuned in Unsloth Studio (on its disk; loaded into memory when a chat uses it)'
+      : (m.loaded ? 'Downloaded (see 🧠 Resident in Memory above for what\'s actually loaded)' : 'Not downloaded');
 
     const info = document.createElement('div');
     info.style.cssText = 'flex:1;min-width:0';
@@ -210,7 +213,9 @@ function mpRender(models, available) {
     }
 
     const pullKey = 'mp-pull-' + btoa(m.id).replace(/[^a-z0-9]/gi,'');
-    if (!m.loaded) {
+    if (m.fine_tuned) {
+      // no Download / Re-download / Remove: Studio owns these files (delete them in Studio)
+    } else if (!m.loaded) {
       const pullBtn = document.createElement('button');
       pullBtn.className = 'ig-btn';
       pullBtn.id = pullKey;
@@ -228,16 +233,18 @@ function mpRender(models, available) {
       actions.appendChild(repullBtn);
     }
 
-    const delBtn = document.createElement('button');
-    delBtn.className = 'ig-btn';
-    delBtn.style.cssText = 'border-color:#555;color:#888';
-    delBtn.textContent = '✕';
-    delBtn.title = 'Remove model';
-    delBtn.onclick = () => mpDeleteModel(m.id, m.loaded, card);
-    actions.appendChild(delBtn);
+    if (!m.fine_tuned) {
+      const delBtn = document.createElement('button');
+      delBtn.className = 'ig-btn';
+      delBtn.style.cssText = 'border-color:#555;color:#888';
+      delBtn.textContent = '✕';
+      delBtn.title = 'Remove model';
+      delBtn.onclick = () => mpDeleteModel(m.id, m.loaded, card);
+      actions.appendChild(delBtn);
+    }
 
     const benchKey = 'mp-bench-' + btoa(m.id).replace(/[^a-z0-9]/gi,'');
-    if (m.loaded) {
+    if (onDisk) {
       const benchBtn = document.createElement('button');
       benchBtn.className = 'ig-btn';
       benchBtn.id = benchKey;

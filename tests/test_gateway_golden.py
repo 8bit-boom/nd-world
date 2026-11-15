@@ -10176,6 +10176,53 @@ def test_ai_chat_projects_are_pythons(client, seed):
         proc.terminate()
 
 
+def test_project_files_keep_only_the_text_and_go_with_their_project(client, seed):
+    """Text files attached to a chat project (gateway only): txt / md are kept as written, HTML is reduced to its readable text, a picture or a binary
+    is refused with a reason, the list carries name + size, GET .../files the text, a player 403s, a file is removed on its own, and deleting the
+    project deletes its files."""
+    import sqlite3
+    from .conftest import PLAYER_PASSWORD
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        pid = g.post("/api/ai/projects", json={"name": "Files"}).json()["id"]
+        up = lambda name, data, to=pid: g.post(f"/api/ai/projects/{to}/files", files={"file": (name, data)})  # noqa: E731
+        md = up("notes.md", b"# Harbor\r\n\r\n\r\nSmugglers meet at dusk.  \r\n")
+        assert md.status_code == 200 and md.json()["name"] == "notes.md" and md.json()["size"] == len("# Harbor\n\nSmugglers meet at dusk."), md.text
+        html = up("page.html", b"<h1>Docks &amp; Piers</h1><p>Two<br>lines</p><script>x()</script><style>p{}</style>")
+        assert html.status_code == 200, html.text
+        for name, data, why in (("pic.png", b"\x89PNG\r\n", "not a text file"), ("blob.bin", b"a\x00b", "does not look like a text file"), ("empty.txt", b" \n ", "no text")):
+            r = up(name, data)
+            assert r.status_code == 400 and why in r.json()["detail"], (name, r.text)
+        assert up("a.txt", b"x", to=99999999).status_code == 404
+        one = g.get("/api/ai/projects").json()["projects"]
+        mine = [p for p in one if p["id"] == pid][0]
+        assert [(f["name"], f["size"]) for f in mine["files"]] == [("notes.md", md.json()["size"]), ("page.html", html.json()["size"])]
+        assert "text" not in mine["files"][0]
+        full = g.get(f"/api/ai/projects/{pid}/files").json()["files"]
+        assert full[0]["text"] == "# Harbor\n\nSmugglers meet at dusk."
+        assert full[1]["text"].startswith("Docks & Piers") and "x()" not in full[1]["text"] and "p{}" not in full[1]["text"] and "Two\nlines" in full[1]["text"]
+        assert g.get("/api/ai/projects/99999999/files").status_code == 404
+        # a player can neither read, add nor remove
+        pl = httpx.Client(base_url=url, timeout=60, follow_redirects=False)
+        assert pl.post("/login", data={"email": seed.player_a.email, "password": PLAYER_PASSWORD, "next": "/"}).status_code in (302, 303)
+        pl.cookies.set("active_world", seed.world_a.slug)
+        assert pl.get(f"/api/ai/projects/{pid}/files").status_code in (403, 400, 501)
+        assert pl.post(f"/api/ai/projects/{pid}/files", files={"file": ("a.txt", b"x")}).status_code in (403, 400, 501)
+        assert pl.post(f"/api/ai/projects/{pid}/files/{full[0]['id']}/delete").status_code in (403, 400, 501)
+        # one file on its own, then the rest with the project
+        assert g.post(f"/api/ai/projects/{pid}/files/{full[0]['id']}/delete").json() == {"ok": True}
+        assert g.post(f"/api/ai/projects/{pid}/files/{full[0]['id']}/delete").status_code == 404
+        assert [f["name"] for f in g.get(f"/api/ai/projects/{pid}/files").json()["files"]] == ["page.html"]
+        assert g.delete(f"/api/ai/projects/{pid}").json() == {"ok": True}
+        db = sqlite3.connect(os.environ["DB_PATH"])
+        try:
+            assert db.execute("SELECT COUNT(*) FROM ai_project_files WHERE project_id = ?", (pid,)).fetchone()[0] == 0
+        finally:
+            db.close()
+    finally:
+        proc.terminate()
+
+
 def test_ai_status_dot_on_studio_is_pythons(client, seed):
     """POST /api/ai/status (the AI dot on every page) with a stand-in Studio: ok with the loaded names, unavailable when Studio errors. Python
     caches its answer for 15 s, so each case waits until its cache has turned over before comparing."""
