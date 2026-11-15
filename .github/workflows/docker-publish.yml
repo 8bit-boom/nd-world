@@ -30,83 +30,8 @@ jobs:
       - name: Run tests
         run: python -m pytest tests/ -q -n auto --dist loadgroup
 
-  build-and-push:
-    needs: test
-    # Only push on a real merge to main (or a manual dispatch) — a PR from a
-    # fork doesn't have package-write access to GITHUB_TOKEN, and PR code
-    # shouldn't be published as :latest before it's reviewed either way. The
-    # test job above still runs for PRs, so a broken build is still caught.
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - uses: actions/checkout@v4
-
-      # Required for the cache-from/cache-to: type=gha below — that cache
-      # exporter only works on the "docker-container" buildx driver, not
-      # the plain "docker" driver build-push-action falls back to without
-      # this step (which fails outright with "buildx failed with: ...
-      # build-cache-backends" the moment a step tries to use it).
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # :latest-denoise was the whisper.cpp "speech enhancement" variant. That variant is gone, but
-      # deployments (TrueNAS apps, Watchtower) that were pinned to it would otherwise stay on the last image
-      # built under that name forever, so the tag now follows :latest. Safe to drop once nobody uses it.
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:latest
-            ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:${{ github.sha }}
-            ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:latest-denoise
-          build-args: |
-            GIT_SHA=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # How big the image is, layer by layer (docs/LEFTOVERS_PLAN.md, step 1): written to the job summary and the log on every build, so a
-      # growing layer (ffmpeg, the pip install, static/, the prebuilt map tiles) is visible and decisions like a slimmer ffmpeg rest on numbers.
-      - name: Report image size
-        env:
-          IMAGE: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:${{ github.sha }}
-        run: |
-          docker pull -q "$IMAGE"
-          size=$(docker image inspect -f '{{.Size}}' "$IMAGE")
-          {
-            echo "### Image size: $((size / 1000000)) MB (uncompressed)"
-            echo
-            echo "| Layer size | Created by |"
-            echo "|---:|---|"
-            docker history --no-trunc --format '{{.Size}}\t{{.CreatedBy}}' "$IMAGE" | grep -v '^0B' \
-              | awk -F'\t' '{ c=$2; gsub(/\|/, "\\|", c); if (length(c) > 160) c = substr(c, 1, 160) "..."; printf "| %s | `%s` |\n", $1, c }'
-          } | tee -a "$GITHUB_STEP_SUMMARY"
-
-      # The image's own ffmpeg (a pinned static build - see the Dockerfile) runs and has the encoders the app uses.
-      - name: Check ffmpeg in the image
-        env:
-          IMAGE: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:${{ github.sha }}
-        run: |
-          docker run --rm "$IMAGE" ffprobe -version | head -1
-          enc=$(docker run --rm "$IMAGE" ffmpeg -hide_banner -encoders)
-          for e in libsvtav1 libopus libmp3lame libx264; do echo "$enc" | grep -q " $e " || { echo "missing encoder $e"; exit 1; }; done
-          docker run --rm -e DB_PATH=/tmp/smoke.db -e SECRET_KEY=ci-smoke-check-not-a-real-secret-0000 "$IMAGE" python -c "import app.main" && echo "app imports"
-
-  # The Python-free image (Dockerfile.gateway, docs/PYTHON_FREE_IMAGE_BUILD.md): the Rust gateway alone, no Python at run time. Published under its OWN
-  # package name (<repo>-gateway), never as a tag of the normal image, so a deployment that follows :latest of the normal image (Watchtower on TrueNAS)
-  # is not moved onto it by accident - pointing an app at this one is a deliberate choice.
+  # The image (Dockerfile, docs/PYTHON_FREE_IMAGE_BUILD.md): the Rust gateway alone, no Python at run time. Published as <repo>-gateway (what a Watchtower
+  # on TrueNAS follows) and, since the hybrid image was retired, also as <repo>, so a deployment still following that name moves onto this build.
   build-and-push-gateway:
     needs: test
     if: github.event_name != 'pull_request'
@@ -135,7 +60,6 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.gateway
           load: true
           tags: ${{ env.IMAGE_NAME }}:${{ github.sha }}
           build-args: |
@@ -179,6 +103,13 @@ jobs:
 
       - name: Push
         run: |
+          OLD_NAME=ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}
           docker tag "$IMAGE_NAME:${{ github.sha }}" "$IMAGE_NAME:latest"
+          docker tag "$IMAGE_NAME:${{ github.sha }}" "$OLD_NAME:latest"
+          docker tag "$IMAGE_NAME:${{ github.sha }}" "$OLD_NAME:${{ github.sha }}"
+          docker tag "$IMAGE_NAME:${{ github.sha }}" "$OLD_NAME:latest-denoise"
           docker push "$IMAGE_NAME:${{ github.sha }}"
           docker push "$IMAGE_NAME:latest"
+          docker push "$OLD_NAME:${{ github.sha }}"
+          docker push "$OLD_NAME:latest"
+          docker push "$OLD_NAME:latest-denoise"

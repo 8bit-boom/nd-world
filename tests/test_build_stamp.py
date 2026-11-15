@@ -40,12 +40,12 @@ def test_the_publish_workflow_bakes_the_commit_into_the_image():
     assert "ARG GIT_SHA" in dockerfile and "ENV ND_BUILD=${GIT_SHA}" in dockerfile
     assert "GIT_SHA=${{ github.sha }}" in workflow and "build-args:" in workflow
     # after the dependency layers, so a new commit does not rebuild them
-    assert dockerfile.index("ARG GIT_SHA") > dockerfile.index("pip install")
+    assert dockerfile.index("ARG GIT_SHA") > dockerfile.index("COPY --from=gateway /nd-gateway")
 
 
 def test_the_retired_denoise_tag_follows_latest_so_pinned_deployments_keep_updating():
     workflow = (ROOT / ".github/workflows/docker-publish.yml").read_text()
-    assert ":latest-denoise" in workflow and ":latest\n" in workflow
+    assert '"$OLD_NAME:latest-denoise"' in workflow and 'docker push "$OLD_NAME:latest"' in workflow
 
 
 @pytest.mark.skipif(bool(os.environ.get("ND_TEST_BASE_URL")), reason="sets the environment of the app in this process; the gateway pair has its own (the Python-free golden test covers the gateway)")

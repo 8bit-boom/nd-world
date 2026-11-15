@@ -329,11 +329,6 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).parent.parent
 
 
-def test_dockerfile_sets_a_bounded_graceful_shutdown_timeout():
-    dockerfile = (_REPO_ROOT / "Dockerfile").read_text()
-    assert "--timeout-graceful-shutdown" in dockerfile
-
-
 def test_compose_files_set_a_stop_grace_period_for_the_world_service():
     for name in ("docker-compose.yml", "truenas-compose.yml"):
         text = (_REPO_ROOT / name).read_text()

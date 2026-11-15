@@ -47,7 +47,7 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 - [Install on Linux](#install-on-linux)
 - [Install on Windows](#install-on-windows)
 - [Install on TrueNAS SCALE](#install-on-truenas-scale)
-- [Images and run modes (Hybrid, Rust-only)](#images-and-run-modes-hybrid-rust-only)
+- [The image](#the-image)
 - [Environment Variables](#environment-variables)
 - [AI Setup](#ai-setup)
 - [Data & Backups](#data--backups)
@@ -432,26 +432,18 @@ ComfyUI-Manager manually if you still run the legacy `swarmui` profile.
 
 ---
 
-## Images and run modes (Hybrid, Rust-only)
+## The image
 
-N&D World is a Rust gateway (`rust/nd-gateway`) in front of a Python (FastAPI) app. The gateway answers most pages and APIs itself, byte-for-byte as the Python app does; the
-Python app stays as the reference the test suite compares against. Two images are published from `main`:
+N&D World is one Rust program (`rust/nd-gateway`) that serves every page and API itself: no Python, no second process, about 26 MiB of memory at rest. It is built from
+`Dockerfile` and published from `main` as `ghcr.io/8bit-boom/nd-world-gateway:latest` (and, so existing installs keep updating, as `ghcr.io/8bit-boom/nd-world:latest`).
+The earlier hybrid image (Python behind the gateway) is retired; the data folder and format are unchanged, so a backup and a new image line are all a switch takes.
 
-| Image | Mode | What it is |
-|-------|------|------------|
-| `ghcr.io/8bit-boom/nd-world:latest` | **Hybrid (Rust + Python)** | The gateway answers what it can; anything else is handed to the Python app in the same container. Every feature, and a gap in the gateway cannot take a page down. |
-| `ghcr.io/8bit-boom/nd-world-gateway:latest` | **Rust (no Python)** | The gateway only (`ND_PYTHON_FREE=1`): about 26 MiB of memory at rest, a smaller image. A request it cannot answer shows "Not available here" (a page) or a generic 400 (a save). |
+Not served: the legacy Ollama routes (`/api/ai/pull`, `/api/ai/test-chat`) and the real SwarmUI/ComfyUI back ends answer 501 with the reason; use Unsloth Studio (set `UNSLOTH_API_KEY`).
+A request the program cannot answer shows "Not available here" (a page) or a generic 400 (a save); `ND_DECLINE_TRACE=1` prints each as a `DECLINE <method> <path>` line in the container log.
 
-Both read the same data folder and format, so you can switch by changing the image line (take a backup first). Not served by the Rust-only image: the legacy Ollama routes
-(`/api/ai/pull`, `/api/ai/test-chat`) and FastAPI's `/docs`, `/redoc`, `/openapi.json`.
-
-**Which one is running?** Every page's footer says, for example, `build b9eb9f0 · Hybrid (Rust + Python)` (or `Rust (no Python)`, or `Python` for the Python app alone, such as a
-checkout or the Android app). The same appears in Settings → System, and `GET /health` returns `{"status":"ok","build":"b9eb9f0","mode":"hybrid"}`. `dev` as the build means it is not a published image.
-
-**Trying Rust-only safely:** run it as a second service on another port with a **copy** of the data folder, and `ND_DECLINE_TRACE=1`; every request it cannot answer is printed as a
-`DECLINE <method> <path>` line in the container log (`docker logs <container> 2>&1 | grep -c DECLINE`). A month with none is the bar for making it your main instance.
-`truenas-compose.yml` has a commented `world-pf` example. More: [docs/HYBRID_VS_RUST_ONLY.md](docs/HYBRID_VS_RUST_ONLY.md), [docs/FORK_STATUS.md](docs/FORK_STATUS.md),
-[docs/RUST_SWITCH_OFF.md](docs/RUST_SWITCH_OFF.md).
+**Which build is running?** Every page's footer says, for example, `build b9eb9f0 · Rust (no Python)`; the same appears in Settings → System, and `GET /health` returns
+`{"status":"ok","build":"b9eb9f0","mode":"rust"}`. `dev` as the build means it is not a published image. More: [docs/TRIM_PLAN.md](docs/TRIM_PLAN.md),
+[docs/FORK_STATUS.md](docs/FORK_STATUS.md), [docs/RUST_SWITCH_OFF.md](docs/RUST_SWITCH_OFF.md).
 
 ---
 

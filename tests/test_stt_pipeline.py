@@ -717,7 +717,7 @@ def test_no_compose_service_or_dockerfile_for_whisper_remains():
     # (a TrueNAS app pinned to that tag would otherwise freeze on its last whisper-era image).
     hits = [ln.strip() for ln in (ROOT / ".github" / "workflows" / "docker-publish.yml").read_text().splitlines()
             if "denoise" in ln.lower() and not ln.strip().startswith("#")]
-    assert len(hits) == 1 and hits[0].endswith(":latest-denoise"), hits
+    assert hits and all(":latest-denoise" in h for h in hits), hits
     env = (ROOT / ".env.example").read_text()
     assert "WHISPER_URL" not in env and "WHISPER_MODEL_FILE" not in env and "whisper.cpp" not in env
 

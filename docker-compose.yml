@@ -9,13 +9,9 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
     restart: unless-stopped
-    # Budget for a clean shutdown to checkpoint in-flight background jobs
-    # (see app/job_shutdown.py) before Docker sends SIGKILL: up to ~10s for
-    # uvicorn's own connection drain (Dockerfile's --timeout-graceful-shutdown)
-    # + up to ND_JOB_STOP_GRACE_SECONDS (5s default, see .env.example) for a
-    # job to reach a checkpoint boundary + a few seconds for cancelled
-    # tasks' own cleanup to run and commit. The default 10s stop_grace_period
-    # is NOT enough once the Dockerfile flag above is in place.
+    # Budget for a clean shutdown: the gateway lets in-flight background jobs reach a checkpoint
+    # (ND_JOB_STOP_GRACE_SECONDS, 5s default, see .env.example) before Docker sends SIGKILL.
+    # The default 10s stop_grace_period is too tight for that.
     stop_grace_period: 30s
     ports:
       - "${APP_PORT:-8080}:8000"
