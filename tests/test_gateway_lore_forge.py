@@ -168,7 +168,9 @@ def test_lore_forge_install_train_export_use_and_delete(client, seed, tmp_path):
         assert gm.post("/lore-forge/runs/../../etc/export").status_code in (400, 404)
 
         # one click out: everything under lore-forge/ goes, the hub copy stays
-        assert gm.post("/lore-forge/uninstall").status_code == 200
+        # (the status shows the model before the job's running flag clears, so a 409 "stop the running job" for a moment is the job finishing)
+        gone = _wait_for(lambda: (lambda r: r if r.status_code != 409 else None)(gm.post("/lore-forge/uninstall")), "the last job to finish")
+        assert gone.status_code == 200
         assert not (Path(os.environ["DB_PATH"]).parent / "lore-forge").exists()
         assert gm.get("/lore-forge/status").json()["installed"] is False
     finally:
