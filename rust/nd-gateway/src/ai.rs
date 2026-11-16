@@ -3533,11 +3533,30 @@ fn start_image_job(id: i64) {
 }
 
 /// A Studio API call (`unsloth_extras._request`): Ok(json), Err(Some((status, message))) for an error, Err(None) for a missing route
+/// How long one Studio call may take before the job gives up on it. A picture is the long one (UNSLOTH_IMAGE_TIMEOUT_SECONDS, 20 minutes); the rest are quick
+/// reads and loads that are polled. Without a limit a stalled Studio holds the AI slot for ever and every later job waits behind it as "Queued".
+fn studio_timeout(path: &str) -> Duration {
+    let secs = if path.ends_with("/images/generate") {
+        env("UNSLOTH_IMAGE_TIMEOUT_SECONDS").parse::<f64>().ok().filter(|s| *s > 0.0).unwrap_or(1200.0)
+    } else {
+        300.0
+    };
+    Duration::from_secs_f64(secs)
+}
+
 async fn studio(b: &Backend, method: &str, path: &str, body: Option<&Value>) -> Result<Value, Option<(u16, String)>> {
     let req = backend_request(b, method, path, body).ok_or(Some((503, "Unsloth Studio unreachable: request".into())))?;
-    let resp = client().request(req).await.map_err(|e| Some((503, format!("Unsloth Studio unreachable: ConnectError: {e}"))))?;
-    let status = resp.status().as_u16();
-    let bytes = resp.into_body().collect().await.map_err(|e| Some((503, format!("Unsloth Studio unreachable: ReadError: {e}"))))?.to_bytes();
+    let limit = studio_timeout(path);
+    let call = async {
+        let resp = client().request(req).await.map_err(|e| Some((503, format!("Unsloth Studio unreachable: ConnectError: {e}"))))?;
+        let status = resp.status().as_u16();
+        let bytes = resp.into_body().collect().await.map_err(|e| Some((503, format!("Unsloth Studio unreachable: ReadError: {e}"))))?.to_bytes();
+        Ok::<_, Option<(u16, String)>>((status, bytes))
+    };
+    let (status, bytes) = match tokio::time::timeout(limit, call).await {
+        Ok(r) => r?,
+        Err(_) => return Err(Some((504, format!("Unsloth Studio did not answer {path} within {} s — it may be busy (is another picture or model load running in Studio?) or stuck; try again, or restart Studio", limit.as_secs())))),
+    };
     if status == 404 {
         let missing = match serde_json::from_slice::<Value>(&bytes) {
             Ok(Value::Object(o)) if !o.is_empty() => {
