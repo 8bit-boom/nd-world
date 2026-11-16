@@ -38,6 +38,8 @@ class _Fake:
         self.embed_fail = False
         self.loras = []
         self.lora_gets = []
+        self.load_fail_first = 0        # loads to refuse (500) before one succeeds
+        self.load_context = 4096        # the context window a load reports
         self.reject_thinking = None     # an error message: a 400 for any request asking for Thinking
         fake = self
 
@@ -131,8 +133,11 @@ class _Fake:
                     self.wfile.write(body)
                     return
                 if self.path == "/api/inference/load":
-                    body = json.dumps({"status": "loaded", "model": "served-ft", "display_name": "ft", "inference": {}}).encode()
-                    self.send_response(200)
+                    refuse = fake.load_fail_first > 0
+                    fake.load_fail_first = max(0, fake.load_fail_first - 1)
+                    body = json.dumps({"detail": "out of memory"} if refuse else
+                                      {"status": "loaded", "model": "served-ft", "display_name": "ft", "inference": {}, "context_length": fake.load_context}).encode()
+                    self.send_response(500 if refuse else 200)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
@@ -3937,3 +3942,15 @@ def test_fine_tuned_models_are_listed_and_loaded_before_a_chat(client, seed, stu
     bodies = [q["body"] for q in studio.requests]
     assert any(b.get("model_path") == "Run_A_17" for b in bodies), bodies
     assert any(b.get("model") == "served-ft" and b.get("messages") for b in bodies), bodies
+    # a roomy window is asked for (world lore rides in the chat) and the one Studio gave is reported, with a warning when it is small
+    loads = [b for b in bodies if b.get("model_path") == "Run_A_17"]
+    assert loads[0].get("max_seq_length") == 16384, loads
+    assert "Loaded served-ft in Unsloth Studio with a 4096-token context window." in r.text and "small" in r.text, r.text[:600]
+    # Studio refusing that window falls back to its own sizing (no max_seq_length)
+    studio.load_fail_first = 1
+    studio.requests.clear()
+    time.sleep(0.1)
+    r = g.post("/api/ai/stream", json={"messages": [{"role": "user", "content": "hello"}], "system": "", "model": "/opt/unsloth-studio/exports/Run_A_17-GGUF/m.Q4_K_M.gguf", "surface": "chat", "think": False})
+    assert r.status_code == 200 and "Hi" in r.text, r.text[:300]
+    loads = [q["body"] for q in studio.requests if q["body"].get("model_path")]
+    assert [("max_seq_length" in b) for b in loads] == [True, False], loads

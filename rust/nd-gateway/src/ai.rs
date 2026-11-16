@@ -586,7 +586,14 @@ fn run(job: Job) -> Response<Body> {
             }
         }.await;
         let (model, note) = match fine {
-            Some(served) => (served, None),
+            Some((served, window)) => {
+                // what Studio gave the model it just loaded: a window too small for the lore a chat carries is what makes a fine-tune look as if it has no RAG
+                let note = window.map(|w| {
+                    let small = if w < 8192 { " That is small: the world lore in a chat may not fit. Raise it with STUDIO_LOAD_CONTEXT, or load the model in Studio with a larger context." } else { "" };
+                    format!("Loaded {served} in Unsloth Studio with a {w}-token context window.{small}")
+                });
+                (served, note)
+            }
             None => resolve_model(&backend, &requested).await,
         };
         if let Some(n) = note {

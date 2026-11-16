@@ -1170,32 +1170,46 @@ pub(crate) async fn fine_tunes(b: &Backend) -> Vec<FineTune> {
     rows.into_iter().map(|(id, name, gguf)| FineTune { id, name, gguf }).collect()
 }
 
-/// The context length a fine-tune is loaded with (`max_seq_length`): Studio's own default is small, and a chat carrying world lore (RAG) does not fit in it.
-/// STUDIO_LOAD_CONTEXT overrides (tokens); 16384 by default.
+/// The context length a fine-tune is first asked to be loaded with (`max_seq_length`; 0 lets Studio size the window itself). A chat that carries world lore
+/// (RAG) needs a roomy one, so 16384 is tried first and Studio's own sizing is the fallback when that load fails. STUDIO_LOAD_CONTEXT overrides (tokens; 0 = always Studio's sizing).
 fn load_context() -> i64 {
-    std::env::var("STUDIO_LOAD_CONTEXT").ok().and_then(|v| v.trim().parse::<i64>().ok()).filter(|n| (512..=1_048_576).contains(n)).unwrap_or(16384)
+    std::env::var("STUDIO_LOAD_CONTEXT").ok().and_then(|v| v.trim().parse::<i64>().ok()).filter(|n| *n == 0 || (512..=1_048_576).contains(n)).unwrap_or(16384)
 }
 
 /// A chat for a fine-tuned model: Studio does not list it in /v1/models, so it is loaded first (`POST /api/inference/load`, minutes for a big
-/// one) and the id Studio serves it under is what the chat asks for. None when `requested` is not a fine-tune, or the load failed (the chat
-/// then asks for the name as given and shows Studio's own answer).
-pub(crate) async fn load_fine_tune(b: &Backend, requested: &str) -> Option<String> {
+/// one) and the id Studio serves it under is what the chat asks for, with the context window Studio gave it when it was loaded just now. None when
+/// `requested` is not a fine-tune, or every load attempt failed (the chat then asks for the name as given and shows Studio's own answer).
+pub(crate) async fn load_fine_tune(b: &Backend, requested: &str) -> Option<(String, Option<i64>)> {
     let ft = fine_tunes(b).await;
     let found = ft.iter().find(|f| f.id == requested || f.name == requested)?;
     // already the loaded one?
     if let Some(listed) = v1_models(b).await {
         if let Some(m) = listed.iter().find(|m| m.1 && (m.0 == found.id || m.0 == found.name)) {
-            return Some(m.0.clone());
+            return Some((m.0.clone(), None));
         }
     }
-    let req = crate::ai::backend_request(b, "POST", "/api/inference/load", Some(&json!({"model_path": found.id, "max_seq_length": load_context()})))?;
-    let work = async {
-        use http_body_util::BodyExt;
-        let resp = crate::ai::client().request(req).await.ok()?;
-        let status = resp.status().as_u16();
-        let bytes = resp.into_body().collect().await.ok()?.to_bytes();
-        (status < 400).then(|| serde_json::from_slice::<Value>(&bytes).ok()).flatten()
-    };
-    let v = tokio::time::timeout(std::time::Duration::from_secs(900), work).await.ok().flatten()?;
-    v.get("model").and_then(|m| m.as_str()).filter(|m| !m.is_empty()).map(str::to_string)
+    let first = load_context();
+    let mut attempts = vec![first];
+    if first != 0 {
+        attempts.push(0);
+    }
+    for ctx in attempts {
+        let mut body = json!({"model_path": found.id});
+        if ctx != 0 {
+            body["max_seq_length"] = json!(ctx);
+        }
+        let Some(req) = crate::ai::backend_request(b, "POST", "/api/inference/load", Some(&body)) else { continue };
+        let work = async {
+            use http_body_util::BodyExt;
+            let resp = crate::ai::client().request(req).await.ok()?;
+            let status = resp.status().as_u16();
+            let bytes = resp.into_body().collect().await.ok()?.to_bytes();
+            (status < 400).then(|| serde_json::from_slice::<Value>(&bytes).ok()).flatten()
+        };
+        let Some(v) = tokio::time::timeout(std::time::Duration::from_secs(900), work).await.ok().flatten() else { continue };
+        let Some(served) = v.get("model").and_then(|m| m.as_str()).filter(|m| !m.is_empty()).map(str::to_string) else { continue };
+        let window = v.get("context_length").and_then(|c| c.as_i64()).filter(|c| *c > 0);
+        return Some((served, window));
+    }
+    None
 }
