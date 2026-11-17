@@ -10176,6 +10176,39 @@ def test_ai_chat_projects_are_pythons(client, seed):
         proc.terminate()
 
 
+def test_kind_zip_download_has_every_entity_without_python_even_with_accented_names(client, seed):
+    """'Download all as .md' (and the picked-ones zip) in the Python-free image: an entity whose name has accents or other non-ASCII letters is in the zip
+    like any other (its file name keeps the letters), instead of the whole download being refused."""
+    import io
+    import zipfile
+    from app.database import SessionLocal
+    from app.models import Entity
+    db = SessionLocal()
+    try:
+        ids = []
+        for name, body in (("Plain Guy", "Plain body."), ("Zoltán Őri", "Accented body é."), ("山田 太郎", "Kanji body.")):
+            e = Entity(world_id=seed.world_a.id, kind="character", name=name, summary="s", body=body, visible_to_players=True)
+            db.add(e)
+            db.flush()
+            ids.append(e.id)
+        db.commit()
+    finally:
+        db.close()
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        r = g.get("/kind/character/download.zip")
+        assert r.status_code == 200 and r.headers["content-type"] == "application/zip", r.text[:200]
+        z = zipfile.ZipFile(io.BytesIO(r.content))
+        names = z.namelist()
+        assert f"Plain Guy-{ids[0]}.md" in names and f"Zoltán Őri-{ids[1]}.md" in names and f"山田 太郎-{ids[2]}.md" in names, names
+        assert "# Zoltán Őri" in z.read(f"Zoltán Őri-{ids[1]}.md").decode() and "Accented body é." in z.read(f"Zoltán Őri-{ids[1]}.md").decode()
+        r = g.get(f"/kind/character/download-selected.zip?id={ids[1]}&id={ids[2]}")
+        assert r.status_code == 200
+        assert sorted(zipfile.ZipFile(io.BytesIO(r.content)).namelist()) == sorted([f"Zoltán Őri-{ids[1]}.md", f"山田 太郎-{ids[2]}.md"])
+    finally:
+        proc.terminate()
+
+
 def test_project_files_keep_only_the_text_and_go_with_their_project(client, seed):
     """Text files attached to a chat project (gateway only): txt / md are kept as written, HTML is reduced to its readable text, a picture or a binary
     is refused with a reason, the list carries name + size, GET .../files the text, a player 403s, a file is removed on its own, and deleting the

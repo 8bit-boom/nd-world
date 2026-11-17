@@ -2606,12 +2606,22 @@ pub(crate) fn kind_download_zip(cfg: &Config, uri: &Uri, headers: &HeaderMap, ki
         for e in &rows {
             let id = e.get("id")?.as_i64()?;
             let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("entity");
-            if !name.is_ascii() {
-                return None; // the file name's isalnum() beyond ASCII: Python's
+            if !name.is_ascii() && !crate::config::python_free() {
+                return None; // the file name's isalnum() beyond ASCII: Python's (without it, accented names are ordinary: Rust's rules)
             }
-            let fname: String = name.chars().filter(|c| c.is_ascii_alphanumeric() || " -_".contains(*c)).collect();
+            let fname: String = name.chars().filter(|c| c.is_alphanumeric() || " -_".contains(*c)).collect();
             let fname = if fname.is_empty() { "entity".to_string() } else { fname };
-            let text = entity_markdown(&db, &p, e, &w, id)?;
+            let text = match entity_markdown(&db, &p, e, &w, id) {
+                Some(t) => t,
+                // one entity the strict writer will not take (an odd stored value) must not sink the whole download: a GM gets its plain text,
+                // a player (whose secrets the strict writer is there to strip) gets no file for it
+                None if crate::config::python_free() && p.is_gm => {
+                    let field = |k: &str| e.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    format!("# {name}\n\n{}\n", field("body"))
+                }
+                None if crate::config::python_free() => continue,
+                None => return None,
+            };
             zf.start_file(format!("{fname}-{id}.md"), opts).ok()?;
             std::io::Write::write_all(&mut zf, text.as_bytes()).ok()?;
         }
@@ -2619,9 +2629,11 @@ pub(crate) fn kind_download_zip(cfg: &Config, uri: &Uri, headers: &HeaderMap, ki
     }
     let slug = w.get("slug").and_then(|v| v.as_str())?;
     let filename = if selected { format!("{slug}-{kind}-selected.zip") } else { format!("{slug}-{kind}.zip") };
-    if !filename.is_ascii() {
+    let filename = if filename.is_ascii() { filename } else if crate::config::python_free() {
+        filename.chars().map(|c| if c.is_ascii() && c != '"' && c != '\\' { c } else { '_' }).collect()
+    } else {
         return None;
-    }
+    };
     Response::builder()
         .status(axum::http::StatusCode::OK)
         .header(axum::http::header::CONTENT_TYPE, "application/zip")
