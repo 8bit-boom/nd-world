@@ -346,16 +346,40 @@ pub fn set_power_limit(index: &Value, watts: &Value) -> (bool, Value) {
     (true, json!({"ok": true, "message": format!("Power limit set to {watts} W. It lasts until the driver reloads or the machine restarts."), "watts": watts}))
 }
 
-/// `snapshot()`: everything, cached for a second
+/// One reading of everything (CPU, memory, GPUs): `nvidia-smi` is two child processes and takes seconds on a busy card
+fn read_everything() -> (f64, Value) {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+    (now, json!({"time": now, "cpu": cpu_stats(), "memory": memory_stats(), "gpu": gpu_stats()}))
+}
+
+fn store(now: f64, data: &Value) {
+    *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), now, data.clone()));
+}
+
+static REFRESHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `snapshot()`: everything. A reading under a second old is as it was; an older one (up to 10 s) is answered at once while ONE refresh runs in the background, so
+/// the monitor's polls never queue behind a slow `nvidia-smi` (they used to hold one lock for its whole run: seconds per poll on a busy GPU); only a first
+/// reading, or one more than 10 s old, waits for a fresh one.
 pub fn snapshot() -> Value {
-    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((at, _, data)) = cache.as_ref() {
-        if at.elapsed() < Duration::from_secs(1) {
-            return data.clone();
+    use std::sync::atomic::Ordering;
+    let cached = CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|(at, _, data)| (at.elapsed(), data.clone()));
+    match cached {
+        Some((age, data)) if age < Duration::from_secs(1) => data,
+        Some((age, data)) if age < Duration::from_secs(10) => {
+            if !REFRESHING.swap(true, Ordering::SeqCst) {
+                std::thread::spawn(|| {
+                    let (now, fresh) = read_everything();
+                    store(now, &fresh);
+                    REFRESHING.store(false, Ordering::SeqCst);
+                });
+            }
+            data
+        }
+        _ => {
+            let (now, data) = read_everything();
+            store(now, &data);
+            data
         }
     }
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
-    let data = json!({"time": now, "cpu": cpu_stats(), "memory": memory_stats(), "gpu": gpu_stats()});
-    *cache = Some((Instant::now(), now, data.clone()));
-    data
 }

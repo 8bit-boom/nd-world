@@ -424,9 +424,22 @@ pub async fn ai_status_route(cfg: Arc<Config>) -> Option<Response<Body>> {
         Err(_) => return None,
     };
     let down = || ok(&json!({"status": "unavailable", "model": b.model, "backend": "unsloth"}));
+    // every page polls this dot: an answer (ok or unavailable) is kept for 10 s, so a Studio that is busy loading a model or drawing a picture is asked once,
+    // not by each page for 15 s apiece; and the wait itself is 5 s (a Studio that cannot say what it has loaded in 5 s is "unavailable" for the dot)
+    static LAST: std::sync::Mutex<Option<(std::time::Instant, String, bool)>> = std::sync::Mutex::new(None);
+    if let Some((at, key, was_ok)) = LAST.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        if at.elapsed() < std::time::Duration::from_secs(10) && key == format!("{}|{}", base_url(&b), b.key) && !was_ok {
+            return down();
+        }
+    }
+    let key = format!("{}|{}", base_url(&b), b.key);
     let uri: hyper::Uri = format!("{}/v1/models", base_url(&b)).parse().ok()?;
-    let got = tokio::time::timeout(std::time::Duration::from_secs(15), crate::studio_key::studio_get(uri, &b.key)).await;
-    let Ok(Ok((status, body))) = got else { return down() };
+    let got = tokio::time::timeout(std::time::Duration::from_secs(5), crate::studio_key::studio_get(uri, &b.key)).await;
+    let Ok(Ok((status, body))) = got else {
+        *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some((std::time::Instant::now(), key, false));
+        return down();
+    };
+    *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some((std::time::Instant::now(), key, status < 400));
     if status >= 400 || !crate::edits::plain_numbers(&body) {
         return if status >= 400 { down() } else { None };
     }
@@ -549,7 +562,16 @@ pub async fn ai_models_route(cfg: Arc<Config>, uri: Uri, headers: HeaderMap) -> 
         };
         return ok(&json!({"ollama_url": base_url(&b), "ollama_reachable": true, "backend": "unsloth", "loaded_models": ids, "default_model": b.model, "stt": stt}));
     }
-    let listed = v1_models(&b).await?;
+    // the loaded models, the hub's cached GGUFs and Studio's fine-tunes are asked at the same time (one after another a busy Studio made this page wait for the sum of
+    // their limits); the two extras give up after 6 s and the catalogue is shown without them
+    let (listed, cached, tunes) = if path == "/api/ai/resident" {
+        (v1_models(&b).await, Ok(Ok(None)), vec![])
+    } else {
+        let extra = std::time::Duration::from_secs(6);
+        let (l, c, t) = tokio::join!(v1_models(&b), tokio::time::timeout(extra, hub_cached(&b)), fine_tunes(&b));
+        (l, c, t)
+    };
+    let listed = listed?;
     if path == "/api/ai/resident" {
         let models: Vec<Value> = listed.iter().filter(|m| m.1)
             .map(|m| json!({"model": m.0, "size_bytes": null, "size_vram_bytes": null, "size_ram_bytes": null, "expires_at": null})).collect();
@@ -619,7 +641,7 @@ pub async fn ai_models_route(cfg: Arc<Config>, uri: Uri, headers: HeaderMap) -> 
     }
     // the model hub's cached chat GGUFs — the FINE-TUNED exports among them, which /v1/models does not list until
     // loaded, so a model fine-tuned in Studio was not choosable before (hub_cached = /api/hub/cached-gguf)
-    if let Ok(Some(cached)) = hub_cached(&b).await {
+    if let Ok(Ok(Some(cached))) = cached {
         for entry in cached {
             if !entry.get("capabilities").and_then(|c| c.get("can_chat")).map(|v| py_truthy(Some(v))).unwrap_or(false) {
                 continue;
@@ -637,7 +659,7 @@ pub async fn ai_models_route(cfg: Arc<Config>, uri: Uri, headers: HeaderMap) -> 
         }
     }
     // the models fine-tuned in Studio (training runs and GGUF exports): /api/models/loras, which /v1/models does not list at all
-    for ft in fine_tunes(&b).await {
+    for ft in tunes {
         let ll = ft.id.to_ascii_lowercase();
         if result.iter().any(|r| ll == r.0) {
             continue;
@@ -1146,7 +1168,7 @@ pub(crate) async fn fine_tunes(b: &Backend) -> Vec<FineTune> {
             return rows.into_iter().map(|(id, name, gguf)| FineTune { id, name, gguf }).collect();
         }
     }
-    let got = tokio::time::timeout(std::time::Duration::from_secs(20), get(b, "/api/models/loras", &[])).await;
+    let got = tokio::time::timeout(std::time::Duration::from_secs(6), get(b, "/api/models/loras", &[])).await;
     let Ok(Ok(v)) = got else {
         if let Ok(mut c) = cache.lock() {
             *c = Some((std::time::Instant::now(), key, vec![])); // a Studio that does not answer is not asked again for a while
