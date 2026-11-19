@@ -81,6 +81,7 @@ pub mod schedule;
 pub mod search;
 pub mod settings;
 pub mod session;
+pub mod speedtest;
 pub mod static_files;
 pub mod uploads;
 pub mod upload_files;
@@ -807,6 +808,17 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         if let Some(resp) = studio::ai_status_route(app.cfg.clone()).await {
             return resp;
         }
+    }
+    if req.uri().path().starts_with("/api/system/speed-test") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        // the System Monitor's speed report (speedtest.rs): a gateway feature, GM only
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 16).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        if let Some(resp) = speedtest::route(app.cfg.clone(), parts.method.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
     }
     if req.method() == axum::http::Method::POST && config::python_free() && req.uri().path() == "/api/kiy/generate" && app.cfg.rust_routes.iter().any(|r| r == "ai") {
         // the King in Yellow play, written live: random and web-fed, answered here only where there is no Python to do it

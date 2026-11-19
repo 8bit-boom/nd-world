@@ -10176,6 +10176,46 @@ def test_ai_chat_projects_are_pythons(client, seed):
         proc.terminate()
 
 
+def test_speed_report_is_made_listed_downloaded_and_deleted(client, seed):
+    """System Monitor's speed report (gateway only): a GM starts the test, it asks the gateway's own pages and read-only APIs for their times, the finished report is
+    listed, downloads as a .md with its sections, a player (or a bad id) is refused, and a report can be deleted."""
+    import time
+    from .conftest import PLAYER_PASSWORD
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        r = g.post("/api/system/speed-test", json={"rounds": 1})
+        assert r.status_code == 202 and r.json()["rounds"] == 1, r.text
+        deadline = time.time() + 240
+        while time.time() < deadline:
+            d = g.get("/api/system/speed-test").json()
+            if not d["running"]:
+                break
+            time.sleep(1)
+        assert not d["running"] and not d["error"] and d["latest"], d
+        rid = d["latest"]
+        assert any(x["id"] == rid for x in d["reports"]), d
+        md = g.get(f"/api/system/speed-test/{rid}.md")
+        assert md.status_code == 200 and "attachment" in md.headers["content-disposition"] and md.headers["content-disposition"].endswith('.md"'), md.headers
+        text = md.text
+        for part in ("# N&D World speed report", "## Summary", "## Pages and APIs", "| `/` |", "| `/api/me` |", "## Several at a time", "## Database", "## Disk", "## The machine",
+                     "## Real traffic since the server started"):
+            assert part in text, (part, text[:1500])
+        # a player cannot read, start or delete; an id that is not a time stamp names nothing
+        pl = httpx.Client(base_url=url, timeout=60, follow_redirects=False)
+        assert pl.post("/login", data={"email": seed.player_a.email, "password": PLAYER_PASSWORD, "next": "/"}).status_code in (302, 303)
+        pl.cookies.set("active_world", seed.world_a.slug)
+        assert pl.get("/api/system/speed-test").status_code in (403, 400, 501)
+        assert pl.post("/api/system/speed-test", json={"rounds": 1}).status_code in (403, 400, 501)
+        assert pl.get(f"/api/system/speed-test/{rid}.md").status_code in (403, 400, 501)
+        assert g.get("/api/system/speed-test/notanid.md").status_code == 404
+        assert g.post("/api/system/speed-test/notanid/delete").status_code == 404
+        assert g.post(f"/api/system/speed-test/{rid}/delete").json() == {"ok": True}
+        assert g.post(f"/api/system/speed-test/{rid}/delete").status_code == 404
+        assert not any(x["id"] == rid for x in g.get("/api/system/speed-test").json()["reports"])
+    finally:
+        proc.terminate()
+
+
 def test_kind_zip_download_has_every_entity_without_python_even_with_accented_names(client, seed):
     """'Download all as .md' (and the picked-ones zip) in the Python-free image: an entity whose name has accents or other non-ASCII letters is in the zip
     like any other (its file name keeps the letters), instead of the whole download being refused."""
