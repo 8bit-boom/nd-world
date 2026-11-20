@@ -241,9 +241,22 @@
   function placeBtn(img) {
     var r = img.getBoundingClientRect();
     imgBtn.style.display = 'block';
-    // bottom-left of the picture: tiles keep their own buttons (delete, rename, select) in the top corners
-    imgBtn.style.top = Math.max(6, Math.min(window.innerHeight - imgBtn.offsetHeight - 6, r.bottom - imgBtn.offsetHeight - 8)) + 'px';
-    imgBtn.style.left = Math.max(6, Math.min(window.innerWidth - imgBtn.offsetWidth - 6, r.left + 8)) + 'px';
+    var h = imgBtn.offsetHeight, w = imgBtn.offsetWidth, top, left;
+    if (img.tagName === 'AUDIO') {
+      // a slim player: its play button and slider are where a corner button would sit, so the button goes just above it (below when there is no room above), at its right end
+      top = r.top - h - 4 >= 6 ? r.top - h - 4 : r.bottom + 4;
+      left = r.right - w;
+    } else if (img.tagName === 'VIDEO') {
+      // a video's controls run along its bottom: the button takes the top-left corner
+      top = r.top + 8;
+      left = r.left + 8;
+    } else {
+      // bottom-left of the picture: tiles keep their own buttons (delete, rename, select) in the top corners
+      top = r.bottom - h - 8;
+      left = r.left + 8;
+    }
+    imgBtn.style.top = Math.max(6, Math.min(window.innerHeight - h - 6, top)) + 'px';
+    imgBtn.style.left = Math.max(6, Math.min(window.innerWidth - w - 6, left)) + 'px';
   }
   document.addEventListener('mouseover', function (e) {
     var img = e.target && /^(IMG|VIDEO|AUDIO)$/.test(e.target.tagName) ? e.target : null;

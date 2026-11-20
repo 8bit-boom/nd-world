@@ -711,6 +711,44 @@ def test_combat_list_the_gateway_builds_is_pythons(client, seed):
     assert served >= 4, served
 
 
+def test_calendar_month_shows_the_next_confirmed_game_night_as_pythons(client, seed):
+    """With a confirmed session plan the calendar's month page ("Next game night: title - time - place") is the gateway's, byte-identical to Python's - it used to
+    hand the whole page to Python, so a Python-free install answered 501 for the calendar as soon as a session was confirmed. A session that is over is not shown."""
+    from datetime import datetime, timedelta
+    from app.database import SessionLocal
+    from app.models import SessionPlan, SessionPlanSlot
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        w = seed.world_a.id
+        past = SessionPlan(world_id=w, title="Over already", status="confirmed", duration_min=60)
+        soon = SessionPlan(world_id=w, title="Game <night> \u00e9", location="Mo's & co", status="confirmed", duration_min=120)
+        later = SessionPlan(world_id=w, title="Later one", status="confirmed")
+        db.add_all([past, soon, later])
+        db.flush()
+        now = datetime.utcnow().replace(second=0, microsecond=0)
+        slots = [SessionPlanSlot(plan_id=past.id, world_id=w, starts_at=now - timedelta(days=2)),
+                 SessionPlanSlot(plan_id=soon.id, world_id=w, starts_at=now + timedelta(days=3)),
+                 SessionPlanSlot(plan_id=later.id, world_id=w, starts_at=now + timedelta(days=9))]
+        db.add_all(slots)
+        db.flush()
+        past.confirmed_slot_id, soon.confirmed_slot_id, later.confirmed_slot_id = (x.id for x in slots)
+        db.commit()
+    finally:
+        db.close()
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    a, b = d.get("/calendar"), _via(d, base).get("/calendar")
+    assert a.status_code == 200 and (a.status_code, a.content) == (b.status_code, b.content)
+    assert b.headers.get("x-nd-served-by") == "gateway"
+    assert "Next game night" in a.text and "Over already" not in a.text and "Later one" not in a.text
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        r = g.get("/calendar")
+        assert r.status_code == 200 and "Next game night" in r.text and "Mo&#39;s &amp; co" in r.text, (r.status_code, r.text[:300])
+    finally:
+        proc.terminate()
+
+
 def test_calendar_month_the_gateway_builds_is_pythons(client, seed):
     from .conftest import PLAYER_PASSWORD
     from app.database import SessionLocal

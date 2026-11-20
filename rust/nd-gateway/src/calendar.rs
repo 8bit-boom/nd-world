@@ -370,11 +370,8 @@ pub fn calendar_view(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
         return None;
     }
     let wid = world.get("id")?.as_i64()?;
-    // a confirmed session plan is shown at the top of the month: that line is still Python's
-    let plans: i64 = db.query_row("SELECT count(*) FROM session_plans WHERE world_id = ?1 AND status = 'confirmed'", [wid], |r| r.get(0)).ok()?;
-    if plans > 0 {
-        return None;
-    }
+    // the next confirmed session is shown at the top of the month ("Next game night")
+    let next_session = crate::hub::next_session_info(&db, wid)?.unwrap_or(Value::Null);
     get_or_create(&db, wid)?;
     let Cal { config, months_v, months, current_day } = load(&db, wid)?;
     let c = config.as_object()?;
@@ -521,7 +518,7 @@ pub fn calendar_view(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
     ins("year_text", json!(format_year(c, year)?), ctx);
     ins("cur_year_text", json!(format_year(c, cur_year)?), ctx);
     ins("today_label", json!(date_label), ctx);
-    ins("next_session", Value::Null, ctx);
+    ins("next_session", next_session, ctx);
     ins("entities", Value::Array(entities), ctx);
     ins("sessions", Value::Array(sessions), ctx);
     ins("characters", Value::Array(characters), ctx);

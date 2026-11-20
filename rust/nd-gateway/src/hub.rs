@@ -323,6 +323,22 @@ fn next_confirmed(db: &Connection, wid: i64) -> Option<Option<(Map<String, Value
     Some(best.map(|(p, s, _)| (p, s)))
 }
 
+/// `_next_session_info(db, world)` (app/routers/calendar.py): the calendar's "Next game night" line - `{title, starts_at, location}` of the next confirmed session
+/// that has not ended yet; Some(None) when there is none, None when a stored value is not one Python reads the same way
+pub(crate) fn next_session_info(db: &Connection, wid: i64) -> Option<Option<Value>> {
+    Some(match next_confirmed(db, wid)? {
+        Some((plan, slot)) => {
+            let start = crate::schedule::stored(slot.get("starts_at"))?;
+            let secs = start.div_euclid(1_000_000);
+            let (y, m, d) = crate::writes::civil_from_days(secs.div_euclid(86400));
+            let r = secs.rem_euclid(86400);
+            Some(json!({"title": plan.get("title"), "starts_at": format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", r / 3600, r % 3600 / 60, r % 60),
+                "location": text(&plan, "location")}))
+        }
+        None => None,
+    })
+}
+
 /// `polls_waiting(db, world, user)`: open polls with slots where this person has not answered any
 fn polls_waiting(db: &Connection, wid: i64, uid: i64) -> Option<i64> {
     let mut n = 0;

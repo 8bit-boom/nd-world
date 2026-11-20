@@ -381,5 +381,16 @@ def test_the_tv_page_has_the_true_scale_controls(client, seed):
 def test_the_image_hover_button_sits_bottom_left_clear_of_the_tiles_corner_buttons():
     """Gallery tiles keep delete / rename / select in their top corners; the Send-to-screen button must not cover them."""
     place = _js().split("function placeBtn(img)", 1)[1].split("document.addEventListener('mouseover'", 1)[0]
-    assert "r.bottom" in place and "r.left" in place
-    assert "r.top" not in place and "r.right" not in place
+    picture = place.split("} else {", 1)[1]            # the branch for a picture (the audio and video ones come first)
+    assert "r.bottom" in picture and "r.left" in picture
+    assert "r.top" not in picture and "r.right" not in picture
+
+
+def test_the_send_button_stays_off_a_players_controls():
+    """A slim audio player has its play button and slider where a corner button would sit (it blocked starting the music), and a video's controls run along
+    its bottom: the audio one goes above the player, the video one in its top-left corner - never over the controls."""
+    place = _js().split("function placeBtn(img)", 1)[1].split("document.addEventListener('mouseover'", 1)[0]
+    audio = place.split("img.tagName === 'AUDIO'", 1)[1].split("} else if", 1)[0]
+    assert "r.top - h" in audio and "r.right - w" in audio and "r.bottom - h" not in audio
+    video = place.split("img.tagName === 'VIDEO'", 1)[1].split("} else {", 1)[0]
+    assert "r.top + 8" in video and "r.bottom" not in video
