@@ -10214,6 +10214,41 @@ def test_ai_chat_projects_are_pythons(client, seed):
         proc.terminate()
 
 
+def test_a_slow_picture_upload_does_not_hold_up_other_writes(client, seed):
+    """The editor toolbar's picture upload converts the picture for seconds; it used to hold SQLite's write lock for all of it (BEGIN IMMEDIATE before the handler), so a
+    Save or a dice roll made meanwhile waited behind it (a speed report showed a Save taking 14.9 s behind nine uploads). Now another write goes through at once."""
+    import io
+    import threading
+    import time
+    from PIL import Image
+    big = Image.linear_gradient("L").resize((4200, 3000)).convert("RGB")   # smooth: a small file, but many pixels to convert
+    png = io.BytesIO()
+    big.save(png, "PNG")
+    assert len(png.getvalue()) < 3_000_000
+    proc, url, g = _python_free_gateway(seed, {"MAX_UPLOAD_BYTES": "20000000"})
+    try:
+        timing = {}
+
+        def upload():
+            t = time.time()
+            timing["status"] = g_up.post("/api/upload-image", files={"file": ("big.png", png.getvalue(), "image/png")}).status_code
+            timing["upload"] = time.time() - t
+
+        g_up = httpx.Client(base_url=url, timeout=120, follow_redirects=False)
+        g_up.cookies.update(g.cookies)
+        th = threading.Thread(target=upload)
+        th.start()
+        time.sleep(0.4)                                   # the upload is now being converted
+        t = time.time()
+        r = g.post("/api/dice/roll", json={"notation": "1d20"})
+        roll = time.time() - t
+        th.join(timeout=120)
+        assert r.status_code == 200 and timing.get("status") == 200, (r.text, timing)
+        assert roll < 1.5 and roll < timing["upload"] * 0.6 or timing["upload"] < 1.0, (roll, timing)
+    finally:
+        proc.terminate()
+
+
 def test_speed_report_is_made_listed_downloaded_and_deleted(client, seed):
     """System Monitor's speed report (gateway only): a GM starts the test, it asks the gateway's own pages and read-only APIs for their times, the finished report is
     listed, downloads as a .md with its sections, a player (or a bad id) is refused, and a report can be deleted."""
@@ -10355,6 +10390,8 @@ def test_ai_status_dot_on_studio_is_pythons(client, seed):
         for table, want in (({"/v1/models": (200, {"data": [{"id": "a/one", "loaded": True}, {"id": "b/two"}, {"nothing": 1}]})}, "ok"),
                             ({"/v1/models": (500, {"detail": "down"})}, "unavailable")):
             studio.routes = table
+            if want == "unavailable":
+                time.sleep(5.5)          # the gateway keeps a good answer for 5 s (a busy Studio answers /v1/models slowly and every page polls the dot)
             b = v.post("/api/ai/status")
             assert b.status_code == 200 and b.headers.get("x-nd-served-by") == "gateway", b.text
             assert b.json()["status"] == want, b.text

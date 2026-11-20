@@ -427,19 +427,26 @@ pub async fn ai_status_route(cfg: Arc<Config>) -> Option<Response<Body>> {
     // every page polls this dot: an answer (ok or unavailable) is kept for 10 s, so a Studio that is busy loading a model or drawing a picture is asked once,
     // not by each page for 15 s apiece; and the wait itself is 5 s (a Studio that cannot say what it has loaded in 5 s is "unavailable" for the dot)
     static LAST: std::sync::Mutex<Option<(std::time::Instant, String, bool)>> = std::sync::Mutex::new(None);
-    if let Some((at, key, was_ok)) = LAST.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-        if at.elapsed() < std::time::Duration::from_secs(10) && key == format!("{}|{}", base_url(&b), b.key) && !was_ok {
+    // a good answer is kept 5 s (the dot is polled by every open page, and a busy Studio answers /v1/models slowly: 2 s median in a speed report)
+    static LAST_OK: std::sync::Mutex<Option<(std::time::Instant, String, Value)>> = std::sync::Mutex::new(None);
+    let key = format!("{}|{}|{}", base_url(&b), b.key, b.model);
+    if let Some((at, k, was_ok)) = LAST.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        if at.elapsed() < std::time::Duration::from_secs(10) && k == key && !was_ok {
             return down();
         }
     }
-    let key = format!("{}|{}", base_url(&b), b.key);
+    if let Some((at, k, v)) = LAST_OK.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        if at.elapsed() < std::time::Duration::from_secs(5) && k == key {
+            return ok(&v);
+        }
+    }
     let uri: hyper::Uri = format!("{}/v1/models", base_url(&b)).parse().ok()?;
     let got = tokio::time::timeout(std::time::Duration::from_secs(5), crate::studio_key::studio_get(uri, &b.key)).await;
     let Ok(Ok((status, body))) = got else {
-        *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some((std::time::Instant::now(), key, false));
+        *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some((std::time::Instant::now(), key.clone(), false));
         return down();
     };
-    *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some((std::time::Instant::now(), key, status < 400));
+    *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some((std::time::Instant::now(), key.clone(), status < 400));
     if status >= 400 || !crate::edits::plain_numbers(&body) {
         return if status >= 400 { down() } else { None };
     }
@@ -459,7 +466,9 @@ pub async fn ai_status_route(cfg: Arc<Config>) -> Option<Response<Body>> {
         }
         Some(_) => return None,
     }
-    ok(&json!({"status": "ok", "model": b.model, "loaded_models": ids, "backend": "unsloth"}))
+    let answer = json!({"status": "ok", "model": b.model, "loaded_models": ids, "backend": "unsloth"});
+    *LAST_OK.lock().unwrap_or_else(|e| e.into_inner()) = Some((std::time::Instant::now(), key, answer.clone()));
+    ok(&answer)
 }
 
 /// `GET /api/ai/models` with no Studio key (Python's `ai_models` with an empty `loaded`): the legacy catalogue plus the saved models, none loaded

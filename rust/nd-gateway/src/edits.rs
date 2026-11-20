@@ -476,7 +476,11 @@ pub async fn serve_upload(cfg: Arc<Config>, proxy: &Proxy, req: Request<Body>, p
         let db = crate::writes::open(cfg)?;
         let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
         let p = crate::layout::build(&db, cfg, method.as_str(), uri, headers, now)?;
-        db.execute_batch("BEGIN IMMEDIATE").ok()?;
+        // The pictures a toolbar (the editor's "insert image / media" button) uploads are only files: the handler reads one setting and writes nothing to the database, but
+        // it spends seconds converting the picture. Under BEGIN IMMEDIATE that whole time held SQLite's one write lock, and every other write in the app (an entity's
+        // Save, a dice roll, the live counter) waited behind it - a speed report showed a Save taking 14.9 s behind nine uploads. A plain (read) transaction holds nothing.
+        let files_only = matches!(uri.path(), "/api/upload-image" | "/api/upload-media" | "/api/characters/upload-image" | "/api/characters/upload-media");
+        db.execute_batch(if files_only { "BEGIN" } else { "BEGIN IMMEDIATE" }).ok()?;
         let mut ctx = Ctx { cfg, upload: Some(up), created: vec![], removals: vec![], db, p, uri, headers, body: &[] };
         let answer = match &slug {
             Some((sh, sl)) => sh(&mut ctx, sl),
