@@ -374,13 +374,18 @@ fn home_edit_page(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, heade
 /// (whose validation message the page shows) is Python's
 fn rules_edit(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers: &HeaderMap) -> Option<Response<Body>> {
     let w = row(db, "SELECT * FROM worlds WHERE id = ?1", id)?;
-    match w.get("rules_json") {
-        None | Some(Value::Null) => {}
-        Some(Value::String(s)) if nd_render::text::py_strip(s).is_empty() => {}
+    // a stored overlay is re-validated so the GM sees why the Rules page may be ignoring it (Python's `parse_rules_overlay` error)
+    let raw: Option<String> = match w.get("rules_json") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(s.clone()),
         _ => return None,
-    }
+    };
+    let error = match nd_render::rules::overlay_error(raw.as_deref(), crate::config::python_free()) {
+        Ok(e) => e,
+        Err(()) => return None,
+    };
     p.ctx.insert("edit_world".into(), Value::Object(w));
-    p.ctx.insert("rules_json_error".into(), Value::Null);
+    p.ctx.insert("rules_json_error".into(), error.map(Value::String).unwrap_or(Value::Null));
     render_with(pages, "rules_edit.html", p.ctx, headers)
 }
 

@@ -745,16 +745,19 @@ fn run(cfg: &Config, method: &Method, uri: &Uri, headers: &HeaderMap, body: &[u8
 
 /// Entry point: reads the (small) body, tries to answer, and otherwise forwards the request - body included - to Python.
 pub async fn serve(cfg: Arc<Config>, proxy: &Proxy, req: Request<Body>, peer: Option<std::net::SocketAddr>) -> Response<Body> {
+    // Next to Python a big body is streamed on to it unread (MAX_BODY). With no Python behind the gateway there is nowhere to send it, so a long text (the world's Rules,
+    // an entity's body, a pasted chapter) is read here up to 16 MiB instead of being refused as "not available".
+    let limit = if crate::config::python_free() { 16 * 1024 * 1024 } else { MAX_BODY };
     // a body of known, small length - or none at all (no Content-Length and no Transfer-Encoding: a DELETE, a bare POST)
     let small = match req.headers().get(header::CONTENT_LENGTH) {
-        Some(v) => v.to_str().ok().and_then(|v| v.parse::<usize>().ok()).map_or(false, |n| n <= MAX_BODY),
+        Some(v) => v.to_str().ok().and_then(|v| v.parse::<usize>().ok()).map_or(false, |n| n <= limit),
         None => req.headers().get(header::TRANSFER_ENCODING).is_none(),
     };
     if !small {
         return proxy.forward(req, peer).await;
     }
     let (parts, body) = req.into_parts();
-    let Ok(bytes) = axum::body::to_bytes(body, MAX_BODY).await else {
+    let Ok(bytes) = axum::body::to_bytes(body, limit).await else {
         return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap();
     };
     let (method, uri, headers) = (parts.method.clone(), parts.uri.clone(), parts.headers.clone());
@@ -9231,6 +9234,12 @@ fn rules_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let rules_json = if raw.is_empty() {
         Sql::Null
     } else {
+        // an overlay that does not validate is a 400 carrying the exact fault, so the GM sees the mistake while saving
+        match nd_render::rules::overlay_error(Some(&raw), crate::config::python_free()) {
+            Ok(None) => {}
+            Ok(Some(why)) => return Some(bad400(&format!("rules_json: {why}"))),
+            Err(()) => return None,
+        }
         nd_render::rules::parse_overlay(Some(&raw)).ok()??;
         s(&raw)
     };

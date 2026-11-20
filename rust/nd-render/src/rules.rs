@@ -231,6 +231,64 @@ fn slugify(text: &str) -> String {
     slug.trim_matches('-').to_string()
 }
 
+/// `parse_rules_overlay`'s error message for a stored overlay (the edit page shows it, the save answers it as a 400): Ok(None) when there is none to complain of (empty, or
+/// usable), Ok(Some(text)) with Python's wording of the first fault. JSON that does not parse is `not valid JSON: <reason>`; the reason is Python's `json` module's words, so
+/// it is only given when `lenient_json` (no Python to match); otherwise Err(()) and the page is Python's.
+pub fn overlay_error(raw: Option<&str>, lenient_json: bool) -> Result<Option<String>, ()> {
+    let Some(raw) = raw.filter(|r| !py_strip(r).is_empty()) else { return Ok(None) };
+    let data: Value = match serde_json::from_str(raw) {
+        Ok(d) => d,
+        Err(e) if lenient_json => return Ok(Some(format!("not valid JSON: {e}"))),
+        Err(_) => return Err(()),
+    };
+    let Value::Object(data) = data else { return Ok(Some("top level must be a JSON object".into())) };
+    match data.get("sections") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(sections)) => {
+            for (slug, cfg) in sections {
+                let cfg = match cfg {
+                    Value::Null => continue,
+                    Value::Object(o) => o,
+                    _ => return Ok(Some(format!("sections[\"{slug}\"] must be an object"))),
+                };
+                for key in ["icon", "title"] {
+                    if !matches!(cfg.get(key), None | Some(Value::Null) | Some(Value::String(_))) {
+                        return Ok(Some(format!("sections[\"{slug}\"].{key} must be a string")));
+                    }
+                }
+                if !matches!(cfg.get("players_visible"), None | Some(Value::Null) | Some(Value::Bool(_))) {
+                    return Ok(Some(format!("sections[\"{slug}\"].players_visible must be true or false")));
+                }
+                if !matches!(cfg.get("order"), None | Some(Value::Null) | Some(Value::Number(_))) {
+                    return Ok(Some(format!("sections[\"{slug}\"].order must be a number")));
+                }
+            }
+        }
+        Some(_) => return Ok(Some("\"sections\" must be an object mapping section slugs to settings".into())),
+    }
+    match data.get("tabs") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(tabs)) => {
+            for (idx, tab) in tabs.iter().enumerate() {
+                let Value::Object(tab) = tab else { return Ok(Some(format!("tabs[{idx}] must be an object"))) };
+                if !matches!(tab.get("label"), Some(Value::String(l)) if !py_strip(l).is_empty()) {
+                    return Ok(Some(format!("tabs[{idx}].label must be a non-empty string")));
+                }
+                let ok = match tab.get("sections") {
+                    None | Some(Value::Null) => true,
+                    Some(Value::Array(a)) => a.iter().all(|v| v.is_string()),
+                    Some(_) => false,
+                };
+                if !ok {
+                    return Ok(Some(format!("tabs[{idx}].sections must be a list of section slugs")));
+                }
+            }
+        }
+        Some(_) => return Ok(Some("\"tabs\" must be a list of {\"id\", \"label\", \"sections\"} objects".into())),
+    }
+    Ok(None)
+}
+
 /// `parse_rules_overlay`: Ok(Some(overlay)) / Ok(None) for no overlay or an invalid one (the page ignores both), Err(()) for JSON Python
 /// might read and this parser cannot (NaN, Infinity...) - the page is then Python's
 pub fn parse_overlay(raw: Option<&str>) -> Result<Option<Value>, ()> {
@@ -491,4 +549,28 @@ pub fn render_rules_content(md: &str, is_gm: bool) -> String {
     let (skeleton, blocks) = extract_blocks(md);
     let (content, _) = crate::text::rules_toc(&render_md(&skeleton), "23");
     restore_blocks(&content, &blocks, is_gm)
+}
+
+#[cfg(test)]
+mod overlay_error_tests {
+    use super::overlay_error;
+
+    #[test]
+    fn overlay_errors_use_pythons_words() {
+        let e = |t: &str| overlay_error(Some(t), true).unwrap();
+        assert_eq!(e(""), None);
+        assert_eq!(e("{}"), None);
+        assert_eq!(e(r#"{"sections":{"a":{"order":2,"players_visible":false,"title":"T"}},"tabs":[{"label":"X","sections":["a"]}]}"#), None);
+        assert_eq!(e("[]").as_deref(), Some("top level must be a JSON object"));
+        assert_eq!(e(r#"{"sections":[]}"#).as_deref(), Some("\"sections\" must be an object mapping section slugs to settings"));
+        assert_eq!(e(r#"{"sections":{"a":5}}"#).as_deref(), Some("sections[\"a\"] must be an object"));
+        assert_eq!(e(r#"{"sections":{"a":{"order":true}}}"#).as_deref(), Some("sections[\"a\"].order must be a number"));
+        assert_eq!(e(r#"{"sections":{"a":{"players_visible":"no"}}}"#).as_deref(), Some("sections[\"a\"].players_visible must be true or false"));
+        assert_eq!(e(r#"{"tabs":{}}"#).as_deref(), Some("\"tabs\" must be a list of {\"id\", \"label\", \"sections\"} objects"));
+        assert_eq!(e(r#"{"tabs":[3]}"#).as_deref(), Some("tabs[0] must be an object"));
+        assert_eq!(e(r#"{"tabs":[{"label":" "}]}"#).as_deref(), Some("tabs[0].label must be a non-empty string"));
+        assert_eq!(e(r#"{"tabs":[{"label":"x","sections":[1]}]}"#).as_deref(), Some("tabs[0].sections must be a list of section slugs"));
+        assert!(e("{nope").unwrap().starts_with("not valid JSON: "));
+        assert!(overlay_error(Some("{nope"), false).is_err());
+    }
 }

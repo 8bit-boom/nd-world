@@ -10249,6 +10249,54 @@ def test_a_slow_picture_upload_does_not_hold_up_other_writes(client, seed):
         proc.terminate()
 
 
+def test_rules_edit_page_and_save_work_with_a_stored_overlay_and_a_very_long_text(client, seed):
+    """The world's Rules editor: the page opens when an overlay (rules_json) is stored - valid or not, with Python's parse error shown for a bad one, byte-identical from
+    both servers - and a Python-free gateway saves a rules text far over 256 KiB (a bigger body used to be handed to Python, i.e. refused), answers a bad overlay with
+    Python's 400 and its exact fault, and keeps what was saved."""
+    import sqlite3
+    from app.database import SessionLocal
+    from app.models import World
+    base = str(client.base_url)
+    wid = seed.world_a.id
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    good = '{"sections": {"combat": {"title": "Fighting", "order": 2}}, "tabs": [{"label": "Core", "sections": ["combat"]}]}'
+    bad = '{"tabs": [3]}'
+    for overlay, expect in ((good, None), (bad, "tabs[0] must be an object")):
+        db = SessionLocal()
+        try:
+            db.get(World, wid).rules_json = overlay
+            db.commit()
+        finally:
+            db.close()
+        a, b = d.get(f"/worlds/{wid}/rules/edit"), v.get(f"/worlds/{wid}/rules/edit")
+        assert a.status_code == 200 and (a.status_code, a.content) == (b.status_code, b.content), overlay
+        assert b.headers.get("x-nd-served-by") == "gateway", overlay
+        assert ("Parse error: " + expect in a.text) if expect else ("Parse error" not in a.text), overlay
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        r = g.get(f"/worlds/{wid}/rules/edit")
+        assert r.status_code == 200 and "Parse error: tabs[0] must be an object" in r.text, r.status_code
+        long_md = "# Rules\n\n" + "".join(f"Rule {i}: the keeper of the lamp never speaks of the harbor wall & the tide.\n\n" for i in range(9000))
+        assert len(long_md) > 600_000
+        r = g.post(f"/worlds/{wid}/rules/edit", data={"rules_md": long_md, "rules_json": good})
+        assert r.status_code == 303 and r.headers["location"] == "/rules", (r.status_code, r.text[:200])
+        r = g.post(f"/worlds/{wid}/rules/edit", data={"rules_md": "x", "rules_json": bad})
+        assert r.status_code == 400 and "rules_json: tabs[0] must be an object" in r.text, (r.status_code, r.text[:200])
+        r = g.post(f"/worlds/{wid}/rules/edit", data={"rules_md": "x", "rules_json": "{nope"})
+        assert r.status_code == 400 and "rules_json: not valid JSON" in r.text, (r.status_code, r.text[:200])
+        con = sqlite3.connect(os.environ["DB_PATH"])
+        try:
+            md, js = con.execute("SELECT rules_md, rules_json FROM worlds WHERE id = ?", (wid,)).fetchone()
+        finally:
+            con.close()
+        assert md == long_md.strip() and js == good, (len(md or ""), js)
+        assert g.get("/rules").status_code == 200
+        assert g.get(f"/worlds/{wid}/rules/edit").status_code == 200
+    finally:
+        proc.terminate()
+
+
 def test_speed_report_is_made_listed_downloaded_and_deleted(client, seed):
     """System Monitor's speed report (gateway only): a GM starts the test, it asks the gateway's own pages and read-only APIs for their times, the finished report is
     listed, downloads as a .md with its sections, a player (or a bad id) is refused, and a report can be deleted."""
