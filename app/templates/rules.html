@@ -7,11 +7,18 @@
   <!-- Sidebar TOC -->
   <div id="rules-toc-wrap" class="rules-toc-wrap">
     <div style="margin-bottom:.6rem">
-      <input id="rules-search" type="search" placeholder="Search rules…" oninput="rulesSearch(this.value)"
+      <input id="rules-search" type="search" placeholder="Search rules…" oninput="rulesSearch(this.value)" onkeydown="rulesSearchKey(event)"
         style="width:100%;background:#1a1a1a;border:1px solid #333;border-radius:4px;padding:.35rem .5rem;color:#e0e0e0;font-size:.82rem"/>
     </div>
     <!-- Section-filter count line: hidden until a query filters the page -->
     <div id="rules-search-count" style="display:none;font-size:.72rem;color:var(--neon);margin-bottom:.4rem"></div>
+    <!-- Where the matches are: each matching section with its number of hits and the words around the first one; prev / next step through the highlights -->
+    <div id="rules-search-nav" class="rules-search-nav" style="display:none">
+      <button type="button" id="rules-search-prev" title="Previous match (Shift+Enter)" onclick="rulesSearchStep(-1)">&#9650;</button>
+      <button type="button" id="rules-search-next" title="Next match (Enter)" onclick="rulesSearchStep(1)">&#9660;</button>
+      <span id="rules-search-pos"></span>
+    </div>
+    <div id="rules-search-results" class="rules-results" style="display:none"></div>
     <details class="toc-details" id="rules-toc-details" open>
       <summary>Contents</summary>
       {% for entry in toc %}
@@ -89,6 +96,18 @@
 .rules-body h2 { border-left:3px solid var(--neon); padding-left:.6rem; margin-top:2rem; }
 .rules-body h3 { margin-top:1.4rem; color:#e0e0e0; }
 .rules-body mark.rules-search-hit { background:#ffee00; color:#000; border-radius:2px; padding:0 2px; }
+.rules-body mark.rules-search-hit.is-current { background:#ffb300; outline:2px solid var(--neon); }
+.rules-search-nav { display:flex; align-items:center; gap:.35rem; margin-bottom:.5rem; font-size:.72rem; color:var(--text-dim); }
+.rules-search-nav button { background:var(--bg3,#1a1a1a); border:1px solid #333; color:var(--text,#e0e0e0); border-radius:3px; padding:.1rem .5rem; font-size:.72rem; cursor:pointer; }
+.rules-results { max-height:42vh; overflow-y:auto; margin-bottom:.6rem; border-bottom:1px solid #222; padding-bottom:.4rem; }
+.toc-entry.rules-result { padding:.35rem .5rem; margin-bottom:.1rem; }
+.rules-result-title { display:flex; justify-content:space-between; gap:.5rem; font-weight:600; color:#ddd; }
+.rules-result-title span { color:var(--neon); font-weight:normal; font-size:.72rem; white-space:nowrap; }
+.rules-result-snippet { color:#999; font-size:.74rem; margin-top:.15rem; line-height:1.35; overflow-wrap:anywhere; }
+.rules-result-snippet mark { background:#ffee00; color:#000; border-radius:2px; padding:0 1px; }
+.toc-entry.toc-miss { display:none; }
+.toc-entry.toc-hit { color:var(--neon); font-weight:600; }
+.toc-count { margin-left:.4rem; font-size:.7rem; font-weight:normal; color:var(--text-dim); }
 /* Wide tables (long unbreakable code spans in Source-Map-style tables)
    forced the table wider than the container — a table's min-content width
    includes unbroken tokens, and overflow-wrap:break-word does NOT reduce
@@ -170,6 +189,7 @@ function rulesSearch(v) {
   const body = document.querySelector('.rules-body');
   const scope = document.querySelector('.rules-tab-pane.active') || body;
   clearMarks();
+  clearSearchWhere();
   const count = document.getElementById('rules-search-count');
   const sections = scope ? Array.from(scope.querySelectorAll('.rules-section')) : [];
   if (!q) {
@@ -177,34 +197,154 @@ function rulesSearch(v) {
     if (count) { count.style.display = 'none'; count.textContent = ''; }
     return;
   }
-  let n = 0;
+  let n = 0, total = 0;
+  const hits = [];
   sections.forEach(s => {
-    const hit = s.textContent.toLowerCase().indexOf(q) >= 0;
-    s.style.display = hit ? '' : 'none';
-    if (hit) { n++; markMatches(s, q); }
+    const text = s.textContent.toLowerCase();
+    let c = 0, at = text.indexOf(q);
+    while (at >= 0) { c++; at = text.indexOf(q, at + q.length); }
+    s.style.display = c ? '' : 'none';
+    if (c) { n++; total += c; markMatches(s, q); hits.push({ s: s, c: c }); }
   });
   if (count) {
     count.style.display = '';
-    count.textContent = n === 1 ? '1 section matches' : n + ' sections match';
+    count.textContent = (n === 1 ? '1 section matches' : n + ' sections match') + (total ? ' · ' + total + (total === 1 ? ' match' : ' matches') : '');
   }
+  showSearchWhere(scope, q, hits);
+  rulesSearchPos();
+}
+
+// Where the matches are. The sidebar lists every matching section with its number of hits and the words around the first one (a click goes there), the contents
+// entries of matching sections are lit with their count and the others hidden, and prev / next (or Enter / Shift+Enter in the box) step through the highlights.
+let _rulesCurrent = -1;
+function clearSearchWhere() {
+  _rulesCurrent = -1;
+  const box = document.getElementById('rules-search-results');
+  if (box) { box.textContent = ''; box.style.display = 'none'; }
+  const nav = document.getElementById('rules-search-nav');
+  if (nav) nav.style.display = 'none';
+  document.querySelectorAll('#rules-toc-details .toc-entry').forEach(a => {
+    a.classList.remove('toc-hit', 'toc-miss');
+    const c = a.querySelector('.toc-count');
+    if (c) c.remove();
+  });
+}
+function sectionHeading(sec) { return sec.querySelector('h1, h2, h3, h4, h5'); }
+function showSearchWhere(scope, q, hits) {
+  const byId = new Map(hits.map(h => [h.s, h.c]));
+  document.querySelectorAll('#rules-toc-details .toc-entry').forEach(a => {
+    const id = (a.getAttribute('href') || '').slice(1);
+    const heading = id ? document.getElementById(id) : null;
+    const sec = heading && heading.closest('.rules-section');
+    if (!sec || !scope.contains(sec)) return;      // another tab's section: left as it is
+    if (byId.has(sec)) {
+      a.classList.add('toc-hit');
+      const c = document.createElement('span');
+      c.className = 'toc-count';
+      c.textContent = '×' + byId.get(sec);
+      a.appendChild(c);
+    } else {
+      a.classList.add('toc-miss');
+    }
+  });
+  const box = document.getElementById('rules-search-results');
+  if (!box) return;
+  const MAX = 60;
+  hits.slice(0, MAX).forEach(h => {
+    const head = sectionHeading(h.s);
+    const row = document.createElement('a');
+    row.className = 'toc-entry rules-result';
+    row.href = head && head.id ? '#' + head.id : '#rules-body';
+    row.addEventListener('click', e => rulesResultClick(e, h.s));
+    const title = document.createElement('div');
+    title.className = 'rules-result-title';
+    const name = document.createElement('div');
+    name.textContent = head ? head.textContent.trim() : 'Introduction';
+    const num = document.createElement('span');
+    num.textContent = '×' + h.c;
+    title.append(name, num);
+    row.appendChild(title);
+    const full = h.s.textContent.replace(/\s+/g, ' ');
+    const at = full.toLowerCase().indexOf(q);
+    if (at >= 0) {
+      const from = Math.max(0, at - 48), to = Math.min(full.length, at + q.length + 72);
+      const snip = document.createElement('div');
+      snip.className = 'rules-result-snippet';
+      const mark = document.createElement('mark');
+      mark.textContent = full.slice(at, at + q.length);
+      snip.append((from > 0 ? '… ' : '') + full.slice(from, at), mark, full.slice(at + q.length, to) + (to < full.length ? ' …' : ''));
+      row.appendChild(snip);
+    }
+    box.appendChild(row);
+  });
+  if (hits.length > MAX) {
+    const more = document.createElement('div');
+    more.className = 'rules-result-snippet';
+    more.style.padding = '.3rem .5rem';
+    more.textContent = '+ ' + (hits.length - MAX) + ' more sections — they are marked in the text.';
+    box.appendChild(more);
+  }
+  box.style.display = hits.length ? '' : 'none';
+  const nav = document.getElementById('rules-search-nav');
+  if (nav) nav.style.display = hits.length ? '' : 'none';
+}
+function rulesResultClick(e, sec) {
+  const layout = document.querySelector('.rules-layout');
+  if (layout && layout.dataset.view === 'book') return;     // the book view shows that section itself
+  e.preventDefault();
+  const marks = visibleMarks();
+  const first = sec.querySelector('mark.rules-search-hit');
+  const i = marks.indexOf(first);
+  if (i >= 0) rulesSearchGo(i); else sec.scrollIntoView({ block: 'start', behavior: 'smooth' });
+}
+function visibleMarks() {
+  return Array.from(document.querySelectorAll('.rules-body mark.rules-search-hit')).filter(m => m.offsetParent !== null);
+}
+function rulesSearchGo(i) {
+  const marks = visibleMarks();
+  if (!marks.length) return;
+  marks.forEach(m => m.classList.remove('is-current'));
+  _rulesCurrent = ((i % marks.length) + marks.length) % marks.length;
+  const m = marks[_rulesCurrent];
+  m.classList.add('is-current');
+  m.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  rulesSearchPos();
+}
+function rulesSearchStep(dir) { rulesSearchGo(_rulesCurrent < 0 ? (dir < 0 ? -1 : 0) : _rulesCurrent + dir); }
+function rulesSearchPos() {
+  const pos = document.getElementById('rules-search-pos');
+  if (!pos) return;
+  const n = visibleMarks().length;
+  pos.textContent = n ? (_rulesCurrent >= 0 ? (_rulesCurrent + 1) + ' / ' + n : n + (n === 1 ? ' highlight' : ' highlights')) : '';
+}
+function rulesSearchKey(e) {
+  if (e.key === 'Enter') { e.preventDefault(); rulesSearchStep(e.shiftKey ? -1 : 1); }
 }
 function markMatches(scope, q) {
   // Collect matching text nodes first, then mutate: splitting a node while
-  // the TreeWalker is mid-traversal would re-walk the new fragments.
+  // the TreeWalker is mid-traversal would re-walk the new fragments. Every
+  // occurrence in a node is marked (a paragraph naming the term twice shows both).
   const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
-  const hits = [];
+  const nodes = [];
   let node;
   while ((node = walker.nextNode())) {
-    const idx = node.textContent.toLowerCase().indexOf(q);
-    if (idx >= 0) hits.push({node, idx, len: q.length});
+    if (node.textContent.toLowerCase().indexOf(q) >= 0) nodes.push(node);
   }
-  hits.reverse().forEach(({node, idx, len}) => {
-    const span = document.createElement('mark');
-    span.className = 'rules-search-hit';
-    span.textContent = node.textContent.slice(idx, idx + len);
-    const after = node.splitText(idx);
-    after.splitText(len);
-    after.parentNode.replaceChild(span, after);
+  nodes.forEach(n => {
+    const text = n.textContent, low = text.toLowerCase();
+    const frag = document.createDocumentFragment();
+    let from = 0, at = low.indexOf(q);
+    while (at >= 0) {
+      if (at > from) frag.appendChild(document.createTextNode(text.slice(from, at)));
+      const span = document.createElement('mark');
+      span.className = 'rules-search-hit';
+      span.textContent = text.slice(at, at + q.length);
+      frag.appendChild(span);
+      from = at + q.length;
+      at = low.indexOf(q, from);
+    }
+    if (from < text.length) frag.appendChild(document.createTextNode(text.slice(from)));
+    n.parentNode.replaceChild(frag, n);
   });
 }
 function clearMarks() {

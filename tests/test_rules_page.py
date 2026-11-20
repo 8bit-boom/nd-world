@@ -279,6 +279,20 @@ def test_rules_mark_tag_not_tagged_as_search_hit(client, seed):
     assert "rules-body mark'" not in r.text  # no unscoped selector remains
 
 
+def test_rules_search_shows_where_the_matches_are(client, seed):
+    """The search box lists the matching sections (with their hit counts and the words around the first hit) in the sidebar, lights the matching contents entries and hides
+    the others, and steps through the highlights with prev / next - it used to only filter the text, leaving the sidebar unchanged."""
+    _set_rules(seed.world_a.id, rules_md="## One\n\nalpha beta\n\n## Two\n\ngamma\n")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/rules")
+    assert r.status_code == 200
+    for part in ('id="rules-search-results"', 'id="rules-search-nav"', 'onclick="rulesSearchStep(1)"', 'onkeydown="rulesSearchKey(event)"', "function showSearchWhere(",
+                 "function rulesSearchGo(", "toc-hit", "toc-miss", "rules-result-snippet"):
+        assert part in r.text, part
+    assert 'class="rules-search-hit"' not in r.text and "rules-body mark'" not in r.text
+
+
 def test_rules_edit_saves_rules_json(client, seed):
     overlay = '{"tabs": [{"id": "core", "label": "Core", "sections": []}]}'
     login(client, seed.gm.email, GM_PASSWORD)
