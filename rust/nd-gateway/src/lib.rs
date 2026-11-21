@@ -948,6 +948,11 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
+    if req.method() == axum::http::Method::DELETE && req.uri().path().starts_with("/api/audio-jobs/") && app.cfg.rust_routes.iter().any(|r| r == "ai") {
+        if let Some(resp) = ai::audio_job_delete(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await {
+            return resp;
+        }
+    }
     if req.method() == axum::http::Method::DELETE && req.uri().path().starts_with("/api/video-jobs/") && app.cfg.rust_routes.iter().any(|r| r == "ai") {
         if let Some(resp) = ai::video_job_delete(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await {
             return resp;

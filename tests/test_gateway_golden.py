@@ -10297,6 +10297,65 @@ def test_rules_edit_page_and_save_work_with_a_stored_overlay_and_a_very_long_tex
         proc.terminate()
 
 
+def test_audio_job_delete_is_pythons(client, seed):
+    """DELETE /api/audio-jobs/<id> (the Delete button on Background Jobs): a finished job - done, failed, cancelled, or "transcribed" (waiting for its summary settings) - is
+    removed; one still running is 400 "cancel it first", another world's or a missing one 404, a player 403; the same answers from both servers, and a Python-free gateway
+    deletes too (the route was never ported: it answered "this request could not be completed")."""
+    from app.database import SessionLocal
+    from app.models import AudioJob
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+
+    def make(status, world=None):
+        db = SessionLocal()
+        try:
+            j = AudioJob(world_id=world or seed.world_a.id, purpose="session_recap", filename="session-6-recording.webm", status=status, transcript="hello")
+            db.add(j)
+            db.commit()
+            return j.id
+        finally:
+            db.close()
+
+    def exists(jid):
+        db = SessionLocal()
+        try:
+            return db.get(AudioJob, jid) is not None
+        finally:
+            db.close()
+
+    for status, code_want in (("transcribed", 200), ("done", 200), ("error", 200), ("cancelled", 200), ("interrupted", 200), ("pending", 400), ("transcribing", 400), ("summarizing", 400)):
+        got = []
+        for side, cl in (("py", d), ("gw", v)):
+            jid = make(status)
+            r = cl.delete(f"/api/audio-jobs/{jid}")
+            if side == "gw":
+                assert r.headers.get("x-nd-served-by") == "gateway", status
+            got.append((r.status_code, r.content, exists(jid)))
+        assert got[0] == got[1], (status, got)
+        assert got[0][0] == code_want and got[0][2] == (code_want != 200), (status, got[0])
+    other = make("done", world=seed.world_b.id)
+    for cl in (d, v):
+        assert cl.delete(f"/api/audio-jobs/{other}").status_code == 404
+        assert cl.delete("/api/audio-jobs/99999999").status_code == 404
+    assert exists(other)
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    mine = make("done")
+    assert p.delete(f"/api/audio-jobs/{mine}").status_code == 403 and exists(mine)
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        jid = make("transcribed")
+        r = g.delete(f"/api/audio-jobs/{jid}")
+        assert r.status_code == 200 and r.json() == {"ok": True} and not exists(jid), r.text
+        running = make("transcribing")
+        r = g.delete(f"/api/audio-jobs/{running}")
+        assert r.status_code == 400 and "cancel it first" in r.text and exists(running)
+        assert g.delete(f"/api/audio-jobs/{other}").status_code == 404
+    finally:
+        proc.terminate()
+
+
 def test_speed_report_is_made_listed_downloaded_and_deleted(client, seed):
     """System Monitor's speed report (gateway only): a GM starts the test, it asks the gateway's own pages and read-only APIs for their times, the finished report is
     listed, downloads as a .md with its sections, a player (or a bad id) is refused, and a report can be deleted."""

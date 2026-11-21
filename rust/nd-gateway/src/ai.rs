@@ -4087,6 +4087,32 @@ pub async fn video_job_cancel(cfg: std::sync::Arc<Config>, uri: Uri, headers: He
     }).await.ok()?
 }
 
+/// `DELETE /api/audio-jobs/<id>` (app/routers/audio_jobs.py `api_audio_job_delete`, audio_jobs.delete_job): a finished job's row - done, failed, cancelled, interrupted or
+/// "transcribed" (waiting for its summary settings) - is removed; the world's other jobs are a 404, one still running Python's 400. A GM, or an assistant the Background Jobs
+/// section lets edit. (It was never ported: with no Python the Delete button on the Background Jobs page answered "this request could not be completed".)
+pub async fn audio_job_delete(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap) -> Option<Response<Body>> {
+    let d = uri.path().strip_prefix("/api/audio-jobs/")?;
+    if d.is_empty() || d.len() > 15 || !d.bytes().all(|b| b.is_ascii_digit()) || (d.len() > 1 && d.starts_with('0')) {
+        return None;
+    }
+    let id: i64 = d.parse().ok()?;
+    tokio::task::spawn_blocking(move || -> Option<Response<Body>> {
+        let db = crate::writes::open(&cfg)?;
+        let (p, wid) = assist_caller(&db, &cfg, &uri, &headers)?;
+        if !p.is_gm && crate::pages::edit_level(&p, p.world.as_ref()?, "background_jobs") != Some(true) {
+            return Some(crate::idpages::refusal(403));
+        }
+        let status: Option<Option<String>> = db.query_row("SELECT status FROM audio_jobs WHERE id = ?1 AND world_id = ?2", rusqlite::params![id, wid], |r| r.get::<_, Option<String>>(0)).ok();
+        let Some(status) = status else { return Some(crate::idpages::refusal(404)) };
+        if matches!(status.as_deref(), Some("pending" | "transcribing" | "summarizing")) {
+            return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "Job is still in progress \u{2014} cancel it first"));
+        }
+        db.execute("DELETE FROM audio_jobs WHERE id = ?1", [id]).ok()?;
+        let _ = db.execute("DELETE FROM shared_state WHERE key = ?1", [format!("jobowner:audio_jobs:{id}")]);
+        crate::edits::json_response(&json!({"ok": true}))
+    }).await.ok()?
+}
+
 /// `DELETE /api/video-jobs/<id>`: a finished job's row (its clip stays); a missing or still-running job is Python's 400
 pub async fn video_job_delete(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap) -> Option<Response<Body>> {
     let d = uri.path().strip_prefix("/api/video-jobs/")?;
