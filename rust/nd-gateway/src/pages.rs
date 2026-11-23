@@ -720,22 +720,20 @@ pub fn entity_detail(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
     let strip = |t: &str| -> Option<String> { nd_perm::gmonly::strip_gm_only(t, viewer_id, nd_render::now_minute()) };
     // the request's own visibility rule (filter_visible_entities) goes by the REAL viewer, not the preview
     let vis = if p.is_gm { "1".to_string() } else { format!("(e.visible_to_players IS NOT 0 OR e.id IN (SELECT entity_id FROM entity_player_access WHERE user_id = {}))", p.user_id) };
-    let active_wid = p.world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64());
-    let (mut audio, mut video) = (vec![], vec![]);
-    if let Some(aw) = active_wid {
-        let v = if is_gm { "" } else { " AND visible_to_players IS 1" };
-        audio = rows(&format!("SELECT * FROM audio_clips WHERE entity_id = ?1 AND world_id = ?2{v} ORDER BY created_at DESC"), &[&id, &aw]).or_else(|| dtrace(711))?;
-        video = rows(&format!("SELECT * FROM video_clips WHERE entity_id = ?1 AND world_id = ?2{v} ORDER BY created_at DESC"), &[&id, &aw]).or_else(|| dtrace(712))?;
-    }
     let backlinks = rows(&format!("SELECT e.* FROM entities e JOIN entity_links l ON l.source_id = e.id WHERE l.target_id = ?1 AND {vis} ORDER BY e.kind, e.name"), &[&id]).or_else(|| dtrace(714))?;
     let notes_vis = if p.is_gm { "" } else { " AND visible_to_players IS 1" };
     let mut notes = rows(&format!("SELECT * FROM entity_notes WHERE entity_id = ?1{notes_vis} ORDER BY created_at"), &[&id]).or_else(|| dtrace(716))?;
     let names = autolink_names_all(&db, ewid, &vis).or_else(|| dtrace(717))?;
+    // the texts the Media tab may list pictures from: each markdown note as this viewer gets it (already stripped)
+    let mut note_texts: Vec<String> = vec![];
     for n in notes.iter_mut() {
         let content = n.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let content = if is_gm { content } else { strip(&content).or_else(|| dtrace(720))? };
-        let html = if truthy_json(n.get("content_is_html")) { content } else { md::render_md(&content) };
+        let html = if truthy_json(n.get("content_is_html")) { content.clone() } else { md::render_md(&content) };
         n.insert("content_html".into(), Value::String(text::autolink_entities_excluding(&html, &names, Some(id)).or_else(|| dtrace(722))?));
+        if !truthy_json(n.get("content_is_html")) {
+            note_texts.push(content);
+        }
     }
     // custom fields of a template-made entity
     let mut custom_sections: Vec<(String, Vec<Value>)> = vec![];
@@ -844,6 +842,7 @@ pub fn entity_detail(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
         parts.push(format!("Related entities: {}", rel_names.join(", ")));
     }
     let ai_extra = parts.join("\n\n");
+    let active_wid = p.world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64());
     // ai_instructions.enabled_instructions_text for the active world
     let mut ai_custom = String::new();
     if let Some(aw) = active_wid {
@@ -861,7 +860,10 @@ pub fn entity_detail(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
         }
     }
     let objs = |v: Vec<Map<String, Value>>| Value::Array(v.into_iter().map(Value::Object).collect());
+    // the Media tab (app/entity_media.py): the entity's pictures and the audio / video clips that belong to it, by the ENTITY's world
+    let entity_media = crate::entity_media::media_tab(&db, &entity, &safe_body, &note_texts, is_gm).or_else(|| dtrace(881))?;
     let c = &mut p.ctx;
+    c.insert("entity_media".into(), entity_media);
     c.insert("entity".into(), Value::Object(entity));
     c.insert("view_as_player".into(), json!(view_as_player));
     c.insert("backlinks".into(), objs(backlinks));
@@ -874,8 +876,7 @@ pub fn entity_detail(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
     c.insert("safe_summary".into(), safe_summary);
     c.insert("visible_related".into(), objs(related));
     c.insert("entity_ai_extra".into(), Value::String(ai_extra));
-    c.insert("entity_media_audio".into(), objs(audio));
-    c.insert("entity_media_video".into(), objs(video));
+    // the Media tab (app/entity_media.py): the entity's pictures and the audio / video clips that belong to it, by the ENTITY's world
     c.insert("ai_custom_instructions".into(), Value::String(ai_custom));
     render_with(pages, "entities/detail.html", p.ctx, headers)
 }

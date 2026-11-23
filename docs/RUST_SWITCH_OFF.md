@@ -31,6 +31,12 @@ them after each batch; the phase is done when both are empty and the steps below
 
 ### Done so far
 
+- **An entity page's Media tab** (entity_media.rs, pages.rs `entity_detail`, gallery.rs `discover`, edits.rs `em_*`, apis.rs `entity_media`, nd-perm
+  `is_assistant_safe`): the pictures an entity keeps (entities.media_images_json), its portrait and the ones written in its body and notes, and the audio / video clips
+  that belong to it, as Python's `app/entity_media.py` lists them; the gallery counts kept pictures as used; `GET /api/entity/<id>/media`, attach, visibility,
+  rename, remove, a dropped picture or audio file (direct and in parts) and the picker's lists. A dropped video (ffmpeg) is Python's. Deleting entities sets
+  their clips loose there too. The route is in the Rust assistant allowlist. tests/test_gateway_entity_media.py: the page for a GM and a player, every route
+  answered by the gateway with Python's answer, the assistant tier, and the whole flow with no Python behind it.
 - **Map editor refusals** (edits.rs `sc_gate`, `sc_body`, `sc_missing_404`, `sc_for_manager`): the walls / fog / door / light /
   lights / rooms / rooms-detect family stays strictly active-world scoped for everyone, while the slug-only schematic routes
   (elements, grid, rename, delete, link / unlink combat) let a GM reach any world. The 400 / 404 bodies are Python's, including

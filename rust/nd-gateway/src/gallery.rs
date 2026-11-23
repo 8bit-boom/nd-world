@@ -71,8 +71,9 @@ pub fn discover(db: &Connection, wid: i64) -> Option<Vec<Map<String, Value>>> {
             None => found.push((url.to_string(), vec![use_])),
         }
     };
-    // entities: portrait, body embeds, note embeds - in id order
-    let ents = text_cols(db, "SELECT CAST(id AS TEXT), name, image_url, body FROM entities WHERE world_id = ?1 ORDER BY id", wid, 4)?;
+    // entities: portrait, kept pictures (entities.media_images_json - read in the same query, nearly every row holds "[]"), body embeds, note
+    // embeds - in id order
+    let ents = text_cols(db, "SELECT CAST(id AS TEXT), name, image_url, body, media_images_json FROM entities WHERE world_id = ?1 ORDER BY id", wid, 5)?;
     let notes = text_cols(
         db,
         "SELECT CAST(entity_notes.entity_id AS TEXT), entity_notes.content FROM entity_notes JOIN entities ON entities.id = entity_notes.entity_id \
@@ -84,6 +85,11 @@ pub fn discover(db: &Connection, wid: i64) -> Option<Vec<Map<String, Value>>> {
         let (id, name) = (e[0].clone()?, e[1].clone().unwrap_or_else(|| "None".into()));
         let href = format!("/entity/{id}");
         add(e[2].as_deref(), name.clone(), href.clone());
+        if e[4].as_deref().map_or(false, |t| t != "[]") {
+            for p in crate::entity_media::load_pictures(e[4].as_deref())? {
+                add(Some(p["url"].as_str()?), format!("{name} (media)"), href.clone());
+            }
+        }
         if e[3].as_deref().map_or(false, |b| b.contains("![")) {
             for u in md_images(e[3].as_deref()) {
                 add(Some(&u), name.clone(), href.clone());

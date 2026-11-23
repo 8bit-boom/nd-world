@@ -406,6 +406,18 @@ Rules and the working loop: `CLAUDE.md`, `docs/FORK_RUST_PORT_GUIDE.md`. Which b
   `session_media.require_room` BEFORE writing a file. Read through `media_items` / `viewer_media` / `panel`, never the raw JSON;
   a picture uploaded for the session (`own`) is deleted with it, one picked from the gallery never is, and `discover_world_images`
   counts session pictures as used (so the gallery cannot delete them from under the session). Players see only what is ticked.
+- **An entity page has a Media tab** (`app/entity_media.py` leaf, `app/routers/entity_media.py`, `templates/entities/_media.html`, `static/js/entity-media.js`;
+  the `data-ep="media"` block of the entity-page layouts): pictures - the ones kept on the entity (`Entity.media_images_json`, a list of
+  `{"uid","url","caption","visible"}`: a picture is only a URL, as in the albums, so taking it off never deletes a file), the portrait and the ones written in the body and
+  the markdown notes - and the /audio and /video clips whose `entity_id` is the entity (a clip is on one entity at a time). It is rendered on the server for every viewer
+  with only what that viewer may see (players and the GM's `?as=player` preview: no tab at all when nothing is visible; whoever may edit the entity always gets it, with
+  the tools). The body and note texts it reads are the STRIPPED ones, never the raw text, so a picture inside `[gmonly]` cannot turn up in the tab. Read and write through
+  the module (`pictures`, `add_picture`, `attached_audio`, `media_tab`), never the JSON; the routes live under `/api/entity/{id}/media` and are in the assistant allowlist
+  (app/main.py and rust/nd-perm `allow.rs`), anything touching a clip also needing that library section's edit level. `discover_world_images` counts kept pictures as
+  used. The script never writes an item's markup: after a change it fetches the page again and patches in what the server rendered (so players keep playing);
+  the file field lies over its drop box rendered but invisible, which is how the shared paste script finds it - no paste code of its own except for a pasted ADDRESS.
+  Deleting entities sets their clips loose (`detach_clips`), because SQLite reuses ids. Tests: `tests/test_entity_media.py`, and through the gateway
+  `tests/test_gateway_entity_media.py`.
 - **Second screen** (`app/routers/display.py`, `templates/display.html`, `static/js/nd-stage.js`): a GM-only
   `/display` window for a second monitor plus "send to screen" actions (hover any image, the lightbox, any
   text selection, the entity page's 📺 buttons). The stage is per-world in-memory state like `live.py`. It

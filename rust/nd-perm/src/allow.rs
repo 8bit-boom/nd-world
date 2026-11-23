@@ -200,6 +200,10 @@ pub fn is_assistant_safe(method: &str, path: &str) -> bool {
     if post && (path == "/api/upload-image" || path == "/api/upload-media") {
         return true;
     }
+    // an entity page's Media tab (app/routers/entity_media.py): what is on it, and every way of adding to or changing it - entity content
+    if matches!(method, "GET" | "POST") && m(re!(r"^/api/entity/\d+/media(/|$)"), path) {
+        return true;
+    }
     if post && (m(re!(r"^/api/entity/\d+/image$"), path) || m(re!(r"^/api/entity/\d+/(rename|field)$"), path) || m(re!(r"^/kind/[^/]+/bulk-delete$"), path)) {
         return true;
     }

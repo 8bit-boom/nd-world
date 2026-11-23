@@ -42,6 +42,7 @@ pub mod idpages;
 pub mod edits;
 pub mod files;
 pub mod form;
+pub mod entity_media;
 pub mod gallery;
 pub mod home;
 pub mod hub;

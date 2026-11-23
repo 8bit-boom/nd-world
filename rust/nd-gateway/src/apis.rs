@@ -98,6 +98,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         path if id_between(path, "/characters/", "/export.foundry.json").is_some() => pc_export_foundry(&cfg, uri, headers, id_between(path, "/characters/", "/export.foundry.json")?),
         path if path.starts_with("/worlds/switch/") => world_switch(&cfg, uri, headers),
         path if session_media_id(path).is_some() => session_media(&cfg, uri, headers, session_media_id(path)?),
+        path if entity_media_id(path).is_some() => entity_media(&cfg, uri, headers, entity_media_id(path)?),
         path if pack_world(path).is_some() => content_pack(&cfg, uri, headers, pack_world(path)?),
         "/api/audio-jobs" => audio_job_list(&cfg, uri, headers),
         "/api/entities/picker" => entities_picker(&cfg, uri, headers),
@@ -124,7 +125,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
 pub fn is_get(path: &str) -> bool {
     matches!(path, "/api/hover-preview/config" | "/api/audio-jobs" | "/api/entities/picker" | "/api/cockpit/workspace" | "/api/cockpit/player-board" | "/api/calendar/search" | "/calendar/event-jump" | "/api/me" | "/api/view-prefs" | "/api/dice/history" | "/api/display/state" | "/rules/download.md" | "/api/ai/imagegen/jobs" | "/api/ai/imagegen/model-templates" | "/api/ai/world-summary")
         || id_between(path, "/api/ai/projects/", "/files").is_some() || id_between(path, "/pages/", "/download").is_some() || tpl_export_path(path).is_some() || export_json_path(path).is_some()
-        || session_media_id(path).is_some() || id_between(path, "/api/ai/assist-job/", "").is_some() || id_between(path, "/api/entity/", "/preview").is_some() || id_between(path, "/entity/", "/download.md").is_some()
+        || session_media_id(path).is_some() || entity_media_id(path).is_some() || id_between(path, "/api/ai/assist-job/", "").is_some() || id_between(path, "/api/entity/", "/preview").is_some() || id_between(path, "/entity/", "/download.md").is_some()
         || id_between(path, "/api/ai/imagegen/jobs/", "").is_some() || path.starts_with("/api/ai/ollama/upload/status/")
         || (path.starts_with("/worlds/switch/") && path.len() > "/worlds/switch/".len() && !path["/worlds/switch/".len()..].contains('/')) || vitals_id(path).is_some() || audio_job_id(path).is_some() || pack_world(path).is_some()
         || media_run_id(path).is_some() || session_audio_job_id(path).is_some() || player_image_job_id(path).is_some()
@@ -564,6 +565,11 @@ fn session_media_id(path: &str) -> Option<i64> {
     id_between(path, "/api/sessions/", "/media")
 }
 
+/// the id of `GET /api/entity/<id>/media`
+fn entity_media_id(path: &str) -> Option<i64> {
+    id_between(path, "/api/entity/", "/media")
+}
+
 fn page(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<(crate::writes::Pooled, crate::layout::PageCtx)> {
     let db = crate::writes::open(cfg)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
@@ -688,6 +694,19 @@ fn session_media(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Optio
     crate::edits::json_response(&crate::edits::sm_panel_db(&db, id)?)
 }
 
+
+/// `media_list` (app/routers/entity_media.py): an entity page's Media tab - what is on it and what may be added - for an entity of the active
+/// world the caller may edit content in
+fn entity_media(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !(p.is_gm || p.role.as_deref() == Some("assistant")) {
+        return Some(crate::idpages::refusal(403));
+    }
+    let Some(w) = p.world.as_ref() else { return Some(crate::idpages::refusal(404)) };
+    let entity = rows_of(&db, "SELECT * FROM entities WHERE id = ?1", &[&id])?.into_iter().next().filter(|e| e.get("world_id").and_then(|v| v.as_i64()) == w.get("id").and_then(|v| v.as_i64()));
+    let Some(entity) = entity else { return Some(crate::idpages::refusal(404)) };
+    crate::edits::json_response(&crate::entity_media::state(&db, &entity, p.is_gm, true)?)
+}
 
 /// `entity_preview` (app/main.py): the hover popup's data for an entity the viewer may see (`_entity_view_gate`: every refusal a 404)
 fn entity_preview(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {

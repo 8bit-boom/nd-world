@@ -1,0 +1,170 @@
+{# An entity page's Media tab (app/entity_media.py): its pictures and the audio and video clips that belong to it - rendered here on the
+   server for every viewer, holding only what that viewer may see. Whoever may edit the entity also gets the tools: files dropped on the tab,
+   the galleries of this world, and on each item a "players can see" switch, a name and a remove (static/js/entity-media.js). After a change that
+   script fetches the page again and patches in what the server rendered, so this file is the only place an item's markup is written.
+   Included by entities/detail.html; it uses that page's entity / entity_media / view_as_player and the can_edit() global. #}
+{% set manage = can_edit(request) and not view_as_player %}
+{% set pictures = entity_media.pictures %}
+{% set audio = entity_media.audio %}
+{% set video = entity_media.video %}
+{% if manage or pictures or audio or video %}
+<section class="entity-media" id="entity-media" data-ep="media" data-em-entity="{{ entity.id }}"{% if manage %} data-em-manage="1"{% endif %}>
+  <h2>// MEDIA</h2>
+  {% if manage %}
+  <div class="em-tools" id="em-tools">
+    <div class="em-drop" id="em-drop">
+      {# The file field lies over its box, invisible but rendered: a press on the box opens the browser's own file chooser, and the shared
+         paste script (static/js/nd-clipboard.js) finds the field and hands it a pasted picture or copied files - no paste code of its own. #}
+      <input type="file" id="em-file" multiple accept="image/*,audio/*,video/*,.avif,.opus,.flac,.m4a,.ogg,.oga,.mkv,.mov,.m4v,.ts,.wmv,.flv,.mpg,.mpeg" aria-label="Add pictures, audio or video to this entity">
+      <span>Drop pictures, audio or video here, press to choose files, or paste with Ctrl+V</span>
+    </div>
+    <div class="em-actions">
+      <label class="em-check"><input type="checkbox" id="em-visible" style="width:auto"> Players can see new items straight away</label>
+      <button type="button" class="btn-add-attr" id="em-pick">Choose from this world…</button>
+    </div>
+    <div class="em-progress" id="em-progress" aria-live="polite"></div>
+  </div>
+  {% endif %}
+
+  <div class="em-group" id="em-pictures" data-em-group="pictures">
+    <h3>🖼 Pictures <span class="em-count" data-em-count>{{ pictures|length }}</span></h3>
+    {% if pictures %}
+    <div class="em-grid" data-em-items>
+      {% for p in pictures %}
+      <figure class="em-item em-pic{% if not p.visible %} em-hidden{% endif %}" data-em-key="{% if p.kept %}pic:{{ p.uid }}{% else %}url:{{ p.url }}{% endif %}"{% if not p.visible %} data-em-hidden="1"{% endif %}>
+        {# The box is small: the thumbnail, and the original only in the lightbox. #}
+        <img src="{{ p.url|thumb }}" data-full="{{ p.url }}" alt="{{ p.caption or entity.name }}" loading="lazy" onclick="openLightbox(this.dataset.full || this.src, this.alt)">
+        <figcaption>
+          <span class="em-caption">{{ p.caption }}</span>
+          {% if p.label %}<span class="em-where">{{ p.label }}</span>{% endif %}
+          {% if not p.visible %}<span class="em-badge">GM only</span>{% endif %}
+          {% if manage and p.kept %}
+          <span class="em-ctrl">
+            <label class="em-switch" title="Players can see it on this page"><input type="checkbox" data-em-act="visibility" style="width:auto"{% if p.visible %} checked{% endif %}> players can see</label>
+            <button type="button" class="en-btn" data-em-act="rename" title="Caption" aria-label="Caption">✏</button>
+            <button type="button" class="en-btn en-btn-del" data-em-act="remove" title="Take it off this entity — the picture stays in the gallery" aria-label="Remove">✕</button>
+          </span>
+          {% endif %}
+        </figcaption>
+      </figure>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty-small" data-em-none>No pictures yet.{% if manage %} Drop some above, paste them, or choose from this world.{% endif %}</p>
+    {% endif %}
+  </div>
+
+  <div class="em-group" id="em-audio" data-em-group="audio">
+    {% if audio or manage %}<h3>🎵 Audio <span class="em-count" data-em-count>{{ audio|length }}</span></h3>{% endif %}
+    <div class="em-list" data-em-items>
+      {% for c in audio %}
+      <div class="em-item em-clip{% if not c.visible_to_players %} em-hidden{% endif %}" data-em-key="aud:{{ c.id }}"{% if not c.visible_to_players %} data-em-hidden="1"{% endif %}>
+        <div class="em-head">
+          <strong class="em-caption">🎵 {{ c.name }}</strong>
+          {% if not c.visible_to_players %}<span class="em-badge">GM only</span>{% endif %}
+          {% if manage %}
+          <span class="em-ctrl">
+            {% if c.visible_to_players %}<button type="button" class="en-btn" data-em-act="play" title="Play it for the players now (the same as in the Audio library)">▶ for the table</button>{% endif %}
+            <label class="em-switch" title="Players can hear it on this page (the same switch as in the Audio library)"><input type="checkbox" data-em-act="visibility" style="width:auto"{% if c.visible_to_players %} checked{% endif %}> players can hear</label>
+            <button type="button" class="en-btn" data-em-act="rename" title="Name" aria-label="Name">✏</button>
+            <button type="button" class="en-btn en-btn-del" data-em-act="remove" title="Take it off this entity — the clip stays in the Audio library" aria-label="Remove">✕</button>
+          </span>
+          {% endif %}
+        </div>
+        <audio controls preload="none" src="{{ c.file_url }}" style="width:100%;max-width:560px">
+          {% if c.subtitles_vtt %}<track kind="subtitles" label="Auto-generated" src="data:text/vtt;charset=utf-8,{{ c.subtitles_vtt|urlencode }}">{% endif %}
+        </audio>
+        {% if c.transcript %}<details class="em-text"><summary>Lyrics / text</summary><pre>{{ c.transcript }}</pre></details>{% endif %}
+      </div>
+      {% endfor %}
+      {% if not audio and manage %}<p class="empty-small" data-em-none>No audio yet. Drop a file above, paste an address copied from the Audio library, or choose from this world.</p>{% endif %}
+    </div>
+  </div>
+
+  <div class="em-group" id="em-video" data-em-group="video">
+    {% if video or manage %}<h3>🎬 Video <span class="em-count" data-em-count>{{ video|length }}</span></h3>{% endif %}
+    <div class="em-list" data-em-items>
+      {% for v in video %}
+      <div class="em-item em-clip{% if not v.visible_to_players %} em-hidden{% endif %}" data-em-key="vid:{{ v.id }}"{% if not v.visible_to_players %} data-em-hidden="1"{% endif %}>
+        <div class="em-head">
+          <strong class="em-caption">🎬 {{ v.name }}</strong>
+          {% if not v.visible_to_players %}<span class="em-badge">GM only</span>{% endif %}
+          {% if manage %}
+          <span class="em-ctrl">
+            <label class="em-switch" title="Players can watch it on this page (the same switch as in the Video library)"><input type="checkbox" data-em-act="visibility" style="width:auto"{% if v.visible_to_players %} checked{% endif %}> players can watch</label>
+            <button type="button" class="en-btn" data-em-act="rename" title="Name" aria-label="Name">✏</button>
+            <button type="button" class="en-btn en-btn-del" data-em-act="remove" title="Take it off this entity — the video stays in the Video library" aria-label="Remove">✕</button>
+          </span>
+          {% endif %}
+        </div>
+        <video controls preload="none" src="{{ v.file_url }}"{% if v.poster_url %} poster="{{ v.poster_url }}"{% endif %} style="width:100%;max-width:560px;border-radius:4px;background:#000">
+          {% if v.subtitles_vtt %}<track kind="subtitles" label="Auto-generated" src="data:text/vtt;charset=utf-8,{{ v.subtitles_vtt|urlencode }}">{% endif %}
+        </video>
+        {% if v.transcript %}<details class="em-text"><summary>Text</summary><pre>{{ v.transcript }}</pre></details>{% endif %}
+      </div>
+      {% endfor %}
+      {% if not video and manage %}<p class="empty-small" data-em-none>No video yet. Drop a file above, paste an address copied from the Video library, or choose from this world.</p>{% endif %}
+    </div>
+  </div>
+</section>
+<style>
+.entity-media { margin-top: 1.5rem; }
+.entity-media h2 { color: var(--neon); font-size: .95rem; margin: 0 0 .7rem; }
+.entity-media h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--text-dim); margin: 1rem 0 .5rem; }
+.em-count { display: inline-block; min-width: 1.3rem; padding: 0 .35rem; border: 1px solid var(--border); border-radius: 99px; font-size: .7rem; text-align: center; color: var(--text); }
+.em-tools { display: flex; flex-direction: column; gap: .5rem; padding: .7rem .8rem; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; }
+.em-drop { position: relative; display: flex; align-items: center; justify-content: center; min-height: 64px; padding: .6rem .9rem; text-align: center; font-size: .8rem; color: var(--text-dim); background: var(--bg3); border: 2px dashed var(--border); border-radius: 6px; transition: border-color .12s, background .12s; }
+.em-drop.em-over { border-color: var(--neon); background: var(--bg2); }
+.em-drop input[type=file] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font-size: 16px; }
+.em-actions { display: flex; align-items: center; justify-content: space-between; gap: .6rem; flex-wrap: wrap; font-size: .78rem; }
+.em-check, .em-switch { display: inline-flex; align-items: center; gap: .35rem; color: var(--text-dim); cursor: pointer; }
+.em-switch { font-size: .74rem; }
+.em-progress { font-size: .8rem; color: var(--text-dim); }
+.em-progress:empty { display: none; }
+.em-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .6rem; }
+.em-pic { margin: 0; padding: .35rem; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; }
+.em-pic img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 4px; cursor: zoom-in; background: var(--bg3); }
+.em-pic figcaption { display: flex; flex-direction: column; gap: .2rem; margin-top: .35rem; font-size: .78rem; overflow-wrap: anywhere; }
+.em-pic .em-ctrl { display: flex; align-items: center; gap: .3rem; flex-wrap: wrap; margin-top: .2rem; }
+.em-where { font-size: .68rem; color: var(--text-dim); }
+.em-badge { align-self: flex-start; font-size: .65rem; color: var(--text-dim); border: 1px solid var(--border); border-radius: 3px; padding: .05rem .35rem; }
+.em-hidden { border-color: var(--neon2); border-style: dashed; }
+.em-list { display: flex; flex-direction: column; gap: .6rem; }
+.em-clip { padding: .55rem .75rem; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; }
+.em-head { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin-bottom: .35rem; font-size: .85rem; overflow-wrap: anywhere; }
+.em-clip .em-ctrl { display: inline-flex; align-items: center; gap: .4rem; flex-wrap: wrap; margin-left: auto; }
+.em-text summary { cursor: pointer; font-size: .76rem; color: var(--text-dim); margin-top: .3rem; }
+.em-text pre { white-space: pre-wrap; word-break: break-word; font-family: var(--font); font-size: .82rem; margin: .3rem 0 0; color: var(--text-dim); background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; padding: .5rem .6rem; max-height: 240px; overflow: auto; }
+@media (max-width: 720px) { .em-grid { grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); } }
+/* the picker ("Choose from this world", static/js/entity-media.js) */
+.emp { position: fixed; inset: 0; z-index: 1200; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.65); }
+.emp[hidden] { display: none; }
+.emp-card { width: min(900px, 96vw); max-height: 92dvh; display: flex; flex-direction: column; gap: .55rem; background: var(--bg2); border: 1px solid var(--neon); border-radius: 10px; padding: .8rem .9rem calc(.7rem + env(safe-area-inset-bottom)); box-shadow: 0 10px 40px rgba(0,0,0,.6); }
+.emp-head { display: flex; justify-content: space-between; align-items: center; gap: .5rem; color: var(--neon); }
+.emp-x { min-width: 44px; min-height: 44px; background: none; border: 0; color: var(--text-dim); font-size: 1.1rem; cursor: pointer; }
+.emp-tabs { display: flex; gap: .4rem; }
+.emp-tabs button { flex: 1; min-height: 44px; background: var(--bg3); border: 1px solid var(--border); color: var(--text); border-radius: 6px; font-family: var(--font); cursor: pointer; }
+.emp-tabs button[aria-selected="true"] { border-color: var(--neon); color: var(--neon); }
+.emp-q { min-height: 44px; font-size: 16px; background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0 .6rem; font-family: var(--font); box-sizing: border-box; width: 100%; }
+.emp-body { overflow-y: auto; flex: 1 1 auto; min-height: 14rem; }
+.emp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: .5rem; }
+.emp-tile { position: relative; padding: .25rem; background: var(--bg3); border: 2px solid var(--border); border-radius: 6px; cursor: pointer; text-align: left; color: var(--text); font-family: var(--font); font-size: .74rem; }
+.emp-tile img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 4px; }
+.emp-tile span { display: block; margin-top: .2rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.emp-tile[aria-pressed="true"] { border-color: var(--neon); }
+.emp-tile[aria-pressed="true"]::after { content: "✓"; position: absolute; top: .3rem; right: .3rem; width: 1.4rem; height: 1.4rem; border-radius: 50%; background: var(--neon); color: #000; text-align: center; line-height: 1.4rem; font-weight: bold; }
+.emp-zoom { position: absolute; left: .3rem; top: .3rem; min-width: 32px; min-height: 32px; background: rgba(0,0,0,.6); border: 0; border-radius: 4px; color: #fff; cursor: zoom-in; }
+.emp-row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; padding: .45rem .2rem; border-bottom: 1px solid var(--border); font-size: .85rem; }
+.emp-row input[type=checkbox], .emp-foot input[type=checkbox] { width: 22px; height: 22px; flex: 0 0 auto; margin: 0; }
+.emp-row .emp-name { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; cursor: pointer; }
+.emp-row img { width: 72px; height: 48px; object-fit: cover; border-radius: 4px; background: #000; }
+.emp-row audio, .emp-row video { width: 100%; }
+.emp-tag { font-size: .68rem; color: var(--text-dim); border: 1px solid var(--border); border-radius: 99px; padding: 0 .4rem; }
+.emp-foot { display: flex; gap: .7rem; align-items: center; flex-wrap: wrap; font-size: .8rem; color: var(--text-dim); }
+.emp-foot label { display: inline-flex; gap: .4rem; align-items: center; cursor: pointer; flex: 1 1 14rem; min-width: 0; }
+.emp-add { min-height: 44px; padding: 0 1rem; background: var(--neon); color: #000; border: 0; border-radius: 6px; font-family: var(--font); font-weight: bold; cursor: pointer; }
+.emp-add:disabled { opacity: .4; cursor: default; }
+.emp-msg { color: var(--text-dim); font-size: .82rem; padding: .6rem .2rem; }
+@media (max-width: 720px) { .emp { align-items: stretch; } .emp-card { width: 100vw; max-height: 100dvh; border-radius: 0; } .emp-foot { padding-right: 3.4rem; } }   /* clear of the floating bug button */
+</style>
+{% endif %}

@@ -18,6 +18,10 @@
 - [x] Missing row: 404 `{"detail": "Not Found"}` (not 501) without Python for entity, handout, character, session, session-log, combat, quest, party,
       map and board pages (proxy.rs `missing_row_404`).
 
+## Entity page Media tab (2026-11-23)
+- [x] Pictures, audio and video on an entity page, in the gateway too: the page (pages.rs), the gallery (gallery.rs), `GET /api/entity/<id>/media` and its write routes
+      (edits.rs, nd-perm allowlist) work with no Python; a dropped video is Python's (ffmpeg), as for session media. tests/test_gateway_entity_media.py.
+
 ## Batch 1: still Python-only calls the pages make
 - [x] imagegen tag lists: GET sources/status/search and POST `fetch`, `/activate`, `/delete` (`tags.rs`, Python-free only: Python keeps a parsed-list cache)
 - [x] `POST /api/ai/unsloth/update`

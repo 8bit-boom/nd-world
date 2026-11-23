@@ -411,6 +411,8 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/entity/{}/notes/{}/toggle", note_toggle),
     ("/entity/{}/notes/{}/delete", note_delete),
     ("/entity/{}/notes/{}/edit", note_edit),
+    ("/api/entity/{}/media/attach", em_attach),
+    ("/api/entity/{}/media/upload/complete", em_complete),
 ];
 
 /// The handler for a POST path and the ids in it (digits only, as FastAPI's int converter reads them here)
@@ -427,6 +429,8 @@ const UPLOAD_ROUTES: &[(&str, Handler)] = &[
     ("/api/sessions/{}/media/upload", sm_upload),
     ("/api/sessions/{}/media/upload/chunk", sm_chunk),
     ("/api/sessions/{}/recap-audio/upload", sm_recap_audio_upload),
+    ("/api/entity/{}/media/upload", em_upload),
+    ("/api/entity/{}/media/upload/chunk", em_chunk),
     ("/api/upload-image", toolbar_image),
     ("/api/upload-media", toolbar_media),
     ("/api/characters/upload-image", toolbar_pc_image),
@@ -544,6 +548,21 @@ const SLUG_ROUTES: &[(&str, &str, SlugHandler)] = &[("/api/maps/schematic/", "/m
     ("/api/maps/", "/overlay", map_overlay_save)];
 
 fn slug_route(path: &str) -> Option<(SlugHandler, String)> {
+    // /api/entity/<id>/media/<image|audio|video>/<ref>/<visibility|rename|remove>: the handler reads the id, the kind and the ref back
+    if let Some(rest) = path.strip_prefix("/api/entity/") {
+        let parts: Vec<&str> = rest.split('/').collect();
+        if parts.len() == 5 && parts[1] == "media" && matches!(parts[2], "image" | "audio" | "video") && !parts[0].is_empty() && parts[0].len() <= 15
+            && parts[0].bytes().all(|b| b.is_ascii_digit()) && !parts[3].is_empty() && parts[3].bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            let h: SlugHandler = match parts[4] {
+                "visibility" => em_visibility,
+                "rename" => em_rename,
+                "remove" => em_remove,
+                _ => return None,
+            };
+            return Some((h, format!("{}/{}/{}", parts[0], parts[2], parts[3])));
+        }
+    }
     // /api/sessions/<id>/media/image/<uid>/<visibility|rename|remove>: the handler reads the session id and uid back from the path
     if let Some(rest) = path.strip_prefix("/api/sessions/") {
         let parts: Vec<&str> = rest.split('/').collect();
@@ -2226,6 +2245,8 @@ fn entity_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
         "DELETE FROM entity_notes WHERE entity_id = ?1",
         "DELETE FROM entity_voice_hints WHERE entity_id = ?1",
         "DELETE FROM entity_relations WHERE source_id = ?1 OR target_id = ?1",
+        "UPDATE audio_clips SET entity_id = NULL WHERE entity_id = ?1",
+        "UPDATE video_clips SET entity_id = NULL WHERE entity_id = ?1",
         "DELETE FROM entities WHERE id = ?1",
     ] {
         c.db.execute(sql, [id]).ok()?;
@@ -2330,6 +2351,8 @@ fn bulk_delete(c: &mut Ctx, kind: &str) -> Option<Response<Body>> {
             "DELETE FROM entity_player_access WHERE entity_id = ?1",
             "DELETE FROM entity_notes WHERE entity_id = ?1",
             "DELETE FROM entity_relations WHERE source_id = ?1 OR target_id = ?1",
+            "UPDATE audio_clips SET entity_id = NULL WHERE entity_id = ?1",
+            "UPDATE video_clips SET entity_id = NULL WHERE entity_id = ?1",
             "DELETE FROM entities WHERE id = ?1",
         ] {
             c.db.execute(sql, [id]).ok()?;
@@ -17149,4 +17172,314 @@ fn sm_recap_audio_upload(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let Value::Object(mut out) = sm_panel_value(c, ids[0])? else { return None };
     out.insert("clip".into(), sm_audio_dict(&clip));
     json_response(&Value::Object(out))
+}
+
+// ── an entity page's Media tab (app/routers/entity_media.py) ────────────────────────────────────────────────────────────────────
+
+/// `_editable`: the entity of the active world, for someone who may edit content. None = Python's 403 / 404
+fn em_entity(c: &Ctx, id: i64) -> Option<Map<String, Value>> {
+    (c.p.is_gm || c.is_assistant()).then_some(())?;
+    world_entity(c, id)
+}
+
+/// `_need_section`: a clip belongs to its library - changing one needs that section's edit level (None: Python's 403)
+fn em_clip_section(c: &Ctx, kind: &str) -> Option<()> {
+    if kind != "image" && !c.can_edit_section(kind)? {
+        return None;
+    }
+    Some(())
+}
+
+/// The tab's state as it is NOW: the entity row is read again, so the answer holds the change this request just made
+fn em_state(c: &Ctx, entity_id: i64) -> Option<Response<Body>> {
+    let entity = row(&c.db, "SELECT * FROM entities WHERE id = ?1", entity_id)?;
+    json_response(&crate::entity_media::state(&c.db, &entity, c.p.is_gm, false)?)
+}
+
+fn em_bad(msg: &str) -> Option<Response<Body>> {
+    Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, msg))
+}
+
+fn em_missing(msg: &str) -> Option<Response<Body>> {
+    Some(crate::ai_more::detail(StatusCode::NOT_FOUND, msg))
+}
+
+/// `_set_visible`: the library's switch; a clip the GM hides must not keep playing for the players
+fn em_set_visible(c: &mut Ctx, table: &str, clip: &Map<String, Value>, vis: bool) -> Option<()> {
+    orm::update(&c.db, table, clip["id"].as_i64()?, &[("visible_to_players", Sql::Integer(vis as i64))])?;
+    let wid = clip["world_id"].as_i64()?;
+    let file = clip["file_url"].as_str()?;
+    let playing: Option<Option<String>> = c.db.query_row("SELECT now_playing_url FROM worlds WHERE id = ?1", [wid], |r| r.get(0)).ok();
+    if !vis && playing.flatten().as_deref() == Some(file) {
+        let version: i64 = c.db.query_row("SELECT COALESCE(now_playing_version, 0) FROM worlds WHERE id = ?1", [wid], |r| r.get(0)).ok()?;
+        orm::update(&c.db, "worlds", wid, &[("now_playing_url", Sql::Null), ("now_playing_label", Sql::Null), ("now_playing_loop", Sql::Integer(0)), ("now_playing_version", Sql::Integer(version + 1))])?;
+    }
+    Some(())
+}
+
+/// `_clip_attached`: the audio / video clip `r` names, attached to this entity. `None` = a ref Python's int() reads its own way;
+/// `Some(None)` = Python's 404
+fn em_clip(c: &Ctx, entity: &Map<String, Value>, kind: &str, r: &str) -> Option<Option<Map<String, Value>>> {
+    let Some(cid) = r.parse::<i64>().ok() else { return None };
+    let table = if kind == "audio" { "audio_clips" } else { "video_clips" };
+    let wid = entity["world_id"].as_i64()?;
+    let on_this = entity["id"].as_i64()?;
+    let found: Option<Map<String, Value>> = world_clip(c, table, wid, cid).filter(|row| row["entity_id"].as_i64() == Some(on_this));
+    Some(found)
+}
+
+/// `_kept`: the entity's pictures, and the one with this uid (`None` = Python's 404)
+fn em_kept(entity: &Map<String, Value>, uid: &str) -> Option<Option<(Vec<Map<String, Value>>, usize)>> {
+    let items = crate::entity_media::load_pictures(entity.get("media_images_json").and_then(|v| v.as_str()))?;
+    Some(items.iter().position(|p| p["uid"].as_str() == Some(uid)).map(|at| (items, at)))
+}
+
+/// `"<id>/<kind>/<ref>"` of a per-item route: the entity (the caller may edit it), the kind and the ref, the section's edit level checked
+fn em_item(c: &Ctx, key: &str) -> Option<(Map<String, Value>, String, String)> {
+    let p: Vec<&str> = key.split('/').collect();
+    let entity = em_entity(c, p[0].parse().ok()?)?;
+    let kind = p[1].to_string();
+    em_clip_section(c, &kind)?;
+    Some((entity, kind, p[2..].join("/")))
+}
+
+/// `POST /api/entity/<id>/media/<kind>/<ref>/visibility`: a picture's own switch, or the library's for a clip
+fn em_visibility(c: &mut Ctx, key: &str) -> Option<Response<Body>> {
+    let (entity, kind, r) = em_item(c, key)?;
+    let vis = match sm_body(c)?.get("visible_to_players") {
+        Some(Value::Bool(v)) => *v,
+        _ => return em_bad("visible_to_players must be true or false"),
+    };
+    let not_found = Some(crate::idpages::refusal(404));
+    if kind == "image" {
+        let Some((mut items, at)) = em_kept(&entity, &r)? else { return not_found };
+        items[at].insert("visible".into(), json!(vis));
+        crate::entity_media::store_pictures(&c.db, entity["id"].as_i64()?, &items)?;
+    } else {
+        // `?` hands back a ref Python would read its own way; a clip that is not on this entity is Python's 404
+        let clip = match em_clip(c, &entity, &kind, &r)? {
+            Some(clip) => clip,
+            None => return not_found,
+        };
+        em_set_visible(c, if kind == "audio" { "audio_clips" } else { "video_clips" }, &clip, vis)?;
+    }
+    em_state(c, entity["id"].as_i64()?)
+}
+
+/// `POST .../media/<kind>/<ref>/rename`: a picture's caption (may be emptied), or the clip's own name
+fn em_rename(c: &mut Ctx, key: &str) -> Option<Response<Body>> {
+    let (entity, kind, r) = em_item(c, key)?;
+    let name = match sm_body(c)?.get("name") {
+        Some(Value::String(n)) => nd_render::text::py_split_join(n),
+        _ => return em_bad("name must be text"),
+    };
+    let not_found = Some(crate::idpages::refusal(404));
+    if kind == "image" {
+        let Some((mut items, at)) = em_kept(&entity, &r)? else { return not_found };
+        items[at].insert("caption".into(), json!(take_chars(&name, 200)));
+        crate::entity_media::store_pictures(&c.db, entity["id"].as_i64()?, &items)?;
+    } else {
+        if name.is_empty() {
+            return em_bad("A clip needs a name");
+        }
+        // `?` hands back a ref Python would read its own way; a clip that is not on this entity is Python's 404
+        let clip = match em_clip(c, &entity, &kind, &r)? {
+            Some(clip) => clip,
+            None => return not_found,
+        };
+        orm::update(&c.db, if kind == "audio" { "audio_clips" } else { "video_clips" }, clip["id"].as_i64()?, &[("name", s(&take_chars(&name, 200)))])?;
+    }
+    em_state(c, entity["id"].as_i64()?)
+}
+
+/// `POST .../media/<kind>/<ref>/remove`: the picture unlinked (its file stays in the gallery), the clip back in its library
+fn em_remove(c: &mut Ctx, key: &str) -> Option<Response<Body>> {
+    let (entity, kind, r) = em_item(c, key)?;
+    let not_found = Some(crate::idpages::refusal(404));
+    if kind == "image" {
+        let Some((mut items, at)) = em_kept(&entity, &r)? else { return not_found };
+        items.remove(at);
+        crate::entity_media::store_pictures(&c.db, entity["id"].as_i64()?, &items)?;
+    } else {
+        // `?` hands back a ref Python would read its own way; a clip that is not on this entity is Python's 404
+        let clip = match em_clip(c, &entity, &kind, &r)? {
+            Some(clip) => clip,
+            None => return not_found,
+        };
+        orm::update(&c.db, if kind == "audio" { "audio_clips" } else { "video_clips" }, clip["id"].as_i64()?, &[("entity_id", Sql::Null)])?;
+    }
+    em_state(c, entity["id"].as_i64()?)
+}
+
+/// `POST /api/entity/<id>/media/attach`: {kind: "image", url} keeps a picture of the gallery on the entity; {kind: "audio"|"video", id | url}
+/// makes a clip of the library belong to it
+fn em_attach(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let entity = em_entity(c, ids[0])?;
+    let wid = entity["world_id"].as_i64()?;
+    let b = sm_body(c)?;
+    let kind = b.get("kind").and_then(|k| k.as_str()).unwrap_or("").to_string();
+    let vis = b.get("visible_to_players").and_then(|v| v.as_bool());
+    let not_found = |msg: String| em_missing(&msg);
+    if kind == "audio" || kind == "video" {
+        em_clip_section(c, &kind)?;
+        let table = if kind == "audio" { "audio_clips" } else { "video_clips" };
+        let cid = match b.get("id") {
+            None | Some(Value::Null) => {
+                let Some(url) = b.get("url").and_then(|u| u.as_str()) else { return em_bad("id must be a clip id (or url its file address)") };
+                let key = take_chars(&strip(url), 512);
+                match c.db.query_row(&format!("SELECT id FROM {table} WHERE world_id = ?1 AND file_url = ?2 LIMIT 1"), rusqlite::params![wid, key], |r| r.get::<_, i64>(0)) {
+                    Ok(id) => id,
+                    Err(_) => return not_found(format!("That address is not one of this world's {kind} clips")),
+                }
+            }
+            Some(Value::Bool(_)) => return em_bad("id must be a clip id (or url its file address)"),
+            Some(v) => v.as_i64()?, // a number Python reads its own way: Python's
+        };
+        let Some(clip) = world_clip(c, table, wid, cid) else { return not_found(format!("No such {kind} clip in this world")) };
+        orm::update(&c.db, table, cid, &[("entity_id", Sql::Integer(ids[0]))])?;
+        if let Some(v) = vis {
+            em_set_visible(c, table, &clip, v)?;
+        }
+    } else if kind == "image" {
+        let url = match b.get("url") {
+            Some(Value::String(u)) => u.clone(),
+            _ => return not_found("That picture is not one of this world's images".into()),
+        };
+        let name = crate::gallery::all_world_image_urls(&c.db, wid)?.into_iter().find(|e| e["url"].as_str() == Some(url.as_str())).map(|e| e["name"].clone());
+        let Some(Value::String(name)) = name else { return not_found("That picture is not one of this world's images".into()) };
+        let mut items = crate::entity_media::load_pictures(entity.get("media_images_json").and_then(|v| v.as_str()))?;
+        if items.len() >= crate::entity_media::MAX_PICTURES {
+            return em_bad(&format!("This entity already keeps the maximum of {} pictures - remove one first.", crate::entity_media::MAX_PICTURES));
+        }
+        if !items.iter().any(|i| i["url"].as_str() == Some(url.as_str())) {
+            let mut m = Map::new();
+            m.insert("uid".into(), json!(crate::entity_media::new_uid()));
+            m.insert("url".into(), json!(url));
+            m.insert("caption".into(), json!(take_chars(&name, 200)));
+            m.insert("visible".into(), json!(vis.unwrap_or(false)));
+            items.push(m);
+            crate::entity_media::store_pictures(&c.db, ids[0], &items)?;
+        }
+    } else {
+        return em_bad("kind must be image, audio or video");
+    }
+    em_state(c, entity["id"].as_i64()?)
+}
+
+/// Where a file for the tab comes from: the request's own file part, or the parts of a chunked upload
+enum EmSource {
+    Pick(FilePick),
+    Chunks(Vec<std::path::PathBuf>, u64),
+}
+
+/// The tail of `media_upload` / `media_upload_complete` (`_kind_for`, the section and room checks, the file, the item): decide the kind,
+/// check there is room, write the file, keep it on the entity / add it to its library. A video goes through ffmpeg, which is Python's
+fn em_ingest(c: &mut Ctx, ids: &[i64], entity: &Map<String, Value>, f: &Form, filename: &str, source: EmSource) -> Option<Response<Body>> {
+    let ext = py_suffix_lower(filename)?;
+    let mut candidates: Vec<&str> = vec![];
+    if IMAGE_EXTS.contains(&ext.as_str()) {
+        candidates.push("image");
+    }
+    if [".mp4", ".m4v", ".webm", ".ogv", ".mov", ".mkv", ".avi", ".ts", ".wmv", ".flv", ".mpg", ".mpeg"].contains(&ext.as_str()) {
+        candidates.push("video");
+    }
+    if AUDIO_EXTS.contains(&ext.as_str()) {
+        candidates.push("audio");
+    }
+    let hint = strip(f.get("kind").unwrap_or("")).to_lowercase();
+    let kind = *candidates.iter().find(|k| **k == hint).or(candidates.first())?;
+    em_clip_section(c, kind)?;
+    let (folder, cap) = match kind {
+        "image" => {
+            if crate::entity_media::load_pictures(entity.get("media_images_json").and_then(|v| v.as_str()))?.len() >= crate::entity_media::MAX_PICTURES {
+                return None; // the 400: Python's
+            }
+            ("gallery", gallery_cap(c)?)
+        }
+        "audio" => {
+            if world_count(c, "audio_clips", entity["world_id"].as_i64()?)? >= 300 {
+                return None;
+            }
+            ("audio", upload_cap(c, "max_audio_mb", "MAX_AUDIO_UPLOAD_BYTES", 1024 * 1024 * 1024)?)
+        }
+        _ => return None,
+    };
+    let size = match &source {
+        EmSource::Pick(pick) => pick.len(c)? as i64,
+        EmSource::Chunks(_, size) => *size as i64,
+    };
+    if size > cap {
+        return None;
+    }
+    let dir = uploads_root(c)?.join(folder);
+    std::fs::create_dir_all(&dir).ok()?;
+    let dest = dir.join(unique_upload_filename(filename, &ext)?);
+    c.created.push(dest.clone());
+    match &source {
+        EmSource::Pick(pick) => pick.write_to(c, &dest)?,
+        EmSource::Chunks(parts, _) => reassemble(parts, &dest)?,
+    }
+    let label = strip(f.get("name").unwrap_or(""));
+    let (stem, _) = py_path_parts(filename)?;
+    let visible = ["1", "true", "on", "yes"].contains(&strip(f.get("visible_to_players").unwrap_or("")).to_lowercase().as_str());
+    let item = if kind == "image" {
+        let url = finalize_picture(c, &dest, folder)?;
+        let caption = take_chars(if label.is_empty() { &stem } else { &label }, 200);
+        let uid = crate::entity_media::new_uid();
+        let mut items = crate::entity_media::load_pictures(entity.get("media_images_json").and_then(|v| v.as_str()))?;
+        let mut m = Map::new();
+        m.insert("uid".into(), json!(uid));
+        m.insert("url".into(), json!(url));
+        m.insert("caption".into(), json!(caption));
+        m.insert("visible".into(), json!(visible));
+        items.push(m);
+        crate::entity_media::store_pictures(&c.db, ids[0], &items)?;
+        json!({"uid": uid, "url": url, "caption": caption, "visible_to_players": visible})
+    } else {
+        let name = item_name(f, filename, "Entity audio")?;
+        let desc = take_chars(&format!("Media for {}", entity["name"].as_str().unwrap_or("")), 512);
+        let url = format!("/uploads/audio/{}", dest.file_name()?.to_string_lossy());
+        let cid = orm::insert(&c.db, "audio_clips", &[("world_id", Sql::Integer(entity["world_id"].as_i64()?)), ("name", s(&name)), ("description", s(&desc)),
+            ("file_url", s(&url)), ("visible_to_players", Sql::Integer(visible as i64)), ("entity_id", Sql::Integer(ids[0]))])?;
+        json!({"id": cid, "name": name, "file_url": url, "visible_to_players": visible, "transcript": ""})
+    };
+    let after = row(&c.db, "SELECT * FROM entities WHERE id = ?1", ids[0])?;
+    let Value::Object(mut out) = crate::entity_media::state(&c.db, &after, c.p.is_gm, false)? else { return None };
+    out.insert("kind".into(), json!(kind));
+    out.insert("item".into(), item);
+    json_response(&Value::Object(out))
+}
+
+/// `media_upload`: a dropped picture or audio file
+fn em_upload(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let entity = em_entity(c, ids[0])?;
+    let (f, pick) = form_and_file(c, "file")?;
+    let pick = pick?;
+    let filename = pick.filename(c)?.to_string();
+    if filename.is_empty() {
+        return None;
+    }
+    em_ingest(c, ids, &entity, &f, &filename, EmSource::Pick(pick))
+}
+
+/// `media_upload_chunk`: one part of a large file, stashed under <uploads>/entity_media/_chunks
+fn em_chunk(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    em_entity(c, ids[0])?;
+    let gallery = gallery_cap(c)?;
+    let video = upload_cap(c, "max_video_mb", "MAX_VIDEO_UPLOAD_BYTES", 2 * 1024 * 1024 * 1024)?;
+    let audio = upload_cap(c, "max_audio_mb", "MAX_AUDIO_UPLOAD_BYTES", 1024 * 1024 * 1024)?;
+    save_chunk_in(c, "entity_media", (128 * 1024 * 1024).min(gallery.max(video).max(audio)))
+}
+
+/// `media_upload_complete`: the chunks put together and added as `media_upload` would add the file
+fn em_complete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let entity = em_entity(c, ids[0])?;
+    let f = c.form()?;
+    let id = f.get("upload_id").filter(|v| !v.is_empty())?.to_string();
+    let filename = f.get("filename").filter(|v| !v.is_empty())?.to_string();
+    let total = form_int_required(&f, "total_chunks")?;
+    let (dir, parts, size) = chunk_parts(c, "entity_media", &id, total)?;
+    let answer = em_ingest(c, ids, &entity, &f, &filename, EmSource::Chunks(parts, size))?;
+    c.removals.push(dir);
+    Some(answer)
 }

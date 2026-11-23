@@ -10,19 +10,14 @@ from sqlalchemy.orm import Session
 
 from .models import Entity, EntityNote, ImageAlbum, MediaTitle, PlayerCharacter, World
 
-_MD_IMG_RE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)\)")
+# A leaf module (it is imported by routers), so the markdown-picture scan and the entity picture list live there
+from .entity_media import load_pictures as _load_entity_pictures, md_images as _extract_md_images
 
 # Matches the random hex prefix app/uploads.py's unique_upload_filename()
 # puts on every stored filename (e.g. "a1b2c3d4e5f6-goblin-portrait.jpg") so
 # it can be stripped back off, revealing the uploader's original name
 # instead of a meaningless hex string.
 _UPLOAD_PREFIX_RE = re.compile(r"^[0-9a-f]{12}-")
-
-
-def _extract_md_images(text):
-    if not text:
-        return []
-    return _MD_IMG_RE.findall(text)
 
 
 def image_display_name(url: str, uses: list = None) -> str:
@@ -71,10 +66,15 @@ def discover_world_images(db: Session, world: World) -> list:
     # contain a markdown image at all ("![") - building 5,000 ORM objects and regex-scanning every body made this the slowest part of /maps for a GM.
     names = {}
     portraits = {}
-    for eid, name, image_url in db.query(Entity.id, Entity.name, Entity.image_url).filter(Entity.world_id == world.id).order_by(Entity.id).all():
+    # kept: the pictures an entity keeps on its Media tab (app/entity_media.py) - used there, so the gallery names them after it and refuses
+    # to delete them from under it. Read in the same query: nearly every row holds "[]", and only those get parsed.
+    kept = {}
+    for eid, name, image_url, stored in db.query(Entity.id, Entity.name, Entity.image_url, Entity.media_images_json).filter(Entity.world_id == world.id).order_by(Entity.id).all():
         names[eid] = name
         if image_url:
             portraits[eid] = image_url
+        if stored and stored != "[]":
+            kept[eid] = [i["url"] for i in _load_entity_pictures(stored)]
     body_urls = {eid: body for eid, body in db.query(Entity.id, Entity.body).filter(Entity.world_id == world.id, Entity.body.contains("![")).all()}
     note_rows: dict = {}
     for eid, content in (
@@ -88,6 +88,8 @@ def discover_world_images(db: Session, world: World) -> list:
         href = f"/entity/{eid}"
         if eid in portraits:
             _add(portraits[eid], name, href)
+        for url in kept.get(eid, ()):
+            _add(url, f"{name} (media)", href)
         for url in _extract_md_images(body_urls.get(eid)):
             _add(url, name, href)
         for content in note_rows.get(eid, ()):

@@ -524,6 +524,10 @@ class Entity(Base):
     # top of the free-text body — see EntityTemplate for the field definitions.
     template_id = Column(Integer, ForeignKey("entity_templates.id"), nullable=True)
     custom_fields_json = Column(Text, default="{}")  # {field_id: value or [ {...}, ... ] for list fields}
+    # Pictures kept on the entity's Media tab (app/entity_media.py): a JSON list of {"uid", "url", "caption", "visible"}. A picture is
+    # only a URL here, as in the gallery's albums (ImageAlbum) - taking it off never deletes a file. Healed in by database._migrate
+    # like every late-added Entity column, and loaded on use: entity lists never read it.
+    media_images_json = deferred(Column(Text, default="[]"))
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

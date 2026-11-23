@@ -56,7 +56,7 @@
   function count(g) {
     if (g === "notes") return article.querySelectorAll(".en-note").length;
     if (g === "links") return article.querySelectorAll("#conn-items > .nd-item").length;
-    if (g === "media") return article.querySelectorAll('[data-ep="media"] audio, [data-ep="media"] video').length;
+    if (g === "media") return article.querySelectorAll('[data-ep="media"] .em-item').length;
     return 0;
   }
 
@@ -106,6 +106,12 @@
     }
     paintBar();
   }
+  // The tab's label carries its count: the Media tab's items change without the page reloading (static/js/entity-media.js), so it asks
+  // for the labels to be written again when they do.
+  function paintTabs() {
+    article.querySelectorAll(".ep-tab").forEach((b) => { const g = b.dataset.tab; b.textContent = LABEL[g] + (count(g) ? " (" + count(g) + ")" : ""); });
+  }
+  article.addEventListener("nd-media-change", paintTabs);
   function paintBar() {
     bar.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
   }

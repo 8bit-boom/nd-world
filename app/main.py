@@ -46,6 +46,7 @@ from . import view_prefs
 from . import map_tiles as _map_tiles
 from . import uvtt_import as _uvtt_import
 from . import schematic_payload as _schematic_payload
+from . import entity_media as _entity_media
 from . import session_media as _session_media
 from . import streaming_export as _streaming_export
 from . import training_bundle as _training_bundle
@@ -75,6 +76,7 @@ from .routers.session_audio import router as session_audio_router
 from .routers.map_props import delete_prop_file as _delete_prop_file, router as map_props_router
 from .routers.map_walls import router as map_walls_router
 from .routers.session_media import router as session_media_router
+from .routers.entity_media import router as entity_media_router
 from .routers.character_hub import router as character_hub_router
 from .routers.character_share import router as character_share_router
 from .routers.characters import _pc_to_foundry_journal
@@ -205,6 +207,7 @@ app.include_router(quests_router)
 app.include_router(sessions_router)
 app.include_router(session_audio_router)
 app.include_router(session_media_router)
+app.include_router(entity_media_router)
 app.include_router(map_props_router)
 app.include_router(map_walls_router)
 app.include_router(calendar_router)
@@ -891,6 +894,10 @@ def _is_assistant_safe(method: str, path: str) -> bool:
         return True
     if method == "POST" and re.match(r"^/api/entity/\d+/(rename|field)$", path):
         # The right-click "Rename" on an entity link / title — entity content.
+        return True
+    if method in ("GET", "POST") and re.match(r"^/api/entity/\d+/media(/|$)", path):
+        # An entity page's Media tab (app/routers/entity_media.py): what is on it, and every way of adding to or changing it — entity
+        # content. Anything that touches an audio or video clip also needs that section's own edit level, checked in the handler.
         return True
     if method == "POST" and re.match(r"^/kind/[^/]+/bulk-delete$", path):
         # The list pages' bulk-action bar.
@@ -6922,20 +6929,6 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
         viewer_id = int(pid) if pid.isdigit() else None
     world = get_active_world(request, db, active_world)
     worlds = _visible_worlds(request, db)
-    # Media attached to this entity — audio/video library clips linked via
-    # their entity_id. Player-visible rows only (mirrors each library's own
-    # visibility model); GMs also see which clips they can manage there.
-    entity_media_audio = []
-    entity_media_video = []
-    if world is not None:
-        from .models import AudioClip as _AC, VideoClip as _VC
-        _aq = db.query(_AC).filter(_AC.entity_id == entity.id, _AC.world_id == world.id)
-        _vq = db.query(_VC).filter(_VC.entity_id == entity.id, _VC.world_id == world.id)
-        if not is_gm:
-            _aq = _aq.filter(_AC.visible_to_players.is_(True))
-            _vq = _vq.filter(_VC.visible_to_players.is_(True))
-        entity_media_audio = _aq.order_by(_AC.created_at.desc()).all()
-        entity_media_video = _vq.order_by(_VC.created_at.desc()).all()
     backlinks = _filter_visible_entities(
         db.query(Entity)
         .join(entity_links, entity_links.c.source_id == Entity.id)
@@ -6944,6 +6937,10 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
     ).order_by(Entity.kind, Entity.name).all()
     entity_notes = _visible_entity_notes(db, entity_id, request)
     autolink_names = _autolink_name_map(db, entity.world_id, request, exclude_entity_id=entity.id)
+    # What the Media tab may list from the notes: each markdown note's text as THIS viewer gets it (already stripped), never the raw
+    # text - a picture hidden inside a GM-only part must not turn up in the tab. Rich-text notes are not read: their pictures are the
+    # note's own.
+    note_texts = []
     for n in entity_notes:
         # strip_gm_only regardless of content_is_html: a [gmonly] block is
         # literal bracket text either way, whether it sits inside markdown
@@ -6953,6 +6950,8 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
         content = n.content if is_gm else strip_gm_only(n.content, viewer_id)
         note_html = content if n.content_is_html else render_md(content)
         n.content_html = autolink_entities(note_html, autolink_names)  # type: ignore[attr-defined]
+        if not n.content_is_html:
+            note_texts.append(content)
     custom_sections = []
     if entity.template_id:
         tpl_fields = json.loads(entity.template.fields_json or "[]") if entity.template else []
@@ -6981,6 +6980,10 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
     # unstripped; computing separate variables is the safer boundary.
     safe_body = entity.body if is_gm else strip_gm_only(entity.body, viewer_id)
     safe_summary = entity.summary if is_gm else strip_gm_only(entity.summary, viewer_id)
+    # The Media tab (app/entity_media.py): this entity's pictures - the kept ones, the portrait and the ones written in the body and the
+    # notes, all as THIS viewer gets them - and the audio / video clips that belong to it. Keyed on the ENTITY's world, which is what the
+    # tab's own routes go by, and holding only what this viewer may see - a GM everything, anyone else what players get.
+    entity_media = _entity_media.media_tab(db, entity, safe_body, note_texts, is_gm=is_gm)
     body_sections, toc = [], []
     if safe_body:
         content_html = autolink_entities(render_md(_RULES_LEGACY_ANCHOR_RE.sub("", safe_body)), autolink_names)
@@ -7014,8 +7017,7 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
         "body_sections": body_sections, "toc": toc,
         "safe_body": safe_body, "safe_summary": safe_summary,
         "visible_related": visible_related, "entity_ai_extra": entity_ai_extra,
-        "entity_media_audio": entity_media_audio,
-        "entity_media_video": entity_media_video,
+        "entity_media": entity_media,
         "ai_custom_instructions": (
             _ai_instructions.enabled_instructions_text(db, world.id, for_players=not is_gm) if world else ""
         ),
@@ -7346,6 +7348,8 @@ def delete(entity_id: int, request: Request, db: Session = Depends(get_db), acti
     db.execute(entity_player_access.delete().where(entity_player_access.c.entity_id == entity_id))
     db.query(EntityNote).filter(EntityNote.entity_id == entity_id).delete()
     db.query(EntityVoiceHint).filter(EntityVoiceHint.entity_id == entity_id).delete()
+    # Audio and video clips that belonged to it go back to their libraries unattached (app/entity_media.py).
+    _entity_media.detach_clips(db, [entity_id])
     # Entity.id is a plain INTEGER PRIMARY KEY (no AUTOINCREMENT), so
     # SQLite can reuse this id for the next entity created — leaving a
     # stale EntityRelation row behind would silently reattach a GM's
@@ -7391,6 +7395,7 @@ def bulk_delete_entities(kind: str, request: Request, db: Session = Depends(get_
             db.query(EntityRelation).filter(
                 EntityRelation.source_id.in_(matched_ids) | EntityRelation.target_id.in_(matched_ids)
             ).delete(synchronize_session=False)
+            _entity_media.detach_clips(db, matched_ids)   # back to their libraries unattached, as the single delete does
             for e in entities:
                 db.delete(e)
             db.commit()
