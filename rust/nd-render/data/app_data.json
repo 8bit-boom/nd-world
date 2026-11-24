@@ -46560,6 +46560,7 @@
     "ai",
     "imagestudio",
     "editor",
+    "cartographer",
     "background_jobs",
     "system_monitor",
     "code_assist",
@@ -46871,6 +46872,18 @@
    "id": "editor",
    "label": "Content Editor",
    "player_section": "editor",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": "cartographer_enabled",
+   "exact": true,
+   "gm_only": true,
+   "href": "/cartographer",
+   "icon": "🗺",
+   "id": "cartographer",
+   "label": "Map Maker",
+   "player_section": "cartographer",
    "ql_ref": null,
    "ql_type": null
   },

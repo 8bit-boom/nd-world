@@ -63,6 +63,7 @@
         <button type="submit" class="tb" title="Link this map to a combat encounter">⚔ Link</button>
       </form>
     {% endif %}
+    <button class="tb" onclick="playMap()" title="One-click: build a live scene from this map's published encounters — the party, the rooms' NPCs and their treasure, placed on the map and linked to a new combat">▶ Play</button>
     <div class="tb-sep"></div>
     <button class="tb" onclick="doZoom(1.2)">＋</button>
     <button class="tb" onclick="fitZoom()" title="Fit · F">⊡ Fit</button>
@@ -2512,6 +2513,19 @@ async function refreshCombat() {
   const data = await r.json();
   activeCombatantId = data.active_id || null;
   redraw();
+}
+// One-click "play this map": the gateway assembles a combat from the published
+// encounters (the party's PCs, the rooms' NPCs and their loot), links it to this
+// schematic and places the tokens, then opens the tracker and the player view.
+async function playMap() {
+  await save();
+  if (!confirm('Build a live scene from this map\'s published encounters? This creates a new combat with the party, the rooms\' NPCs and their treasure, and places them on the map.')) return;
+  const r = await fetch(`/api/maps/schematic/${SLUG}/play`, { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) { alert(data.detail || 'Could not play this map. Publish it from the Map Maker with encounters first.'); return; }
+  window.open(data.tracker, '_blank');
+  window.open(data.player_view, '_blank');
+  location.reload();
 }
 
 // ── Dialog dismissal (Escape + backdrop click) ────────────────────────────────
