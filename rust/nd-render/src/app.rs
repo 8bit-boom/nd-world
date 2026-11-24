@@ -131,6 +131,7 @@ pub struct NavCtx<'a> {
     pub world: Option<&'a Map<String, Value>>,
     pub dreamlands_enabled: bool,
     pub king_in_yellow_enabled: bool,
+    pub cartographer_enabled: bool,
 }
 
 pub fn truthy(v: Option<&Value>) -> bool {
@@ -209,6 +210,9 @@ pub fn resolve_nav(c: &NavCtx) -> Option<(Vec<Value>, Vec<Value>)> {
         if cond == Some("king_in_yellow_enabled") && !c.king_in_yellow_enabled {
             return Some(false);
         }
+        if cond == Some("cartographer_enabled") && !c.cartographer_enabled {
+            return Some(false);
+        }
         let section = item.get("player_section").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
         if let (Some(section), false) = (section, c.is_gm) {
             let level = nd_perm::sections::section_level(false, c.role, access, kinds_json, section)?;
@@ -218,7 +222,7 @@ pub fn resolve_nav(c: &NavCtx) -> Option<(Vec<Value>, Vec<Value>)> {
         } else if truthy(item.get("gm_only")) && !c.is_gm {
             return Some(false);
         }
-        if let Some(cond) = cond.filter(|x| *x != "dreamlands_enabled" && *x != "king_in_yellow_enabled") {
+        if let Some(cond) = cond.filter(|x| *x != "dreamlands_enabled" && *x != "king_in_yellow_enabled" && *x != "cartographer_enabled") {
             if !truthy(c.world.and_then(|w| w.get(cond))) {
                 return Some(false);
             }

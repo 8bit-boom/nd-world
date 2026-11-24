@@ -341,6 +341,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/combat/{}/duplicate", combat_duplicate),
     ("/combat/{}/save-template", combat_save_template),
     ("/combat/templates/{}/run", combat_run_template),
+    ("/api/combat/templates", api_combat_template_create),
     ("/api/combat/{}/sync-characters", combat_sync_characters),
     ("/images/spotlight", spotlight_send),
     ("/images/spotlight/clear", spotlight_clear),
@@ -540,6 +541,7 @@ type SlugHandler = fn(&mut Ctx, &str) -> Option<Response<Body>>;
 /// (prefix, suffix, handler) for paths addressed by a slug: `<prefix><slug><suffix>`, the slug plain letters, digits, `-` and `_`
 const SLUG_ROUTES: &[(&str, &str, SlugHandler)] = &[("/api/maps/schematic/", "/move-token", sc_move_token), ("/api/maps/schematic/", "/pickup-item", sc_pickup),
     ("/api/maps/schematic/", "/buy-item", sc_buy),
+    ("/api/maps/schematic/", "/play-manifest", sc_play_manifest), ("/api/maps/schematic/", "/play", sc_play),
     ("/maps/schematic/", "/door", sc_door), ("/maps/schematic/", "/fog", sc_fog),
     ("/maps/schematic/", "/rooms", sc_rooms), ("/maps/schematic/", "/rooms/detect", sc_rooms_detect), ("/maps/schematic/", "/lights", sc_lights), ("/maps/schematic/", "/walls", sc_walls),
     ("/maps/schematic/", "/elements", sc_elements), ("/maps/schematic/", "/rename", sc_rename), ("/maps/schematic/", "/delete", sc_delete),
@@ -12191,6 +12193,301 @@ fn combat_run_template(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     }
     let id = combat_copy_with(c, &tpl, tpl.get("name").and_then(|v| v.as_str())?, false, false, true)?;
     redirect(&format!("/combat/{id}"))
+}
+
+// ── nd-cartographer integration: encounter templates + one-click "play this map" ──
+
+/// `default_ruleset(db, world_id)`: Hunt / Asterion if a character's sheet plays one, else Neon & Dragons.
+fn world_default_ruleset(db: &Connection, wid: i64) -> Option<String> {
+    let by_slug = nd_render::app::data().get("combat_template_rulesets")?.as_object()?.clone();
+    let mut st = db.prepare_cached("SELECT t.slug FROM player_characters p LEFT JOIN sheet_templates t ON t.id = p.sheet_template_id WHERE p.world_id = ?1 ORDER BY p.id").ok()?;
+    let slugs: Vec<Option<String>> = st.query_map([wid], |r| r.get(0)).ok()?.collect::<Result<_, _>>().ok()?;
+    let hit = slugs.iter().flatten().find_map(|s| by_slug.get(s).and_then(|r| r.as_str()).filter(|r| *r == "hunt" || *r == "asterion"));
+    Some(hit.unwrap_or("nd").to_string())
+}
+
+/// `manual_combatant(name)`: a creature the world has no entity for yet (10 hp, no tracks).
+fn manual_combatant(name: &str) -> Value {
+    json!({"id": new_cid(), "name": if name.is_empty() { "Combatant" } else { name }, "source": "manual",
+           "pc_id": null, "entity_id": null, "initiative": 0, "max_hp": 10, "hp": 10, "max_shock": 0,
+           "shock": 0, "armor": 0, "conditions": [], "notes": ""})
+}
+
+/// Split a creature line "name xN" into (name, count) — N copies, capped at 20.
+fn parse_creature_line(line: &str) -> (String, i64) {
+    let line = line.trim();
+    if let Some((name, n)) = line.rsplit_once(" x").or_else(|| line.rsplit_once(" X")) {
+        if let Ok(count) = n.trim().parse::<i64>() {
+            return (name.trim().to_string(), count.clamp(1, 20));
+        }
+    }
+    (line.to_string(), 1)
+}
+
+/// `POST /api/combat/templates` (app/routers/combat.py::api_combat_template_create):
+/// a reusable encounter template from a room's creature lines. GM-only. The
+/// nd-cartographer studio calls this after publishing a map (plan 21.3).
+fn api_combat_template_create(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    if !c.p.is_gm {
+        return Some(crate::ai_more::detail(StatusCode::FORBIDDEN, "GM access required"));
+    }
+    let wid = c.world_id()?;
+    let body = c.json()?;
+    let name = take_chars(body.get("name").and_then(|v| v.as_str()).unwrap_or("").trim(), 256);
+    if name.is_empty() {
+        return Some(bad400("name required"));
+    }
+    let creatures = body.get("creatures").and_then(|v| v.as_array())?;
+    if creatures.is_empty() || creatures.len() > 20 {
+        return Some(bad400("creatures must be a list of 1-20 lines"));
+    }
+    let mut lines = vec![];
+    for cr in creatures {
+        let Some(t) = cr.as_str() else { return Some(bad400("each creature line is 1-80 chars")) };
+        let t = t.trim();
+        if t.is_empty() || t.len() > 80 {
+            return Some(bad400("each creature line is 1-80 chars"));
+        }
+        lines.push(t.to_string());
+    }
+    let known = nd_render::app::data().get("combat_rulesets")?.as_object()?.clone();
+    let ruleset = body.get("ruleset").and_then(|v| v.as_str()).filter(|r| known.contains_key(*r))
+        .map(String::from).or_else(|| world_default_ruleset(&c.db, wid)).unwrap_or_else(|| "nd".into());
+    let mut combatants = vec![];
+    for line in &lines {
+        let (cname, count) = parse_creature_line(line);
+        for _ in 0..count {
+            combatants.push(manual_combatant(&take_chars(&cname, 80)));
+        }
+    }
+    let id = orm::insert(&c.db, "combat_sessions", &[("world_id", Sql::Integer(wid)), ("name", s(&name)),
+        ("ruleset", s(&ruleset)), ("combatants_json", s(&nd_render::py_dumps(&Value::Array(combatants.clone())))),
+        ("is_template", Sql::Integer(1))])?;
+    orm::touch(&c.db, wid)?;
+    json_response(&json!({"id": id, "name": name, "combatants": combatants.len()}))
+}
+
+/// The play manifest nd-cartographer publishes per room (NPCs + treasure), kept
+/// beside the data folder so no schema change is needed.
+fn play_manifest_path(cfg: &Config, slug: &str) -> std::path::PathBuf {
+    cfg.accel_root.join("play-manifests").join(format!("{slug}.json"))
+}
+fn read_play_manifest(cfg: &Config, slug: &str) -> Value {
+    std::fs::read(play_manifest_path(cfg, slug)).ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_else(|| json!({}))
+}
+
+/// `POST /api/maps/schematic/{slug}/play-manifest`: store the per-room play data
+/// (creatures + loot) the studio sends after publishing. GM / assistant.
+fn sc_play_manifest(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    if let Some(r) = sc_missing_404(c, slug) {
+        return Some(r);
+    }
+    let sc = sc_for_manager(c, slug)?;
+    let body = c.json()?;
+    let rooms = body.get("rooms").and_then(|v| v.as_array())?;
+    let path = play_manifest_path(c.cfg, slug);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok()?;
+    }
+    let payload = json!({"rooms": rooms, "world_id": sc.get("world_id")});
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, payload.to_string()).ok()?;
+    std::fs::rename(&tmp, &path).ok()?;
+    orm::touch(&c.db, sc.get("world_id")?.as_i64()?)?;
+    json_response(&json!({"ok": true, "rooms": rooms.len()}))
+}
+
+/// Room centres (picture px) keyed by room name, decoded from the published
+/// rooms_json (row-major run-length cells). Used to place NPC / item tokens.
+fn room_centers(sc: &Map<String, Value>) -> std::collections::HashMap<String, (f64, f64)> {
+    let mut out = std::collections::HashMap::new();
+    let rooms: Value = serde_json::from_str(sc.get("rooms_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("{}")).unwrap_or_else(|_| json!({}));
+    let cell = rooms.get("cell").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let cols = rooms.get("cols").and_then(|v| v.as_i64()).unwrap_or(0);
+    let (ox, oy) = (rooms.get("ox").and_then(|v| v.as_f64()).unwrap_or(0.0), rooms.get("oy").and_then(|v| v.as_f64()).unwrap_or(0.0));
+    let spaces = rooms.get("spaces").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let cells = rooms.get("cells").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    if cell <= 0.0 || cols <= 0 {
+        return out;
+    }
+    let mut sums: std::collections::HashMap<i64, (f64, f64, i64)> = std::collections::HashMap::new();
+    let (mut idx, mut i) = (0i64, 0usize);
+    while i + 1 < cells.len() {
+        let sid = cells[i].as_i64().unwrap_or(0);
+        let run = cells[i + 1].as_i64().unwrap_or(0).max(0);
+        for _ in 0..run {
+            let e = sums.entry(sid).or_insert((0.0, 0.0, 0));
+            e.0 += (idx % cols) as f64;
+            e.1 += (idx / cols) as f64;
+            e.2 += 1;
+            idx += 1;
+        }
+        i += 2;
+    }
+    for sp in &spaces {
+        let sid = sp.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+        let name = sp.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        if let Some((sx, sy, n)) = sums.get(&sid) {
+            if *n > 0 && !name.is_empty() {
+                out.insert(name.to_string(), ((sx / *n as f64 + 0.5) * cell + ox, (sy / *n as f64 + 0.5) * cell + oy));
+            }
+        }
+    }
+    out
+}
+
+/// Resolve a creature name to a world entity (character / creature), case-insensitive.
+fn find_creature_entity(db: &Connection, wid: i64, name: &str) -> Option<Map<String, Value>> {
+    let mut st = db.prepare_cached("SELECT * FROM entities WHERE world_id = ?1 AND kind IN ('character','creature') ORDER BY id").ok()?;
+    let rows: Vec<Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
+    rows.into_iter().find(|e| e.get("name").and_then(|v| v.as_str()).map(|n| n.eq_ignore_ascii_case(name)).unwrap_or(false))
+}
+
+/// `POST /api/maps/schematic/{slug}/play`: turn a published map into a live
+/// tactical scene in one click — a combat with the party's PCs, the rooms' NPCs
+/// (resolved to world entities where they exist) and item tokens for the loot,
+/// linked to the schematic and placed on it. Body `{party_id?, ruleset?}`.
+fn sc_play(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    if let Some(r) = sc_missing_404(c, slug) {
+        return Some(r);
+    }
+    let sc = sc_for_manager(c, slug)?;
+    let (wid, scid) = (sc.get("world_id")?.as_i64()?, sc.get("id")?.as_i64()?);
+    let body = c.json().unwrap_or_default();
+    let party_id = body.get("party_id").and_then(|v| v.as_i64());
+    let ruleset = body.get("ruleset").and_then(|v| v.as_str()).filter(|s| !s.is_empty())
+        .map(String::from).or_else(|| world_default_ruleset(&c.db, wid)).unwrap_or_else(|| "nd".into());
+    let manifest = read_play_manifest(c.cfg, slug);
+    let rooms = manifest.get("rooms").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let centers = room_centers(&sc);
+    let cw = sc.get("canvas_width").and_then(|v| v.as_i64()).filter(|v| *v != 0).map(|v| v as f64).unwrap_or(2000.0);
+    let ch = sc.get("canvas_height").and_then(|v| v.as_i64()).filter(|v| *v != 0).map(|v| v as f64).unwrap_or(1500.0);
+    let (pcx, pcy) = (cw / 2.0, ch / 2.0);
+
+    let mut combatants: Vec<Value> = vec![];
+    let mut positions: Vec<(f64, f64)> = vec![];
+    let mut items: Vec<(String, i64, f64, f64)> = vec![];
+
+    // The party's PCs, else every character in the world.
+    let pc_rows: Vec<Map<String, Value>> = if let Some(pid) = party_id {
+        let p = row(&c.db, "SELECT * FROM parties WHERE id = ?1", pid)?;
+        let ids = int_list(p.get("member_pc_ids_json"))?;
+        let mut rows = vec![];
+        for id in ids {
+            if let Some(pc) = row(&c.db, "SELECT * FROM player_characters WHERE id = ?1", id) {
+                rows.push(pc);
+            }
+        }
+        rows
+    } else {
+        let mut st = c.db.prepare_cached("SELECT * FROM player_characters WHERE world_id = ?1 ORDER BY name").ok()?;
+        let rows: Vec<Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
+        rows
+    };
+    for pc in &pc_rows {
+        combatants.push(pc_combatant(c, pc)?);
+        positions.push((pcx, pcy));
+    }
+    // NPCs and loot, room by room.
+    for room in &rooms {
+        let rname = room.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let (cx, cy) = centers.get(rname).copied().unwrap_or((pcx, pcy));
+        if let Some(creatures) = room.get("creatures").and_then(|v| v.as_array()) {
+            for line in creatures {
+                let Some(line) = line.as_str() else { continue };
+                let (cname, count) = parse_creature_line(line);
+                if cname.is_empty() {
+                    continue;
+                }
+                for _ in 0..count {
+                    let cb = match find_creature_entity(&c.db, wid, &cname) {
+                        Some(e) => entity_combatant(&e)?,
+                        None => manual_combatant(&cname),
+                    };
+                    combatants.push(cb);
+                    positions.push((cx, cy));
+                }
+            }
+        }
+        if let Some(loot) = room.get("loot").and_then(|v| v.as_array()) {
+            for l in loot {
+                let name = l.get("name").and_then(|v| v.as_str()).unwrap_or("Treasure").to_string();
+                let qty = l.get("qty").and_then(|v| v.as_i64()).unwrap_or(1).clamp(1, 999);
+                items.push((name, qty, cx, cy));
+            }
+        }
+    }
+    if combatants.is_empty() && items.is_empty() {
+        return Some(bad400("Nothing to play: publish a map with encounters first"));
+    }
+    let mut st = Map::new();
+    st.insert("combatants".into(), Value::Array(combatants));
+    let state = cs_normalize(&st).ok()?;
+    let norm = state.get("combatants").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let name = take_chars(&format!("{} — played", sc.get("name").and_then(|v| v.as_str()).unwrap_or("Map")), 256);
+    let cid = orm::insert(&c.db, "combat_sessions", &[("world_id", Sql::Integer(wid)), ("name", s(&name)),
+        ("ruleset", s(&ruleset)), ("combatants_json", s(&nd_render::py_dumps(&Value::Array(norm.clone())))),
+        ("party_id", party_id.map_or(Sql::Null, Sql::Integer))])?;
+    orm::update(&c.db, "schematics", scid, &[("combat_session_id", Sql::Integer(cid))])?;
+
+    // Tokens: one per combatant (PCs clustered at the centre, NPCs in their rooms),
+    // plus an item token per loot entry.
+    let mut elements = obj_list(sc.get("elements_json"))?;
+    let mut n = 0i64;
+    for (i, cb) in norm.iter().enumerate() {
+        let source = cb.get("source").and_then(|v| v.as_str()).unwrap_or("manual");
+        let (x, y) = if source == "pc" {
+            (pcx + ((n % 5) * 45 - 90) as f64, pcy + ((n / 5) * 45 - 45) as f64)
+        } else {
+            positions.get(i).copied().unwrap_or((pcx, pcy))
+        };
+        let mut m = Map::new();
+        m.insert("id".into(), json!(format!("{:08x}", rand::random::<u32>())));
+        m.insert("type".into(), json!("token"));
+        m.insert("x".into(), json!(x));
+        m.insert("y".into(), json!(y));
+        m.insert("r".into(), json!(20));
+        m.insert("layer".into(), json!("Tracks"));
+        m.insert("combatant_id".into(), cb.get("id").cloned().unwrap_or(Value::Null));
+        m.insert("source".into(), json!(source));
+        m.insert("pc_id".into(), cb.get("pc_id").cloned().unwrap_or(Value::Null));
+        m.insert("entity_id".into(), cb.get("entity_id").cloned().unwrap_or(Value::Null));
+        m.insert("name".into(), cb.get("name").cloned().unwrap_or(json!("Combatant")));
+        m.insert("color".into(), json!(match source { "pc" => "#4488ff", "entity" => "#e63946", _ => "#888888" }));
+        m.insert("hp".into(), cb.get("hp").cloned().unwrap_or(json!(0)));
+        m.insert("max_hp".into(), cb.get("max_hp").cloned().unwrap_or(json!(0)));
+        m.insert("conditions".into(), json!([]));
+        m.insert("visible_to_players".into(), json!(matches!(source, "pc" | "entity")));
+        elements.push(m);
+        n += 1;
+    }
+    for (iname, qty, x, y) in &items {
+        let mut m = Map::new();
+        m.insert("id".into(), json!(format!("{:08x}", rand::random::<u32>())));
+        m.insert("type".into(), json!("token"));
+        m.insert("x".into(), json!(x + 30.0));
+        m.insert("y".into(), json!(y + 30.0));
+        m.insert("r".into(), json!(16));
+        m.insert("layer".into(), json!("Tracks"));
+        m.insert("source".into(), json!("item"));
+        m.insert("name".into(), json!(if *qty > 1 { format!("{iname} x{qty}") } else { iname.clone() }));
+        m.insert("quantity".into(), json!(qty));
+        m.insert("color".into(), json!("#f4a261"));
+        m.insert("visible_to_players".into(), json!(true));
+        elements.push(m);
+    }
+    let list = Value::Array(elements.into_iter().map(Value::Object).collect());
+    orm::update(&c.db, "schematics", scid, &[("elements_json", s(&nd_render::py_dumps(&list)))])?;
+    orm::touch(&c.db, wid)?;
+    json_response(&json!({
+        "ok": true, "combat_id": cid, "slug": slug,
+        "editor": format!("/maps/schematic/{slug}"),
+        "player_view": format!("/maps/schematic/{slug}/view"),
+        "tv": format!("/display/map/{slug}"),
+        "tracker": format!("/combat/{cid}"),
+    }))
 }
 
 /// `_as_int(v, default)`: int(v), else the default (text int() reads its own way: Python's)

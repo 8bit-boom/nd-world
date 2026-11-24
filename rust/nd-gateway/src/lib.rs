@@ -4,6 +4,7 @@
 //! itself of an `/uploads/` request - after Python has decided that the request may have it. Everything else is passed on, streamed in both
 //! directions, to the Python server. See `docs/RUST_GATEWAY.md`.
 pub mod boards;
+pub mod cartographer;
 pub mod grp;
 pub mod calendar;
 pub mod misc_apis;
@@ -562,6 +563,31 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
                 return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
             };
             if let Some(resp) = lore_forge::routes::post(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await {
+                return resp;
+            }
+            return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
+        }
+    }
+    // The embedded nd-cartographer map maker (crate::cartographer): nd-world downloads
+    // the release binary, runs it as a managed child, and embeds the studio. GM-only,
+    // Rust-only (a subprocess this gateway manages; no Python counterpart).
+    if config::python_free() && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        let path = req.uri().path();
+        if req.method() == axum::http::Method::GET && matches!(path, "/cartographer" | "/api/cartographer/status") {
+            let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
+            let is_page = path == "/cartographer";
+            if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || cartographer::get(&pages_, &cfg, &uri, &headers, is_page)).await {
+                return resp;
+            }
+        }
+        if req.method() == axum::http::Method::POST
+            && matches!(path, "/cartographer/install" | "/cartographer/uninstall" | "/cartographer/start" | "/cartographer/stop")
+        {
+            let (parts, body) = req.into_parts();
+            let Ok(bytes) = axum::body::to_bytes(body, 1 << 16).await else {
+                return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+            };
+            if let Some(resp) = cartographer::post(app.cfg.clone(), parts.uri.clone(), parts.headers.clone()).await {
                 return resp;
             }
             return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;

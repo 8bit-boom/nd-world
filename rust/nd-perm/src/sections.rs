@@ -4,17 +4,17 @@ use serde_json::Value;
 
 pub const SECTION_PERMISSION_IDS: &[&str] = &[
     "maps", "calendar", "quests", "parties", "tables", "boards", "combat", "races", "professions", "sessions", "facts", "images", "import",
-    "bulk_edit", "background_jobs", "export", "dreamlands", "king-in-yellow", "ai", "imagestudio", "editor", "code_assist", "chronicler", "dice",
+    "bulk_edit", "background_jobs", "export", "dreamlands", "king-in-yellow", "ai", "imagestudio", "editor", "cartographer", "code_assist", "chronicler", "dice",
     "session_log", "rules", "characters", "audio", "video", "pages", "androidapp",
 ];
 pub const KINDS: &[&str] = &["character", "location", "organization", "creature", "event", "item", "feat", "note", "race", "profession"];
 pub const NO_PLAYER_EDIT: &[&str] = &[
     "maps", "boards", "races", "professions", "sessions", "facts", "images", "pages", "audio", "video", "background_jobs", "import", "bulk_edit",
-    "combat", "export", "dreamlands", "king-in-yellow", "ai", "imagestudio", "editor", "code_assist", "chronicler", "dice", "session_log", "rules",
+    "combat", "export", "dreamlands", "king-in-yellow", "ai", "imagestudio", "editor", "cartographer", "code_assist", "chronicler", "dice", "session_log", "rules",
     "characters", "androidapp",
 ];
 pub const NO_ASSISTANT_EDIT: &[&str] = &[
-    "combat", "export", "dreamlands", "king-in-yellow", "ai", "imagestudio", "editor", "code_assist", "chronicler", "dice", "session_log", "rules",
+    "combat", "export", "dreamlands", "king-in-yellow", "ai", "imagestudio", "editor", "cartographer", "code_assist", "chronicler", "dice", "session_log", "rules",
     "characters", "androidapp",
 ];
 const PLAYER_READ_DEFAULT: &[&str] = &["maps", "races", "professions", "chronicler", "dice", "session_log", "rules", "characters", "audio", "video", "pages", "androidapp"];

@@ -150,7 +150,8 @@ pub fn build(db: &Connection, cfg: &Config, method: &str, uri: &Uri, headers: &H
         "max_height_px": num("hover_preview_max_height_px", 420),
     });
     let (dl, ky) = (truthy(s.get("dreamlands_enabled")), truthy(s.get("king_in_yellow_enabled")));
-    let (menus, ungrouped) = app::resolve_nav(&app::NavCtx { is_gm, role: role.as_deref(), world: world.as_ref(), dreamlands_enabled: dl, king_in_yellow_enabled: ky })?;
+    let carto = crate::cartographer::read_state(&crate::cartographer::base(cfg)).get("enabled").and_then(|v| v.as_i64()).unwrap_or(0) != 0;
+    let (menus, ungrouped) = app::resolve_nav(&app::NavCtx { is_gm, role: role.as_deref(), world: world.as_ref(), dreamlands_enabled: dl, king_in_yellow_enabled: ky, cartographer_enabled: carto })?;
     let theme = world
         .as_ref()
         .and_then(|w| w.get("theme_json")?.as_str().map(str::to_string))

@@ -2,6 +2,15 @@
 
 **2026-11-02: `rust-fork` was promoted to `main`** (the old hybrid-only `main` is kept as the branch `hybrid-python-main`). This file keeps the checklist. Rules: `CLAUDE.md`. Update this file with every batch (move items between sections, add the commit).
 
+## nd-cartographer integration (map maker + one-click play)
+- [x] Embedded map maker (`crate::cartographer`): `/cartographer` management page + iframe embed, GM-only `install/uninstall/start/stop`,
+      downloads the nd-cartographer release binary (or `ND_CARTOGRAPHER_BIN_DIR`), runs it as a managed child, autostart + shutdown.
+      Nav entry gated by `cartographer_enabled`; `cartographer` perm section. Rust-only (no Python counterpart).
+- [x] Ported `POST /api/combat/templates` (app/routers/combat.py::api_combat_template_create) — creature lines → a reusable encounter template.
+- [x] One-click play: `POST /api/maps/schematic/{slug}/play-manifest` (per-room NPCs + loot from the studio) and
+      `POST /api/maps/schematic/{slug}/play` (build a combat from the party + the rooms' NPCs, link it to the schematic, place PC/NPC/item tokens).
+      "▶ Play" button on the schematic editor. Tests: `tests/test_gateway_cartographer.py` (Rust-only).
+
 ## Measured starting point (main at 3f217ee)
 - 90% of the app's parameterless GET routes work with no Python (crawl); about 54% of routes are answered only by the gateway, 37% mixed, 9% Python only
   (docs/RUST_PORT_AUDIT.md).
