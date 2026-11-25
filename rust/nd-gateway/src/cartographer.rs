@@ -24,6 +24,12 @@ const REPO_API: &str = "https://api.github.com/repos/8bit-boom/nd-cartographer/r
 const MAX_DOWNLOAD: u64 = 256 * 1024 * 1024;
 const UA: &str = "nd-world-gateway (cartographer-install)";
 
+/// The studio is reverse-proxied under this path on the gateway's own origin, so
+/// the browser never needs to reach the child's loopback port directly (which is
+/// unreachable when nd-world runs in a container). The child serves under the
+/// same prefix (ND_CARTO_BASE_PATH); the proxy forwards the full path.
+pub const STUDIO_BASE: &str = "/cartographer/studio";
+
 /// The running studio, stopped again on uninstall / shutdown. Interior mutability
 /// because the exit hook and the request handlers share it.
 static CHILD: Mutex<Option<Child>> = Mutex::new(None);
@@ -103,6 +109,7 @@ fn spawn_child(bin: &Path, port: u16, token: &str, data: &Path) -> Result<(), St
             &data.to_string_lossy(),
         ])
         .env("ND_CARTO_TOKEN", token)
+        .env("ND_CARTO_BASE_PATH", STUDIO_BASE)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -145,7 +152,7 @@ pub fn status(cfg: &Config) -> Value {
         "enabled": flag("enabled"),
         "running": child_running(),
         "autostart": flag("autostart"),
-        "url": st.get("url").cloned().unwrap_or(Value::Null),
+        "url": if child_running() { json!(STUDIO_BASE) } else { Value::Null },
         "version": st.get("version").cloned().unwrap_or(Value::Null),
         "port": st.get("port").cloned().unwrap_or(Value::Null),
         "dir": b.to_string_lossy(),
@@ -410,18 +417,75 @@ pub fn get(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap, is_page:
     if !is_page {
         return Some(reply(StatusCode::OK, st));
     }
-    // The embed URL carries the studio token so the iframe authenticates.
-    let embed = st
-        .get("url")
-        .and_then(|v| v.as_str())
-        .filter(|_| st.get("running").and_then(|v| v.as_bool()).unwrap_or(false))
-        .map(|u| {
-            let token = read_state(&base(cfg)).get("token").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            if token.is_empty() { u.to_string() } else { format!("{u}/?token={token}") }
-        });
+    // The studio is reverse-proxied under STUDIO_BASE on this same origin (the
+    // browser never reaches the child's loopback port). The proxy is GM-gated by
+    // the session, so no token is needed in the URL.
+    let embed = if st.get("running").and_then(|v| v.as_bool()).unwrap_or(false) {
+        Some(format!("{STUDIO_BASE}/"))
+    } else {
+        None
+    };
     p.ctx.insert("cartographer".into(), st);
     p.ctx.insert("cartographer_embed_url".into(), json!(embed));
     crate::pages::render_with(pages, "cartographer.html", p.ctx, headers)
+}
+
+/// Reverse-proxy the studio under `STUDIO_BASE` on the gateway's own origin. The
+/// browser talks to nd-world (which it can reach); nd-world forwards to the
+/// child's loopback port inside the same environment — so it works even when
+/// nd-world runs in a container. GM-only (the child has no auth on loopback);
+/// the response is streamed so the studio's SSE change feed works.
+pub async fn studio_proxy(req: axum::extract::Request, cfg: Arc<Config>) -> Response<Body> {
+    let (parts, body) = req.into_parts();
+    let method = parts.method.as_str().to_string();
+    let (c, u, h) = (cfg.clone(), parts.uri.clone(), parts.headers.clone());
+    let gm = tokio::task::spawn_blocking(move || gm_ctx(&c, &method, &u, &h).map(|_| ())).await;
+    if !matches!(gm, Ok(Some(_))) {
+        return reply(StatusCode::FORBIDDEN, json!({"detail": "GM access required"}));
+    }
+    let st = read_state(&base(&cfg));
+    let port = st.get("port").and_then(|v| v.as_u64()).filter(|_| child_running());
+    let Some(port) = port else {
+        return reply(StatusCode::SERVICE_UNAVAILABLE, json!({"detail": "The map maker is not running. Open /cartographer and press Start."}));
+    };
+    let pq = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
+    let uri: hyper::Uri = match format!("http://127.0.0.1:{port}{pq}").parse() {
+        Ok(u) => u,
+        Err(_) => return reply(StatusCode::BAD_REQUEST, json!({"detail": "bad request"})),
+    };
+    let bytes = match axum::body::to_bytes(body, 80 * 1024 * 1024).await {
+        Ok(b) => b,
+        Err(_) => return reply(StatusCode::PAYLOAD_TOO_LARGE, json!({"detail": "body too large"})),
+    };
+    let mut builder = hyper::Request::builder().method(parts.method).uri(uri);
+    for (k, v) in parts.headers.iter() {
+        if k == header::HOST || k == header::CONNECTION || k == header::TRANSFER_ENCODING {
+            continue;
+        }
+        builder = builder.header(k, v);
+    }
+    // The child's DNS-rebinding guard requires a loopback Host header.
+    let hreq = match builder
+        .header(header::HOST, format!("127.0.0.1:{port}"))
+        .body(http_body_util::Full::new(bytes))
+    {
+        Ok(r) => r,
+        Err(_) => return reply(StatusCode::BAD_REQUEST, json!({"detail": "bad request"})),
+    };
+    let resp = match crate::net::client().request(hreq).await {
+        Ok(r) => r,
+        Err(_) => return reply(StatusCode::BAD_GATEWAY, json!({"detail": "The map maker did not answer."})),
+    };
+    let (rp, rbody) = resp.into_parts();
+    let mut headers = rp.headers;
+    headers.remove(header::CONNECTION);
+    headers.remove(header::TRANSFER_ENCODING);
+    let mut out = Response::builder().status(rp.status);
+    for (k, v) in headers.iter() {
+        out = out.header(k, v);
+    }
+    out.body(Body::new(rbody))
+        .unwrap_or_else(|_| reply(StatusCode::BAD_GATEWAY, json!({"detail": "bad gateway"})))
 }
 
 /// The POST actions: install / uninstall / start / stop. The download is async;
