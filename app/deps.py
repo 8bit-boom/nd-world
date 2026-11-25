@@ -94,6 +94,7 @@ SECTION_PERMISSION_IDS = {
     "ai": ("AI Chat (GM)", "🤖"),
     "imagestudio": ("Image Studio", "🎨"),
     "editor": ("Content Editor", "🛠"),
+    "cartographer": ("Map Maker", "🗺"),
     "code_assist": ("Code Assist", "🧩"),
     "chronicler": ("Chronicler", "📜"),
     "dice": ("Dice", "🎲"),
@@ -139,7 +140,7 @@ _NO_PLAYER_EDIT_SECTIONS = {
     "maps", "boards", "races", "professions", "sessions", "facts", "images",
     "pages", "audio", "video", "background_jobs", "import", "bulk_edit",
     "combat", "export", "dreamlands", "king-in-yellow", "ai", "imagestudio",
-    "editor", "code_assist", "chronicler", "dice", "session_log", "rules",
+    "editor", "cartographer", "code_assist", "chronicler", "dice", "session_log", "rules",
     "characters", "androidapp",
 }
 
@@ -154,7 +155,7 @@ _NO_PLAYER_EDIT_SECTIONS = {
 # way — these ids only ever control READ visibility through this matrix.
 _NO_ASSISTANT_EDIT_SECTIONS = {
     "combat", "export", "dreamlands", "king-in-yellow", "ai", "imagestudio",
-    "editor", "code_assist", "chronicler", "dice", "session_log", "rules",
+    "editor", "cartographer", "code_assist", "chronicler", "dice", "session_log", "rules",
     "characters", "androidapp",
 }
 
