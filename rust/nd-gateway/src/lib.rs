@@ -116,7 +116,15 @@ pub fn router(cfg: Arc<Config>) -> Router {
     let proxy = proxy::Proxy::new(cfg.clone());
     let pages = Arc::new(pages::Pages::new(&cfg));
     jobs::init(cfg.clone());
-    let state = App { cfg, proxy, pages };
+    // The map studio is compiled in (ndcart_server) and mounted under
+    // /cartographer/studio, gated by the GM session. Built once here, inside the
+    // tokio runtime (it spawns an autosave task). Empty in the hybrid image.
+    let studio = if config::python_free() && cfg.rust_routes.iter().any(|r| r == "pages") {
+        cartographer::studio_router(&cfg)
+    } else {
+        Router::new()
+    };
+    let state = App { cfg, proxy, pages, studio };
     Router::new().fallback(handle).with_state(state).layer(axum::middleware::from_fn(time_request))
 }
 
@@ -137,6 +145,9 @@ pub struct App {
     pub cfg: Arc<Config>,
     pub proxy: proxy::Proxy,
     pub pages: Arc<pages::Pages>,
+    /// The compiled-in map studio, mounted under /cartographer/studio (empty in
+    /// the hybrid image).
+    pub studio: Router,
 }
 
 async fn handle(State(app): State<App>, mut req: Request<Body>) -> Response {
@@ -568,16 +579,30 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
         }
     }
-    // The embedded nd-cartographer map maker (crate::cartographer): nd-world downloads
-    // the release binary, runs it as a managed child, and embeds the studio. GM-only,
-    // Rust-only (a subprocess this gateway manages; no Python counterpart).
+    // The embedded nd-cartographer map studio (crate::cartographer + ndcart_server):
+    // compiled into the gateway and mounted under /cartographer/studio on this origin,
+    // gated by the GM session. GM-only, Rust-only (no Python counterpart).
     if config::python_free() && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let path = req.uri().path();
-        // The studio itself is reverse-proxied under /cartographer/studio/* on this
-        // origin, so the browser never needs the child's loopback port.
         let studio_prefix = format!("{}/", cartographer::STUDIO_BASE);
         if path == cartographer::STUDIO_BASE || path.starts_with(&studio_prefix) {
-            return cartographer::studio_proxy(req, app.cfg.clone()).await;
+            // The studio has no auth of its own here; nd-world gates it by the GM
+            // session, then hands the whole request to the compiled-in router (its
+            // own body limits and SSE streaming apply — no body pre-buffering).
+            let (c, u, h, m) = (app.cfg.clone(), req.uri().clone(), req.headers().clone(), req.method().as_str().to_string());
+            let gm = tokio::task::spawn_blocking(move || cartographer::gm_ctx(&c, &m, &u, &h).map(|_| ())).await;
+            if !matches!(gm, Ok(Some(_))) {
+                return Response::builder()
+                    .status(axum::http::StatusCode::FORBIDDEN)
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{\"detail\":\"GM access required\"}"))
+                    .unwrap();
+            }
+            use tower::ServiceExt;
+            return match app.studio.clone().oneshot(req).await {
+                Ok(resp) => resp,
+                Err(infallible) => match infallible {},
+            };
         }
         if req.method() == axum::http::Method::GET && matches!(path, "/cartographer" | "/api/cartographer/status") {
             let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
@@ -585,18 +610,6 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || cartographer::get(&pages_, &cfg, &uri, &headers, is_page)).await {
                 return resp;
             }
-        }
-        if req.method() == axum::http::Method::POST
-            && matches!(path, "/cartographer/install" | "/cartographer/uninstall" | "/cartographer/start" | "/cartographer/stop")
-        {
-            let (parts, body) = req.into_parts();
-            let Ok(bytes) = axum::body::to_bytes(body, 1 << 16).await else {
-                return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
-            };
-            if let Some(resp) = cartographer::post(app.cfg.clone(), parts.uri.clone(), parts.headers.clone()).await {
-                return resp;
-            }
-            return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
         }
     }
     if req.method() == axum::http::Method::GET && req.uri().path() == "/export/foundry.json" && app.cfg.rust_routes.iter().any(|r| r == "pages") {

@@ -8,20 +8,12 @@
 .carto-actions { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
 .carto-btn { padding: .4rem .9rem; border: 1px solid var(--neon); color: var(--neon); background: none; border-radius: 2px; font-size: .82rem; cursor: pointer; text-decoration: none; white-space: nowrap; }
 .carto-btn:hover { background: var(--neon); color: #000; }
-.carto-btn.danger { border-color: var(--danger, #e63946); color: var(--danger, #e63946); }
-.carto-btn.danger:hover { background: var(--danger, #e63946); color: #fff; }
-.carto-btn[disabled] { opacity: .5; cursor: default; }
 .carto-status { font-size: .82rem; color: var(--text-dim); display: flex; align-items: center; gap: .5rem; }
-.carto-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; background: #888; }
-.carto-dot.on { background: #4caf50; }
-.carto-dot.off { background: #e63946; }
+.carto-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; background: #4caf50; }
 .carto-frame-wrap { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
 .carto-frame { width: 100%; height: calc(100vh - 180px); border: none; display: block; min-height: 500px; }
-.carto-setup { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 2rem; max-width: 760px; }
-.carto-setup h2 { color: var(--neon); margin-bottom: 1rem; font-size: 1rem; }
-.carto-setup p { color: var(--text-dim); font-size: .88rem; line-height: 1.7; margin-bottom: .8rem; }
-.carto-setup code { background: var(--bg3); border: 1px solid var(--border); padding: .1rem .4rem; border-radius: 2px; font-size: .85rem; color: var(--neon3); }
-.carto-msg { font-size: .85rem; color: var(--danger, #e63946); min-height: 1.2em; }
+.carto-note { color: var(--text-dim); font-size: .85rem; line-height: 1.7; }
+.carto-note code { background: var(--bg3); border: 1px solid var(--border); padding: .1rem .4rem; border-radius: 2px; font-size: .85rem; color: var(--neon3); }
 @media (max-width: 768px) { .carto-frame-wrap { display: none; } }
 </style>
 
@@ -29,57 +21,13 @@
   <div class="carto-header">
     <h1>🗺 Map Maker</h1>
     <div class="carto-actions">
-      <span class="carto-status"><span class="carto-dot {{ 'on' if cartographer.running else 'off' }}" id="carto-dot"></span><span id="carto-state">{{ 'running' if cartographer.running else ('installed' if cartographer.installed else 'not installed') }}</span><span id="carto-version">{{ cartographer.version if cartographer.version else '' }}</span></span>
-      <button class="carto-btn" id="carto-install" {{ 'hidden' if cartographer.installed else '' }}>⬇ Install</button>
-      <button class="carto-btn" id="carto-start" {{ '' if cartographer.installed and not cartographer.running else 'hidden' }}>▶ Start</button>
-      <button class="carto-btn" id="carto-stop" {{ '' if cartographer.running else 'hidden' }}>■ Stop</button>
-      <button class="carto-btn danger" id="carto-uninstall" {{ '' if cartographer.installed else 'hidden' }}>Uninstall</button>
-      {% if cartographer_embed_url %}
+      <span class="carto-status"><span class="carto-dot"></span>running<span>{{ cartographer.version if cartographer.version else '' }}</span></span>
       <a href="{{ cartographer_embed_url }}" target="_blank" rel="noopener" class="carto-btn">↗ Open in new tab</a>
-      {% endif %}
     </div>
   </div>
-  <div class="carto-msg" id="carto-msg"></div>
-
-  {% if cartographer_embed_url %}
   <div class="carto-frame-wrap">
     <iframe class="carto-frame" src="{{ cartographer_embed_url }}" title="nd-cartographer map studio" allow="clipboard-read; clipboard-write" loading="lazy"></iframe>
   </div>
-  {% else %}
-  <div class="carto-setup">
-    <h2>The nd-cartographer map studio</h2>
-    <p>Paint battle maps, generate dungeons and whole worlds, and publish them straight into this world as playable schematics. nd-world downloads the studio binary and runs it for you — no separate install.</p>
-    {% if cartographer.installed %}
-    <p>The map maker is installed but not running. Press <code>▶ Start</code> above to launch it.</p>
-    {% else %}
-    <p>Press <code>⬇ Install</code> above. nd-world fetches the latest release for this platform, starts it on a local port, and embeds it here. Your maps are kept in <code>{{ cartographer.dir }}/data</code>.</p>
-    {% endif %}
-    <p>Once a map is published, open it under <a href="{{ '/maps'|wq }}">Maps</a> and press <strong>▶ Play</strong> to turn it into a live tactical scene with your party, the room's NPCs and its treasure.</p>
-  </div>
-  {% endif %}
+  <p class="carto-note">Paint battle maps, generate dungeons and whole worlds, and publish them straight into this world as playable schematics. The studio is built into nd-world — no separate install; your maps are kept in <code>{{ cartographer.dir }}/data</code>. Once a map is published, open it under <a href="{{ '/maps'|wq }}">Maps</a> and press <strong>▶ Play</strong> to turn it into a live tactical scene with your party, the room's NPCs and its treasure.</p>
 </div>
-
-<script>
-(function () {
-  const msg = document.getElementById('carto-msg');
-  const q = location.search || '';
-  async function act(name, btn) {
-    if (btn) btn.disabled = true;
-    msg.textContent = 'Working…';
-    try {
-      const r = await fetch('/cartographer/' + name + q, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok) { msg.textContent = j.detail || ('Failed (' + r.status + ')'); if (btn) btn.disabled = false; return; }
-      location.reload();
-    } catch (e) { msg.textContent = String(e); if (btn) btn.disabled = false; }
-  }
-  for (const name of ['install', 'start', 'stop', 'uninstall']) {
-    const b = document.getElementById('carto-' + name);
-    if (b) b.addEventListener('click', () => {
-      if (name === 'uninstall' && !confirm('Uninstall the map maker? Your maps are kept, but the studio stops and the nav entry is removed.')) return;
-      act(name, b);
-    });
-  }
-})();
-</script>
 {% endblock %}
