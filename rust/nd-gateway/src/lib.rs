@@ -573,6 +573,12 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
     // Rust-only (a subprocess this gateway manages; no Python counterpart).
     if config::python_free() && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let path = req.uri().path();
+        // The studio itself is reverse-proxied under /cartographer/studio/* on this
+        // origin, so the browser never needs the child's loopback port.
+        let studio_prefix = format!("{}/", cartographer::STUDIO_BASE);
+        if path == cartographer::STUDIO_BASE || path.starts_with(&studio_prefix) {
+            return cartographer::studio_proxy(req, app.cfg.clone()).await;
+        }
         if req.method() == axum::http::Method::GET && matches!(path, "/cartographer" | "/api/cartographer/status") {
             let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
             let is_page = path == "/cartographer";

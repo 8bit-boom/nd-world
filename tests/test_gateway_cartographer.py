@@ -50,11 +50,18 @@ def _stub_binary(tmp_path):
     return d
 
 
+def _player_client(seed, url):
+    import httpx
+    from .conftest import PLAYER_PASSWORD
+    p = httpx.Client(base_url=url, timeout=60, follow_redirects=False)
+    assert p.post("/login", data={"email": seed.player_a.email, "password": PLAYER_PASSWORD, "next": "/"}).status_code in (302, 303)
+    p.cookies.set("active_world", seed.world_a.slug)
+    return p
+
+
 def test_cartographer_install_start_stop_uninstall(client, seed, tmp_path):
     """One click installs the map maker (a prepared binary), it runs, stops, starts
     again, and one click uninstalls it. GM only."""
-    import httpx
-
     bindir = _stub_binary(tmp_path)
     proc, url, gm = _python_free_gateway(
         seed,
@@ -79,8 +86,8 @@ def test_cartographer_install_start_stop_uninstall(client, seed, tmp_path):
         st = r.json()
         assert st["installed"] and st["running"] and st["enabled"] and st["autostart"]
         assert st["version"] == "v0.0.0-stub"
-        # the managed studio actually answers on its port
-        assert httpx.get(st["url"] + "/health", timeout=5).json()["status"] == "ok"
+        # the managed studio answers through the gateway's proxy (same origin)
+        assert gm.get("/cartographer/studio/health").json()["status"] == "ok"
 
         # stop keeps it installed; start brings it back
         assert gm.post("/cartographer/stop").json()["running"] is False
@@ -145,5 +152,38 @@ def test_play_manifest_and_one_click_play(client, seed, tmp_path):
         tokens = [e for e in json.loads(elements_json) if e.get("type") == "token"]
         assert any(t.get("source") == "item" and "gold" in t.get("name", "") for t in tokens)
         assert sum(1 for t in tokens if t.get("combatant_id")) == 3
+    finally:
+        proc.terminate()
+
+
+def test_studio_is_proxied_through_the_gateway(client, seed, tmp_path):
+    """The studio is reached at /cartographer/studio/* on the gateway's own origin
+    (reverse-proxied to the child's loopback port), so a browser never needs the
+    child's port directly. GM-only; 503 when the studio is stopped."""
+    from .conftest import PLAYER_PASSWORD
+    bindir = _stub_binary(tmp_path)
+    proc, url, gm = _python_free_gateway(
+        seed,
+        extra_env={"ND_CARTOGRAPHER_BIN_DIR": str(bindir), "ND_CARTOGRAPHER_VERSION": "v0.0.0-stub",
+                   "ND_ACCEL_ROOT": str(tmp_path / "accel")},
+    )
+    try:
+        # not running yet: the proxy answers 503, not a connection error
+        assert gm.get("/cartographer/studio/health").status_code == 503
+        gm.post("/cartographer/install")
+        # the stub answers health for any path; the proxy forwards the full path
+        r = gm.get("/cartographer/studio/health")
+        assert r.status_code == 200, r.text
+        assert r.json()["app"] == "nd-cartographer"
+        # the embed URL is the same-origin proxy path, not a loopback port
+        st = gm.get("/api/cartographer/status").json()
+        assert st["url"] == "/cartographer/studio"
+        assert "127.0.0.1" not in (st["url"] or "")
+        # a player cannot reach the studio through the proxy
+        player = _player_client(seed, url)
+        assert player.get("/cartographer/studio/health").status_code == 403
+        # stopped: 503 again
+        gm.post("/cartographer/stop")
+        assert gm.get("/cartographer/studio/health").status_code == 503
     finally:
         proc.terminate()
