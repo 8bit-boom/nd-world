@@ -18,7 +18,8 @@ fn main() {
                     world,
                     dreamlands_enabled: q["dreamlands"].as_bool().unwrap(),
                     king_in_yellow_enabled: q["king"].as_bool().unwrap(),
-                    cartographer_enabled: q["cartographer"].as_bool().unwrap_or(false),
+                    // The map studio is compiled into the gateway — always on.
+                    cartographer_enabled: q["cartographer"].as_bool().unwrap_or(true),
                 };
                 match app::resolve_nav(&c) {
                     Some((m, u)) => json!([m, u]),
