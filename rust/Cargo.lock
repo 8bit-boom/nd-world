@@ -1571,7 +1571,7 @@ dependencies = [
 [[package]]
 name = "ndcart-bridge"
 version = "0.1.0"
-source = "git+https://github.com/8bit-boom/nd-cartographer?tag=v0.3.0#d26a1613bbaddfbdd28e74dcc9aedbae52c0ea04"
+source = "git+https://github.com/8bit-boom/nd-cartographer?tag=v0.4.0#e777d000ef0e4af8a9a67af478ea86a51b88e202"
 dependencies = [
  "ndcart-core",
  "reqwest",
@@ -1583,7 +1583,7 @@ dependencies = [
 [[package]]
 name = "ndcart-core"
 version = "0.1.0"
-source = "git+https://github.com/8bit-boom/nd-cartographer?tag=v0.3.0#d26a1613bbaddfbdd28e74dcc9aedbae52c0ea04"
+source = "git+https://github.com/8bit-boom/nd-cartographer?tag=v0.4.0#e777d000ef0e4af8a9a67af478ea86a51b88e202"
 dependencies = [
  "serde",
  "serde_json",
@@ -1592,7 +1592,7 @@ dependencies = [
 [[package]]
 name = "ndcart-formats"
 version = "0.1.0"
-source = "git+https://github.com/8bit-boom/nd-cartographer?tag=v0.3.0#d26a1613bbaddfbdd28e74dcc9aedbae52c0ea04"
+source = "git+https://github.com/8bit-boom/nd-cartographer?tag=v0.4.0#e777d000ef0e4af8a9a67af478ea86a51b88e202"
 dependencies = [
  "ndcart-core",
  "serde",
@@ -1602,7 +1602,7 @@ dependencies = [
 [[package]]
 name = "ndcart-paint"
 version = "0.1.0"
-source = "git+https://github.com/8bit-boom/nd-cartographer?tag=v0.3.0#d26a1613bbaddfbdd28e74dcc9aedbae52c0ea04"
+source = "git+https://github.com/8bit-boom/nd-cartographer?tag=v0.4.0#e777d000ef0e4af8a9a67af478ea86a51b88e202"
 dependencies = [
  "ndcart-core",
 ]
@@ -1610,7 +1610,7 @@ dependencies = [
 [[package]]
 name = "ndcart-server"
 version = "0.1.0"
-source = "git+https://github.com/8bit-boom/nd-cartographer?tag=v0.3.0#d26a1613bbaddfbdd28e74dcc9aedbae52c0ea04"
+source = "git+https://github.com/8bit-boom/nd-cartographer?tag=v0.4.0#e777d000ef0e4af8a9a67af478ea86a51b88e202"
 dependencies = [
  "ab_glyph",
  "axum",
@@ -1634,7 +1634,7 @@ dependencies = [
 [[package]]
 name = "ndcart-terrain"
 version = "0.1.0"
-source = "git+https://github.com/8bit-boom/nd-cartographer?tag=v0.3.0#d26a1613bbaddfbdd28e74dcc9aedbae52c0ea04"
+source = "git+https://github.com/8bit-boom/nd-cartographer?tag=v0.4.0#e777d000ef0e4af8a9a67af478ea86a51b88e202"
 dependencies = [
  "ndcart-core",
  "ndcart-paint",
