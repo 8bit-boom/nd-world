@@ -65,6 +65,8 @@ STATIC_CATALOG = [
     {"id": "imagestudio", "label": "Image Studio", "icon": "🎨", "href": "/imagestudio", "exact": True, "gm_only": True, "player_section": "imagestudio"},
     {"id": "studio_console", "label": "Studio Console", "icon": "🧠", "href": "/studio", "exact": True, "gm_only": True, "player_section": "studio_console"},
     {"id": "editor", "label": "Content Editor", "icon": "🛠", "href": "/editor", "exact": True, "gm_only": True, "player_section": "editor"},
+    {"id": "cartographer", "label": "Map Maker", "icon": "🗺", "href": "/cartographer", "exact": True,
+     "condition": "cartographer_enabled", "gm_only": True, "player_section": "cartographer"},
     {"id": "code_assist", "label": "Code Assist", "icon": "🧩", "href": "/tools/code-assist", "exact": True, "gm_only": True, "player_section": "code_assist"},
 
     {"id": "chronicler", "label": "Chronicler", "icon": "📜", "href": "/chronicler", "exact": True, "gm_only": False, "player_section": "chronicler"},
@@ -124,7 +126,7 @@ DEFAULT_NAV_MENUS = [
      "item_ids": ["kind_note", "chronicler", "session_log", "rules", "pages",
                   "character_sheets"]},
     {"id": "menu_ai_tools", "label": "AI Tools", "icon": "🤖",
-     "item_ids": ["ai", "imagestudio", "editor", "background_jobs", "system_monitor", "code_assist",
+     "item_ids": ["ai", "imagestudio", "editor", "cartographer", "background_jobs", "system_monitor", "code_assist",
                   "ai_chat_player", "image_gen_player", "bulk_edit",
                   "npc_talk", "npc_talk_player", "studio_console"]},
 ]
