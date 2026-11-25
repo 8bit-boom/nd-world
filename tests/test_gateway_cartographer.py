@@ -58,7 +58,8 @@ def test_cartographer_install_start_stop_uninstall(client, seed, tmp_path):
     bindir = _stub_binary(tmp_path)
     proc, url, gm = _python_free_gateway(
         seed,
-        extra_env={"ND_CARTOGRAPHER_BIN_DIR": str(bindir), "ND_CARTOGRAPHER_VERSION": "v0.0.0-stub"},
+        extra_env={"ND_CARTOGRAPHER_BIN_DIR": str(bindir), "ND_CARTOGRAPHER_VERSION": "v0.0.0-stub",
+                   "ND_ACCEL_ROOT": str(tmp_path / "accel")},
     )
     try:
         # a leftover from an earlier run is cleaned first (the binary lives in a
@@ -109,10 +110,10 @@ def test_combat_template_port_matches_the_creature_lines(client, seed):
         proc.terminate()
 
 
-def test_play_manifest_and_one_click_play(client, seed):
+def test_play_manifest_and_one_click_play(client, seed, tmp_path):
     """Publish a play manifest (NPCs + loot per room), then one click builds a
     combat linked to the schematic with NPC and item tokens placed on it."""
-    proc, url, gm = _python_free_gateway(seed)
+    proc, url, gm = _python_free_gateway(seed, extra_env={"ND_ACCEL_ROOT": str(tmp_path / "accel")})
     try:
         r = gm.post("/maps/schematic/new", data={"name": "Play Crypt", "canvas_width": "2000", "canvas_height": "1500", "canvas_bg": "dark"})
         assert r.status_code in (302, 303), r.text
