@@ -271,7 +271,11 @@ def resolve_nav_menus(world, dreamlands_enabled: bool, king_in_yellow_enabled: b
                 return False
         elif item.get("gm_only") and not is_gm:
             return False
-        if cond and cond not in ("dreamlands_enabled", "king_in_yellow_enabled"):
+        # cartographer_enabled is always on: the map studio is compiled into the
+        # gateway (no install flag), so the condition is a no-op kept for catalog
+        # stability — the entry stays gm_only, matching the Rust side's always-true
+        # NavCtx.cartographer_enabled (crate::cartographer / layout.rs).
+        if cond and cond not in ("dreamlands_enabled", "king_in_yellow_enabled", "cartographer_enabled"):
             # Generic fallback: any other condition string names a per-World
             # boolean column (e.g. "players_can_use_ai_chat") rather than one
             # of the two AppSettings-level flags threaded in above — see
