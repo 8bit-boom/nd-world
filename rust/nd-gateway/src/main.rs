@@ -44,10 +44,6 @@ async fn main() {
     nd_gateway::startup::sweep_interrupted(&cfg);
     nd_gateway::startup::db_upkeep(&cfg);
     nd_gateway::startup::backups(&cfg);
-    // the embedded map maker: bring it back up if the GM left it enabled (Rust-only)
-    if nd_gateway::config::python_free() && cfg.rust_routes.iter().any(|r| r == "pages") {
-        nd_gateway::cartographer::autostart(&cfg);
-    }
     let ai_jobs = cfg.rust_routes.iter().any(|r| r == "ai");
     let fans = cfg.rust_routes.iter().any(|r| r == "fans").then(|| cfg.clone());
     let app = router(cfg).into_make_service_with_connect_info::<SocketAddr>();
@@ -68,8 +64,6 @@ async fn main() {
         let _ = tx.send(());
         // running jobs are marked interrupted (their ownership kept) so the next start resumes them
         let _ = tokio::task::spawn_blocking(nd_gateway::jobs::stop_all).await;
-        // the embedded map maker child stops with the gateway
-        nd_gateway::cartographer::stop();
         // no fan this app holds is left slow while another container may still load the GPU
         if let Some(c) = fans {
             let _ = tokio::task::spawn_blocking(move || nd_gateway::fans::shutdown_safe(&c)).await;
