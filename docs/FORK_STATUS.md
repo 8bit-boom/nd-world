@@ -3,9 +3,12 @@
 **2026-11-02: `rust-fork` was promoted to `main`** (the old hybrid-only `main` is kept as the branch `hybrid-python-main`). This file keeps the checklist. Rules: `CLAUDE.md`. Update this file with every batch (move items between sections, add the commit).
 
 ## nd-cartographer integration (map maker + one-click play)
-- [x] Embedded map maker (`crate::cartographer`): `/cartographer` management page + iframe embed, GM-only `install/uninstall/start/stop`,
-      downloads the nd-cartographer release binary (or `ND_CARTOGRAPHER_BIN_DIR`), runs it as a managed child, autostart + shutdown.
-      Nav entry gated by `cartographer_enabled`; `cartographer` perm section. Rust-only (no Python counterpart).
+- [x] Embedded map maker (`crate::cartographer` + the compiled-in `ndcart-server` crate, tag `v0.2.0`): the studio is built into the
+      gateway and mounted under `/cartographer/studio/*` on its own origin, gated by the GM session (`tower::oneshot` into the studio router).
+      `/cartographer` is the embed page; always on for the GM — no separate binary, download, child process, proxy, install or uninstall
+      (this replaced the managed-child design, which 404'd in Docker because the child's loopback port was unreachable from the browser).
+      The AI helpers reuse the caller's GM session (no password stored). Maps live in `{accel_root}/cartographer/data`.
+      Nav entry always on for the GM; `cartographer` perm section. Rust-only (no Python counterpart).
 - [x] Ported `POST /api/combat/templates` (app/routers/combat.py::api_combat_template_create) — creature lines → a reusable encounter template.
 - [x] One-click play: `POST /api/maps/schematic/{slug}/play-manifest` (per-room NPCs + loot from the studio) and
       `POST /api/maps/schematic/{slug}/play` (build a combat from the party + the rooms' NPCs, link it to the schematic, place PC/NPC/item tokens).
