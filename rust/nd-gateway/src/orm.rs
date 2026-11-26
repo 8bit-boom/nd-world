@@ -125,6 +125,21 @@ pub fn touch(db: &Connection, world_id: i64) -> Option<()> {
     Some(())
 }
 
+/// Bump a schematic's additive scene revision and publish both live-state
+/// change and named scene signal. The caller holds the request transaction.
+pub fn bump_scene(db: &Connection, schematic_id: i64, world_id: i64) -> Option<i64> {
+    let rev = db.query_row(
+        "SELECT COALESCE(scene_rev, 0) FROM main.schematics WHERE id = ?1",
+        [schematic_id],
+        |r| r.get::<_, i64>(0),
+    ).ok()? + 1;
+    db.execute("UPDATE main.schematics SET scene_rev = ?1, updated_at = ?2 WHERE id = ?3",
+        rusqlite::params![rev, stamp_after(0), schematic_id]).ok()?;
+    touch(db, world_id)?;
+    signal(db, world_id, "scene")?;
+    Some(rev)
+}
+
 /// `query.filter(...).update({...})`: a bulk UPDATE, which SQLAlchemy sends with the table's `onupdate` columns set too
 pub fn bulk_update(db: &Connection, table: &str, set: &[(&str, Sql)], where_sql: &str, where_params: &[Sql]) -> Option<usize> {
     let now = now_stamp();

@@ -550,6 +550,16 @@ const SLUG_ROUTES: &[(&str, &str, SlugHandler)] = &[("/api/maps/schematic/", "/m
     ("/api/maps/", "/overlay", map_overlay_save)];
 
 fn slug_route(path: &str) -> Option<(SlugHandler, String)> {
+    // Phase 1 linked scene runtime: PATCH one existing token.
+    // Key is "<slug>/<token_id>" and the handler splits it once.
+    if let Some(rest) = path.strip_prefix("/api/maps/schematic/") {
+        if let Some((slug, tail)) = rest.split_once("/tokens/") {
+            if !slug.is_empty() && slug.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                && !tail.is_empty() && tail.len() <= 80 && !tail.contains('/') {
+                return Some((sc_patch_token as SlugHandler, format!("{slug}/{tail}")));
+            }
+        }
+    }
     // /api/entity/<id>/media/<image|audio|video>/<ref>/<visibility|rename|remove>: the handler reads the id, the kind and the ref back
     if let Some(rest) = path.strip_prefix("/api/entity/") {
         let parts: Vec<&str> = rest.split('/').collect();
@@ -601,13 +611,24 @@ fn slug_route(path: &str) -> Option<(SlugHandler, String)> {
 }
 
 pub fn handles(method: &Method, path: &str) -> bool {
-    (method == Method::POST && (route(path).is_some() || slug_route(path).is_some())) || (method == Method::PUT && route_in(PUT_ROUTES, path).is_some())
+    ((method == Method::POST || method == Method::PATCH) && (route(path).is_some() || slug_route(path).is_some() || view_route(method, path).is_some()))
+        || (method == Method::PUT && route_in(PUT_ROUTES, path).is_some())
         || view_route(method, path).is_some()
 }
 
 /// The saved-layout routes (app/routers/view_prefs_api.py): a section name in the path, POST and DELETE
 fn view_route(method: &Method, path: &str) -> Option<(SlugHandler, String)> {
     let ok = |s: &str| !s.is_empty() && s.len() <= 40 && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+    if *method == Method::PATCH {
+        if let Some(rest) = path.strip_prefix("/api/maps/schematic/") {
+            if let Some((slug, tail)) = rest.split_once("/tokens/") {
+                if !slug.is_empty() && slug.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                    && !tail.is_empty() && tail.len() <= 80 && !tail.contains('/') {
+                    return Some((sc_patch_token as SlugHandler, format!("{slug}/{tail}")));
+                }
+            }
+        }
+    }
     // the schematic editor's reads: walls / fog / lights and the room-drawing state, and the list card's SVG preview
     if *method == Method::GET {
         if let Some(rest) = path.strip_prefix("/maps/schematic/") {
@@ -727,7 +748,7 @@ fn run(cfg: &Config, method: &Method, uri: &Uri, headers: &HeaderMap, body: &[u8
     let mut by_id = if method == Method::PUT { route_in(PUT_ROUTES, uri.path()) } else { route(uri.path()) };
     // a GET slug route must not be shadowed by a POST-only ROUTES pattern on the same path (route() ignores the
     // method; every ROUTES handler declines a GET body, so preferring the slug route on GET changes nothing else)
-    let by_slug = if by_id.is_none() || *method == Method::GET { view_route(method, uri.path()).or_else(|| if *method == Method::POST { slug_route(uri.path()) } else { None }) } else { None };
+    let by_slug = if by_id.is_none() || *method == Method::GET { view_route(method, uri.path()).or_else(|| if matches!(*method, Method::POST | Method::PATCH) { slug_route(uri.path()) } else { None }) } else { None };
     if by_slug.is_some() {
         by_id = None;
     }
@@ -11772,6 +11793,7 @@ fn combat_touch(c: &Ctx, cs: &Map<String, Value>) -> Option<i64> {
     let rev = cs.get("rev").and_then(|v| v.as_i64()).unwrap_or(0) + 1;
     orm::update(&c.db, "combat_sessions", cs.get("id")?.as_i64()?, &[("rev", Sql::Integer(rev))])?;
     orm::signal(&c.db, cs.get("world_id")?.as_i64()?, "combat")?;
+    scene_sync_combat_to_tokens(c, cs.get("id")?.as_i64()?)?;
     Some(rev)
 }
 
@@ -12434,7 +12456,8 @@ fn sc_play(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
 
     // Tokens: one per combatant (PCs clustered at the centre, NPCs in their rooms),
     // plus an item token per loot entry.
-    let mut elements = obj_list(sc.get("elements_json"))?;
+    let raw = sc.get("elements_json").and_then(|v| v.as_str()).unwrap_or("[]");
+    let Value::Array(mut elements) = canonical_json(raw)? else { return None };
     let mut n = 0i64;
     for (i, cb) in norm.iter().enumerate() {
         let source = cb.get("source").and_then(|v| v.as_str()).unwrap_or("manual");
@@ -12460,7 +12483,7 @@ fn sc_play(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
         m.insert("max_hp".into(), cb.get("max_hp").cloned().unwrap_or(json!(0)));
         m.insert("conditions".into(), json!([]));
         m.insert("visible_to_players".into(), json!(matches!(source, "pc" | "entity")));
-        elements.push(m);
+        elements.push(Value::Object(m));
         n += 1;
     }
     for (iname, qty, x, y) in &items {
@@ -12476,9 +12499,9 @@ fn sc_play(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
         m.insert("quantity".into(), json!(qty));
         m.insert("color".into(), json!("#f4a261"));
         m.insert("visible_to_players".into(), json!(true));
-        elements.push(m);
+        elements.push(Value::Object(m));
     }
-    let list = Value::Array(elements.into_iter().map(Value::Object).collect());
+    let list = Value::Array(elements.into_iter().collect());
     orm::update(&c.db, "schematics", scid, &[("elements_json", s(&nd_render::py_dumps(&list)))])?;
     orm::touch(&c.db, wid)?;
     json_response(&json!({
@@ -13020,7 +13043,19 @@ fn sc_elements(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
         return None;
     }
     orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("elements_json", s(&text))])?;
-    orm::touch(&c.db, sc.get("world_id")?.as_i64()?)?;
+    let sid = sc.get("id")?.as_i64()?;
+    let wid = sc.get("world_id")?.as_i64()?;
+    if let Some(cs_id) = sc.get("combat_session_id").and_then(|v| v.as_i64()).filter(|id| *id != 0) {
+        if let Some(mut cs) = row(&c.db, "SELECT * FROM combat_sessions WHERE id = ?1", cs_id) {
+            let Value::Array(elements) = serde_json::from_str::<Value>(&text).ok()? else { return None };
+            let (changed, combat_text) = scene_sync_tokens_to_combat(c, &sc, &elements, &cs)?;
+            if changed {
+                orm::update(&c.db, "combat_sessions", cs_id, &[("combatants_json", s(&combat_text))])?;
+                combat_touch(c, &cs)?;
+            }
+        }
+    }
+    orm::bump_scene(&c.db, sid, wid)?;
     json_response(&json!({"ok": true}))
 }
 
@@ -13071,6 +13106,7 @@ fn sc_link_combat(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
             return Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "Combat session not found in this world"));
         };
         orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("combat_session_id", Sql::Integer(found))])?;
+        orm::bump_scene(&c.db, sc.get("id")?.as_i64()?, sc.get("world_id")?.as_i64()?)?;
     }
     redirect(&format!("/maps/schematic/{slug}"))
 }
@@ -13081,6 +13117,7 @@ fn sc_unlink_combat(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     }
     let sc = sc_for_manager(c, slug)?;
     orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("combat_session_id", Sql::Null)])?;
+    orm::bump_scene(&c.db, sc.get("id")?.as_i64()?, sc.get("world_id")?.as_i64()?)?;
     redirect(&format!("/maps/schematic/{slug}"))
 }
 
@@ -13100,6 +13137,156 @@ fn cond_list(m: &Map<String, Value>) -> Option<Value> {
     }
 }
 
+fn scene_rev(sc: &Map<String, Value>) -> i64 {
+    sc.get("scene_rev").and_then(|v| v.as_i64()).unwrap_or(0)
+}
+
+fn exact_rev(body: &Map<String, Value>, keys: &[&str]) -> Option<Option<i64>> {
+    let mut found = None;
+    for key in keys {
+        if let Some(v) = body.get(*key) {
+            found = Some(v);
+            break;
+        }
+    }
+    match found {
+        None => Some(None),
+        Some(Value::Number(n)) if n.is_i64() => Some(n.as_i64()),
+        Some(Value::Bool(_)) => None,
+        _ => None,
+    }
+}
+
+fn stale_scene_response(sc: &Map<String, Value>, cs: Option<&Map<String, Value>>,
+                       detail: &str) -> Option<Response<Body>> {
+    let cs_rev = cs.and_then(|c| c.get("rev").and_then(|v| v.as_i64())).unwrap_or(0);
+    let mut current = Map::new();
+    let raw = sc.get("elements_json").and_then(|v| v.as_str()).unwrap_or("[]");
+    let elements = serde_json::from_str::<Value>(raw).unwrap_or(json!([]));
+    let combatants = match cs {
+        Some(c) => serde_json::from_str::<Value>(c.get("combatants_json").and_then(|v| v.as_str()).unwrap_or("[]"))
+            .unwrap_or(json!([])),
+        None => json!([]),
+    };
+    current.insert("detail".into(), json!(detail));
+    current.insert("scene_rev".into(), json!(scene_rev(sc)));
+    current.insert("combat_rev".into(), json!(cs_rev));
+    current.insert("elements".into(), elements);
+    current.insert("combatants".into(), combatants);
+    Response::builder().status(StatusCode::CONFLICT).header(header::CONTENT_TYPE, "application/json")
+        .header("x-nd-served-by", "gateway")
+        .body(Body::from(nd_render::py_dumps_compact(&Value::Object(current)))).ok()
+}
+
+/// Sync existing linked schematic tokens from combatants (combat -> map).
+/// Matching is by combatant_id only. Duplicate combatant ids and duplicate token
+/// links are left unambiguous: duplicate combatants are not matched, and the
+/// later token link to an already claimed combatant id is removed.
+fn scene_sync_combat_to_tokens(c: &Ctx, combat_id: i64) -> Option<()> {
+    let cs = row(&c.db, "SELECT * FROM combat_sessions WHERE id = ?1", combat_id)?;
+    let combatants = obj_list(cs.get("combatants_json"))?;
+    let mut first_combatant = std::collections::HashMap::<String, usize>::new();
+    let mut ambiguous = std::collections::HashSet::<String>::new();
+    for (i, cb) in combatants.iter().enumerate() {
+        let Some(id) = cb.get("id").and_then(|v| v.as_str()) else { continue };
+        if first_combatant.contains_key(id) {
+            ambiguous.insert(id.to_string());
+        } else {
+            first_combatant.insert(id.to_string(), i);
+        }
+    }
+    let mut st = c.db.prepare_cached(
+        "SELECT id, world_id, elements_json FROM schematics WHERE combat_session_id = ?1"
+    ).ok()?;
+    let maps: Vec<(i64, i64, String)> = st.query_map([combat_id], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_else(|| "[]".into())))
+    }).ok()?.collect::<Result<_, _>>().ok()?;
+    for (sid, wid, raw) in maps {
+        let Value::Array(mut elements) = canonical_json(&raw)? else { continue };
+        let mut claimed = std::collections::HashSet::<String>::new();
+        let mut changed = false;
+        for el in &mut elements {
+            let Some(o) = el.as_object_mut() else { continue };
+            if o.get("type").and_then(|v| v.as_str()) != Some("token") {
+                continue;
+            }
+            let Some(cid) = o.get("combatant_id").and_then(|v| v.as_str()).map(str::to_string) else { continue };
+            if !claimed.insert(cid.clone()) {
+                o.remove("combatant_id");
+                changed = true;
+                continue;
+            }
+            if ambiguous.contains(&cid) {
+                continue;
+            }
+            let Some(&i) = first_combatant.get(&cid) else { continue };
+            let cb = &combatants[i];
+            for key in ["name", "hp", "max_hp"] {
+                if let Some(v) = cb.get(key) {
+                    if o.get(key) != Some(v) {
+                        o.insert(key.into(), v.clone());
+                        changed = true;
+                    }
+                }
+            }
+            let cond = cond_list(cb)?.as_array()?.clone();
+            if o.get("conditions").and_then(|v| v.as_array()).map_or(true, |a| a != &cond) {
+                o.insert("conditions".into(), Value::Array(cond));
+                changed = true;
+            }
+        }
+        if changed {
+            orm::update(&c.db, "schematics", sid, &[("elements_json", s(&nd_render::py_dumps(&Value::Array(elements))))])?;
+            orm::bump_scene(&c.db, sid, wid)?;
+        }
+    }
+    Some(())
+}
+
+fn scene_sync_tokens_to_combat(_c: &Ctx, sc: &Map<String, Value>, elements: &[Value], cs: &Map<String, Value>) -> Option<(bool, String)> {
+    let cs_id = sc.get("combat_session_id").and_then(|v| v.as_i64())?;
+    if cs_id == 0 {
+        return Some((false, cs.get("combatants_json").and_then(|v| v.as_str()).unwrap_or("[]").to_string()));
+    }
+    let mut combatants = obj_list(cs.get("combatants_json"))?;
+    let mut counts = std::collections::HashMap::<String, usize>::new();
+    for cb in &combatants {
+        if let Some(id) = cb.get("id").and_then(|v| v.as_str()) {
+            *counts.entry(id.to_string()).or_insert(0) += 1;
+        }
+    }
+    let mut claimed = std::collections::HashSet::<String>::new();
+    let mut changed = false;
+    for el in elements {
+        let Some(o) = el.as_object() else { continue };
+        if o.get("type").and_then(|v| v.as_str()) != Some("token") {
+            continue;
+        }
+        let Some(cid) = o.get("combatant_id").and_then(|v| v.as_str()).map(str::to_string) else { continue };
+        if !claimed.insert(cid.clone()) || counts.get(&cid).copied().unwrap_or(0) != 1 {
+            continue;
+        }
+        let Some(cb) = combatants.iter_mut().find(|c| c.get("id").and_then(|v| v.as_str()) == Some(cid.as_str())) else { continue };
+        for key in ["hp", "max_hp"] {
+            if let Some(v) = o.get(key) {
+                if cb.get(key) != Some(v) {
+                    cb.insert(key.into(), v.clone());
+                    changed = true;
+                }
+            }
+        }
+        if let Some(Value::Array(a)) = o.get("conditions") {
+            let names: Vec<Value> = a.iter().filter_map(|v| v.as_str().map(|s| json!(s))).collect();
+            if cb.get("conditions").and_then(|v| v.as_array()).map_or(true, |a| a != &names) {
+                cb.insert("conditions".into(), Value::Array(names));
+                changed = true;
+            }
+        }
+    }
+    let text = nd_render::py_dumps(&Value::Array(combatants.into_iter().map(Value::Object).collect()));
+    Some((changed, text))
+}
+
 /// The linked fight of a schematic the viewer manages
 fn sc_linked(c: &Ctx, slug: &str) -> Option<(Map<String, Value>, Map<String, Value>)> {
     let sc = sc_for_manager(c, slug)?;
@@ -13112,7 +13299,8 @@ fn sc_linked(c: &Ctx, slug: &str) -> Option<(Map<String, Value>, Map<String, Val
 fn sc_pull_combat(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     let (sc, cs) = sc_linked(c, slug)?;
     let combatants = obj_list(cs.get("combatants_json"))?;
-    let mut elements = obj_list(sc.get("elements_json"))?;
+    let raw = sc.get("elements_json").and_then(|v| v.as_str()).unwrap_or("[]");
+    let Value::Array(mut elements) = canonical_json(raw)? else { return None };
     // by_combatant_id: the LAST token with that id wins, as a dict built in order keeps it
     let mut by_cid: Vec<(String, usize)> = vec![];
     for (i, e) in elements.iter().enumerate() {
@@ -13130,7 +13318,7 @@ fn sc_pull_combat(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
         let id = cb.get("id")?.as_str()?.to_string();
         let conditions = cond_list(cb)?;
         if let Some(&(_, i)) = by_cid.iter().find(|(k, _)| *k == id) {
-            let t = &mut elements[i];
+            let t = elements[i].as_object_mut()?;
             for key in ["name", "hp", "max_hp"] {
                 if let Some(v) = cb.get(key) {
                     t.insert(key.into(), v.clone());
@@ -13160,13 +13348,16 @@ fn sc_pull_combat(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
             m.insert("max_hp".into(), cb.get("max_hp").cloned().unwrap_or(json!(0)));
             m.insert("conditions".into(), conditions);
             m.insert("visible_to_players".into(), json!(matches!(src, Some("pc" | "entity"))));
-            elements.push(m);
+            elements.push(Value::Object(m));
             new_count += 1;
         }
     }
-    let list = Value::Array(elements.into_iter().map(Value::Object).collect());
+    let list = Value::Array(elements);
     orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("elements_json", s(&nd_render::py_dumps(&list)))])?;
-    orm::touch(&c.db, sc.get("world_id")?.as_i64()?)?;
+    let sid = sc.get("id")?.as_i64()?;
+    let wid = sc.get("world_id")?.as_i64()?;
+    orm::bump_scene(&c.db, sid, wid)?;
+    scene_sync_combat_to_tokens(c, cs.get("id")?.as_i64()?)?;
     json_response(&json!({"elements": list}))
 }
 
@@ -13200,7 +13391,7 @@ fn sc_push_combat(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     orm::update(&c.db, "combat_sessions", cs.get("id")?.as_i64()?, &[("combatants_json", s(&nd_render::py_dumps(&list)))])?;
     let cs = row(&c.db, "SELECT * FROM combat_sessions WHERE id = ?1", cs.get("id")?.as_i64()?)?;
     combat_touch(c, &cs)?;
-    orm::touch(&c.db, sc.get("world_id")?.as_i64()?)?;
+    orm::bump_scene(&c.db, sc.get("id")?.as_i64()?, sc.get("world_id")?.as_i64()?)?;
     json_response(&json!({"synced": synced}))
 }
 
@@ -13762,6 +13953,96 @@ fn sc_closed(el: &Map<String, Value>) -> bool {
     el.get("visible_to_players").is_some_and(|v| !py_truthy(Some(v))) || py_truthy(el.get("locked"))
 }
 
+fn sc_patch_token(c: &mut Ctx, key: &str) -> Option<Response<Body>> {
+    let (slug, token_id) = key.split_once('/')?;
+    let found = c.db.query_row("SELECT id FROM schematics WHERE slug = ?1 LIMIT 1", [slug], |r| r.get::<_, i64>(0));
+    if found.is_err() {
+        return Some(crate::idpages::refusal(404));
+    }
+    let sc = if c.p.is_gm || c.is_assistant() {
+        sc_for_manager(c, slug)?
+    } else {
+        sc_for_player(c, slug)?.0
+    };
+    let raw = sc.get("elements_json").and_then(|v| v.as_str()).unwrap_or("[]");
+    let Value::Array(mut elements) = canonical_json(raw)? else { return None };
+    let b = c.json()?;
+    let (sc_rev, combat_rev) = (
+        exact_rev(&b, &["scene_rev", "rev", "scene_revision"])?,
+        exact_rev(&b, &["combat_rev", "combat_revision"])?,
+    );
+    if let Some(sent) = sc_rev {
+        if sent != scene_rev(&sc) {
+            let cs = sc.get("combat_session_id").and_then(|v| v.as_i64()).filter(|id| *id != 0)
+                .and_then(|id| row(&c.db, "SELECT * FROM combat_sessions WHERE id = ?1", id));
+            return stale_scene_response(&sc, cs.as_ref(), "This scene changed while you were editing it.");
+        }
+    }
+    let el = sc_find(&mut elements, token_id, None)?;
+    let wid = sc.get("world_id")?.as_i64()?;
+    if !c.p.is_gm {
+        let own: Vec<i64> = sc_own_pcs(c, wid)?.iter().filter_map(|p| p.get("id").and_then(|i| i.as_i64())).collect();
+        if el.get("pc_id").and_then(|v| v.as_i64()).is_none_or(|p| !own.contains(&p)) || sc_closed(el) {
+            return None;
+        }
+    }
+    if let Some(x) = b.get("x") {
+        let n = match x { Value::Number(n) => n.as_f64(), _ => None }?;
+        if !n.is_finite() { return None; }
+        el.insert("x".into(), json!(n.max(0.0).min(sc.get("canvas_width").and_then(|v| v.as_i64()).unwrap_or(2000) as f64)));
+    }
+    if let Some(y) = b.get("y") {
+        let n = match y { Value::Number(n) => n.as_f64(), _ => None }?;
+        if !n.is_finite() { return None; }
+        el.insert("y".into(), json!(n.max(0.0).min(sc.get("canvas_height").and_then(|v| v.as_i64()).unwrap_or(1500) as f64)));
+    }
+    if let Some(v) = b.get("name") {
+        if let Some(s) = v.as_str() { el.insert("name".into(), json!(take_chars(&nd_render::text::py_split_join(s), 120))); }
+        else { return None; }
+    }
+    if let Some(v) = b.get("hp") {
+        if v.is_i64() || v.is_u64() { el.insert("hp".into(), v.clone()); } else { return None; }
+    }
+    if let Some(v) = b.get("max_hp") {
+        if v.is_i64() || v.is_u64() { el.insert("max_hp".into(), v.clone()); } else { return None; }
+    }
+    if let Some(v) = b.get("conditions") {
+        if let Value::Array(a) = v {
+            let clean: Vec<Value> = a.iter().filter_map(|v| v.as_str().map(|s| json!(s))).collect();
+            el.insert("conditions".into(), Value::Array(clean));
+        } else { return None; }
+    }
+    let mut cs = sc.get("combat_session_id").and_then(|v| v.as_i64()).filter(|id| *id != 0)
+        .and_then(|id| row(&c.db, "SELECT * FROM combat_sessions WHERE id = ?1", id));
+    if let Some(sent) = combat_rev {
+        if let Some(ref combat) = cs {
+            if sent != combat.get("rev").and_then(|v| v.as_i64()).unwrap_or(0) {
+                return stale_scene_response(&sc, Some(combat), "This encounter changed while you were editing it.");
+            }
+        }
+    }
+    let element_text = nd_render::py_dumps(&Value::Array(elements.clone()));
+    orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("elements_json", s(&element_text))])?;
+    if let Some(combat) = cs.as_mut() {
+        let (changed, combat_text) = scene_sync_tokens_to_combat(c, &sc, &elements, combat)?;
+        if changed {
+            let cid = combat.get("id")?.as_i64()?;
+            orm::update(&c.db, "combat_sessions", cid, &[("combatants_json", s(&combat_text))])?;
+            combat_touch(c, combat)?;
+            *combat = row(&c.db, "SELECT * FROM combat_sessions WHERE id = ?1", cid)?;
+        }
+    }
+    let rev = orm::bump_scene(&c.db, sc.get("id")?.as_i64()?, wid).unwrap_or_else(|| scene_rev(&sc) + 1);
+    let mut out = Map::new();
+    out.insert("ok".into(), json!(true));
+    out.insert("scene_rev".into(), json!(rev));
+    if let Some(combat) = cs.as_ref() {
+        out.insert("combat_rev".into(), json!(combat.get("rev").and_then(|v| v.as_i64()).unwrap_or(0)));
+    }
+    out.insert("scene_changed".into(), json!(true));
+    json_response(&Value::Object(out))
+}
+
 fn sc_move_token(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     let b = c.json()?;
     let (sc, mut elements) = sc_for_player(c, slug)?;
@@ -13792,8 +14073,21 @@ fn sc_move_token(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     }
     el.insert("x".into(), Value::Number(serde_json::Number::from_f64(fx)?));
     el.insert("y".into(), Value::Number(serde_json::Number::from_f64(fy)?));
-    orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("elements_json", s(&nd_render::py_dumps(&Value::Array(elements))))])?;
-    orm::touch(&c.db, wid)?;
+    let elements_text = nd_render::py_dumps(&Value::Array(elements));
+    let sid = sc.get("id")?.as_i64()?;
+    orm::update(&c.db, "schematics", sid, &[("elements_json", s(&elements_text))])?;
+    if let Some(cs_id) = sc.get("combat_session_id").and_then(|v| v.as_i64()).filter(|id| *id != 0) {
+        if let Some(cs) = row(&c.db, "SELECT * FROM combat_sessions WHERE id = ?1", cs_id) {
+            let Value::Array(elements) = serde_json::from_str::<Value>(&elements_text).ok()? else { return None };
+            let (changed, combat_text) = scene_sync_tokens_to_combat(c, &sc, &elements, &cs)?;
+            if changed {
+                orm::update(&c.db, "combat_sessions", cs_id, &[("combatants_json", s(&combat_text))])?;
+                let fresh = row(&c.db, "SELECT * FROM combat_sessions WHERE id = ?1", cs_id)?;
+                combat_touch(c, &fresh)?;
+            }
+        }
+    }
+    orm::bump_scene(&c.db, sid, wid)?;
     json_response(&json!({"ok": true}))
 }
 
@@ -15744,6 +16038,8 @@ pub struct PlayerScene {
     pub own_pc_currency: Value,
     pub active_combatant_id: Value,
     pub combat_round: Value,
+    pub scene_rev: Value,
+    pub combat_rev: Value,
 }
 
 /// `player_scene` + `_schematic_player_payload`; None for strict secrecy (what the party has seen is computed and recorded: Python's)
@@ -15844,16 +16140,20 @@ pub fn player_scene(db: &Connection, sc: &Map<String, Value>, viewer: Option<(i6
     }
     // the linked fight's active combatant
     let (mut active_combatant_id, mut combat_round) = (Value::Null, Value::Null);
+    let mut combat_rev = Value::Null;
     if let Some(cs_id) = sc.get("combat_session_id").and_then(|v| v.as_i64()).filter(|i| *i != 0) {
         if let Ok(cs) = db.query_row("SELECT * FROM combat_sessions WHERE id = ?1", [cs_id], |r| crate::layout::row_map(r)) {
             combat_round = cs.get("round_num").cloned().unwrap_or(Value::Null);
+            combat_rev = cs.get("rev").cloned().unwrap_or(json!(0));
             let f = Fight::load(cs)?;
             if let Some(i) = f.current()? {
                 active_combatant_id = f.combatants[i].get("id").cloned().unwrap_or(Value::Null);
             }
         }
     }
-    Some(PlayerScene { visible, image_url, fog_part, own_pc_id, own_pc_ids, own_pc_currency, active_combatant_id, combat_round })
+    let scene_rev = sc.get("scene_rev").cloned().unwrap_or(json!(0));
+    Some(PlayerScene { visible, image_url, fog_part, own_pc_id, own_pc_ids, own_pc_currency,
+        active_combatant_id, combat_round, scene_rev, combat_rev })
 }
 
 pub fn safe_image(url: &str) -> String {

@@ -1761,6 +1761,8 @@ pub fn schematic_views(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderM
         out.insert("own_pc_currency".into(), scene.own_pc_currency);
         out.insert("combat_active_combatant_id".into(), scene.active_combatant_id);
         out.insert("combat_round".into(), scene.combat_round);
+        out.insert("scene_rev".into(), scene.scene_rev);
+        out.insert("combat_rev".into(), scene.combat_rev);
         out.extend(scene.fog_part);
         return crate::edits::json_response(&Value::Object(out));
     }
@@ -1876,6 +1878,16 @@ pub fn schematic_editor(pages: &Pages, cfg: &Config, uri: &Uri, headers: &Header
     c.insert("linked_combat".into(), linked);
     c.insert("combat_active_combatant_id".into(), active);
     c.insert("combat_round".into(), round);
+    c.insert("scene_rev".into(), sc.get("scene_rev").cloned().unwrap_or(json!(0)));
+    if let Some(cs_id) = sc.get("combat_session_id").and_then(|v| v.as_i64()).filter(|id| *id != 0) {
+        if let Ok(cs) = db.query_row("SELECT rev FROM combat_sessions WHERE id = ?1", [cs_id], |r| r.get::<_, i64>(0)) {
+            c.insert("combat_rev".into(), json!(cs));
+        } else {
+            c.insert("combat_rev".into(), json!(0));
+        }
+    } else {
+        c.insert("combat_rev".into(), json!(0));
+    }
     c.insert("gallery_images".into(), Value::Array(gallery));
     c.insert("schematic".into(), Value::Object(sc));
     render_with(pages, "schematic.html", p.ctx, headers)

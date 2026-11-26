@@ -41,7 +41,29 @@ fn run_schema(db: &rusqlite::Connection) -> Option<()> {
             return None;
         }
     }
+    let _ = ensure_scene_rev(db);
     Some(())
+}
+
+pub(crate) fn ensure_scene_rev(db: &rusqlite::Connection) -> Result<bool, String> {
+    let exists: bool = db.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schematics'",
+        [],
+        |r| r.get::<_, i64>(0).map(|n| n > 0),
+    ).unwrap_or(false);
+    if !exists {
+        return Ok(false);
+    }
+    let mut st = db.prepare("PRAGMA table_info(schematics)").map_err(|e| e.to_string())?;
+    let found = st.query_map([], |r| r.get::<_, String>(1))
+        .ok().map(|rows| rows.flatten().any(|c| c == "scene_rev"))
+        .unwrap_or(false);
+    if found {
+        return Ok(false);
+    }
+    db.execute_batch("ALTER TABLE schematics ADD COLUMN scene_rev INTEGER NOT NULL DEFAULT 0")
+        .map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 /// `_seed` (app/database.py): the starter rows. Every insert is guarded by a check, exactly as Python's is, so a
@@ -207,6 +229,11 @@ pub(crate) fn heal_schema(db: &rusqlite::Connection) -> Result<Vec<String>, Stri
         db.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = ?1 AND name = ?2", [kind, name], |r| r.get::<_, i64>(0)).unwrap_or(0) > 0
     };
     let mut done = vec![];
+    match ensure_scene_rev(db) {
+        Ok(true) => done.push("added column schematics.scene_rev".into()),
+        Ok(false) => {}
+        Err(e) => return Err(e),
+    }
     for st in stmts.iter().filter_map(|s| s.as_str()) {
         let head: Vec<&str> = st.split_whitespace().take(5).collect();
         let upper: Vec<String> = head.iter().map(|w| w.to_ascii_uppercase()).collect();

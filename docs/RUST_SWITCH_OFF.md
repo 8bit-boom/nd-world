@@ -31,6 +31,11 @@ them after each batch; the phase is done when both are empty and the steps below
 
 ### Done so far
 
+- **Linked map/combat scene runtime MVP** (`edits.rs`, `orm.rs`, `pages.rs`, `startup.rs`): Rust-only automatic sync for existing
+  schematic combat tokens. Matching is by unique `combatant_id`; combat writes refresh linked token HP/max HP/conditions and
+  token patches push those fields back into the linked fight. Scene and combat revisions catch stale writes, duplicate ids/tokens
+  are guarded, and committed changes publish live `scene` and `combat` signals. `/api/maps/schematic/{slug}/move-token` remains
+  compatible; the MVP does not add fog-per-PC, walls movement, or later scene phases.
 - **Cartographer world context**: persisted nd-cartographer project names, floors, room/label/marker text are read-only GM RAG context in
   `/api/ai/world-context-smart`; Cartographer already retrieves the reverse nd-world lore block with its GM session. Implemented in both
   Python and the Rust gateway; malformed or missing project data is ignored.

@@ -19,6 +19,9 @@
 - [x] Schematic live Play/Edit switch: the GM map editor has an in-place `Play` overlay that saves first and embeds the existing
       player live view, with a one-click `Edit map` return to the editor. It reuses token movement, combat state, fog, SSE/live polling,
       and the second-screen/table view instead of maintaining a second virtual-table engine.
+- [x] Rust-only linked scene runtime MVP: `PATCH /api/maps/schematic/{slug}/tokens/{token_id}` supports scene/combat revisions,
+      existing-token combatant matching, bidirectional HP/conditions sync, duplicate-link guards, and live `scene`/`combat` signals.
+      Existing `/move-token` compatibility, `/elements`, combat tracker saves and pull/push routes feed the same Rust implementation.
 
 ## Measured starting point (main at 3f217ee)
 - 90% of the app's parameterless GET routes work with no Python (crawl); about 54% of routes are answered only by the gateway, 37% mixed, 9% Python only
