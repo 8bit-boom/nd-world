@@ -110,6 +110,52 @@ def test_combat_template_port_matches_the_creature_lines(client, seed):
         proc.terminate()
 
 
+def test_linked_scene_runtime_saves_and_switches_without_python(client, seed):
+    """The GM editor can save a live map and switch to the existing player view
+    in the Rust-only gateway, with no Python route behind it."""
+    proc, url, gm = _python_free_gateway(seed)
+    try:
+        r = gm.post("/maps/schematic/new", data={
+            "name": "Linked Runtime",
+            "canvas_width": "1200",
+            "canvas_height": "800",
+            "canvas_bg": "dark",
+        })
+        assert r.status_code in (302, 303), r.text
+        slug = r.headers["location"].rsplit("/", 1)[-1]
+
+        elements = [{
+            "id": "runtime-token",
+            "type": "token",
+            "x": 300,
+            "y": 240,
+            "r": 20,
+            "name": "Scout",
+            "visible_to_players": True,
+        }]
+        r = gm.post(f"/maps/schematic/{slug}/elements", json={"elements": elements})
+        assert r.status_code == 200, r.text
+
+        editor = gm.get(f"/maps/schematic/{slug}")
+        assert editor.status_code == 200, editor.text
+        assert 'id="scene-play-overlay"' in editor.text
+        assert 'id="scene-play-frame"' in editor.text
+        assert "setSceneMode(true)" in editor.text
+        assert "setSceneMode(false)" in editor.text
+        assert f"/maps/schematic/{slug}/view" in editor.text
+
+        live = gm.get(f"/maps/schematic/{slug}/view.json")
+        assert live.status_code == 200, live.text
+        assert live.json()["elements"][0]["id"] == "runtime-token"
+
+        player = _player_client(seed, url)
+        live_page = player.get(f"/maps/schematic/{slug}/view")
+        assert live_page.status_code == 200, live_page.text
+        assert "runtime-token" in live_page.text
+    finally:
+        proc.terminate()
+
+
 def test_play_manifest_and_one_click_play(client, seed, tmp_path):
     """Publish a play manifest (NPCs + loot per room), then one click builds a
     combat linked to the schematic with NPC and item tokens placed on it."""
