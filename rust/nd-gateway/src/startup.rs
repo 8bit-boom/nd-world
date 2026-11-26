@@ -229,11 +229,6 @@ pub(crate) fn heal_schema(db: &rusqlite::Connection) -> Result<Vec<String>, Stri
         db.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = ?1 AND name = ?2", [kind, name], |r| r.get::<_, i64>(0)).unwrap_or(0) > 0
     };
     let mut done = vec![];
-    match ensure_scene_rev(db) {
-        Ok(true) => done.push("added column schematics.scene_rev".into()),
-        Ok(false) => {}
-        Err(e) => return Err(e),
-    }
     for st in stmts.iter().filter_map(|s| s.as_str()) {
         let head: Vec<&str> = st.split_whitespace().take(5).collect();
         let upper: Vec<String> = head.iter().map(|w| w.to_ascii_uppercase()).collect();
@@ -279,6 +274,12 @@ pub(crate) fn heal_schema(db: &rusqlite::Connection) -> Result<Vec<String>, Stri
                 done.push(format!("created trigger {name}"));
             }
         }
+    }
+    // after the statements, so a database made from the snapshot (which has no `scene_rev` in `schematics`) gets the column in this pass and a second pass has nothing to do
+    match ensure_scene_rev(db) {
+        Ok(true) => done.push("added column schematics.scene_rev".into()),
+        Ok(false) => {}
+        Err(e) => return Err(e),
     }
     Ok(done)
 }
