@@ -11832,7 +11832,16 @@ fn combat_save_state(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
         _ => None,
     };
     if sent.is_some_and(|r| r != rev) {
-        return None; // the 409 with the current state: Python's
+        let mut current = Map::new();
+        current.insert("detail".into(), json!("This encounter changed while you were editing it."));
+        if let Some(state) = combat_full_state(&cs) {
+            current.insert("state".into(), state);
+        } else {
+            return None;
+        }
+        return Response::builder().status(StatusCode::CONFLICT).header(header::CONTENT_TYPE, "application/json")
+            .header("x-nd-served-by", "gateway")
+            .body(Body::from(nd_render::py_dumps_compact(&Value::Object(current)))).ok();
     }
     let mut set: Vec<(&str, Sql)> = vec![
         ("combatants_json", s(&nd_render::py_dumps(&state["combatants"]))),

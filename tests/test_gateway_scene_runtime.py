@@ -85,6 +85,17 @@ def test_rust_only_patch_token_syncs_and_checks_revisions(client, seed):
         assert stale_combat.status_code == 409
         assert stale_combat.json()["combat_rev"] == 1
 
+        stale_tracker = gm.post(
+            f"/combat/{combat_id}/state",
+            json={"combatants": [{
+                "id": "c1", "name": "Overwrite", "source": "pc", "pc_id": pc_id,
+                "hp": 1, "max_hp": 10, "conditions": [],
+            }], "rev": 0, "round_num": 1, "active_idx": 0},
+        )
+        assert stale_tracker.status_code == 409
+        assert stale_tracker.json()["state"]["rev"] == 1
+        assert stale_tracker.json()["state"]["combatants"][0]["hp"] == 4
+
         tracked = gm.post(
             f"/combat/{combat_id}/state",
             json={"combatants": [{
