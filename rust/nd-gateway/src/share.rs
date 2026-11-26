@@ -183,7 +183,7 @@ pub fn join_form(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) ->
         Some(_) => true,
     };
     if signed_in && error.is_empty() {
-        return None;
+        return crate::auth::redeem_join_get(pages, &db, headers, invite?);
     }
     let world = match &invite {
         Some(i) => match db.query_row("SELECT * FROM worlds WHERE id = ?1", [i.get("world_id")?.as_i64()?], |r| crate::layout::row_map(r)) {

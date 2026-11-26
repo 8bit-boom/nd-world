@@ -741,7 +741,7 @@ async fn install_model_run(cfg: Arc<crate::config::Config>, id: i64, run_id: &st
     let mut results = Map::new();
     for target in targets {
         let r = match target.as_str() {
-            "ollama" => push_to_ollama(&cfg, gguf, name, K_MODEL, id).await,
+            "ollama" => push_to_ollama_recorded(&cfg, gguf, name, K_MODEL, id).await,
             "studio" => copy_to_studio(gguf, name).await,
             other => Err(format!("unknown target {other}")),
         };
@@ -762,7 +762,7 @@ async fn install_model_run(cfg: Arc<crate::config::Config>, id: i64, run_id: &st
 
 /// Ollama's import: sha256 the file, POST it to /api/blobs/{digest}, then /api/create names the model — the same two
 /// calls Python's import_local_gguf_model makes through the ollama client (verified there against the client's source).
-async fn push_to_ollama(cfg: &Arc<crate::config::Config>, gguf: &Path, name: &str, kind: &'static str, job_id: i64) -> Result<Value, String> {
+pub async fn push_to_ollama(cfg: &Arc<crate::config::Config>, gguf: &Path, name: &str) -> Result<Value, String> {
     let url_base = ollama_url(cfg).ok_or("No Ollama address configured (OLLAMA_URL or Settings).")?;
     let gguf_owned = gguf.to_path_buf();
     let (digest, size) = tokio::task::spawn_blocking(move || -> Result<(String, u64), String> {
@@ -780,10 +780,6 @@ async fn push_to_ollama(cfg: &Arc<crate::config::Config>, gguf: &Path, name: &st
         }
         Ok((format!("{:x}", h.finalize()), n))
     }).await.map_err(|e| format!("the digest task died: {e}"))??;
-    crate::runners::update(kind, job_id, |e| {
-        e.insert("stage".into(), json!("pushing the blob to Ollama"));
-        e.insert("gguf_bytes".into(), json!(size));
-    });
     // the blob POST streams the whole file, one frame at a time off the tokio File
     let file = tokio::fs::File::open(gguf).await.map_err(|e| format!("opening the GGUF: {e}"))?;
     let stream = tokio_util::io::ReaderStream::new(file).map(|item| item.map(hyper::body::Frame::data));
@@ -814,6 +810,14 @@ async fn push_to_ollama(cfg: &Arc<crate::config::Config>, gguf: &Path, name: &st
     }
     let _ = http_body_util::BodyExt::collect(resp.into_body()).await;
     Ok(json!({"ok": true, "model": name, "digest": digest, "bytes": size}))
+}
+
+async fn push_to_ollama_recorded(cfg: &Arc<crate::config::Config>, gguf: &Path, name: &str, kind: &'static str, job_id: i64) -> Result<Value, String> {
+    crate::runners::update(kind, job_id, |e| {
+        e.insert("stage".into(), json!("pushing the blob to Ollama"));
+        e.insert("gguf_bytes".into(), json!(std::fs::metadata(gguf).ok().map(|m| m.len()).unwrap_or(0)));
+    });
+    push_to_ollama(cfg, gguf, name).await
 }
 
 /// The legacy Ollama backend's address: Settings' ollama_url, else OLLAMA_URL, else the compose default

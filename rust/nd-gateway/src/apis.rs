@@ -2879,6 +2879,48 @@ fn player_image_jobs_list(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Optio
     crate::edits::json_response(&Value::Array(out))
 }
 
+/// `POST /api/ai/prompt-presets` (`api_prompt_presets_create`): GM-editable,
+/// per-world chat/image prompt presets.
+pub fn prompt_preset_create(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "POST", uri, headers, now)?;
+    if !p.is_gm {
+        return Some(crate::ai_more::detail(axum::http::StatusCode::FORBIDDEN, "Forbidden"));
+    }
+    let Value::Object(b) = serde_json::from_slice::<Value>(body).ok()? else { return None };
+    let scope = b.get("scope").and_then(|v| v.as_str())?;
+    if !matches!(scope, "chat" | "image") {
+        return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "scope must be 'chat' or 'image'"));
+    }
+    let label = b.get("label").and_then(|v| v.as_str()).map(crate::edits::py_strip_pub).unwrap_or_default();
+    if label.is_empty() {
+        return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "label is required"));
+    }
+    let Some(wid) = p.world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64()) else {
+        return Some(crate::idpages::refusal(404));
+    };
+    let icon = b.get("icon").and_then(|v| v.as_str()).map(crate::edits::py_strip_pub).unwrap_or_default();
+    let text = b.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let negative = b.get("negative").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let id = crate::orm::insert(&db, "prompt_presets", &[
+        ("world_id", rusqlite::types::Value::Integer(wid)),
+        ("scope", rusqlite::types::Value::Text(scope.to_string())),
+        ("label", rusqlite::types::Value::Text(label.clone())),
+        ("icon", rusqlite::types::Value::Text(icon.clone())),
+        ("text", rusqlite::types::Value::Text(text.clone())),
+        ("negative", rusqlite::types::Value::Text(negative.clone())),
+    ])?;
+    crate::edits::json_response(&json!({
+        "id": id,
+        "scope": scope,
+        "label": label,
+        "icon": icon,
+        "text": text,
+        "negative": negative,
+    }))
+}
+
 /// DELETE routes: `/api/ai/prompt-presets/<id>`, `/api/ai/chat/jobs/<id>` (a finished job's row) and `/api/ai/imagegen/model-templates/custom/<id>` (one of the world's own
 /// templates). Anything else, or a case Python judges otherwise, is Python's.
 pub fn delete(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {

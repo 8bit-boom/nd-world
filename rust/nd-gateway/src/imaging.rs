@@ -263,6 +263,58 @@ pub fn serve_thumbnail_requests(cfg: &crate::config::Config) {
     let _ = nd_render::THUMB_QUEUE.set(queue_thumbnail);
 }
 
+/// Rust-only startup warm/migration pass for thumbnails: walk uploads and bundled
+/// static pictures, replacing stale thumbnails in the configured preview format.
+pub fn warm_thumbnails(cfg: &crate::config::Config) {
+    let cfg = cfg.clone();
+    std::thread::spawn(move || {
+        let preview: Option<String> = crate::writes::open(&cfg)
+            .and_then(|db| db.query_row("SELECT preview_format FROM app_settings ORDER BY id LIMIT 1", [], |r| r.get(0)).ok())
+            .flatten();
+        let suffix = if matches!(preview.as_deref(), Some("webp") | Some("original")) { "_thumb.webp" } else { "_thumb.avif" };
+        let uploads = cfg.db_path.parent().map(|p| p.join("uploads"));
+        let mut roots = vec![
+            cfg.static_dir.join("maps"),
+            cfg.static_dir.join("races"),
+        ];
+        if let Some(uploads) = uploads {
+            roots.push(uploads);
+        }
+        let mut sources = vec![];
+        for root in roots {
+            let mut stack = vec![root];
+            while let Some(dir) = stack.pop() {
+                let Ok(entries) = std::fs::read_dir(dir) else { continue };
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        stack.push(path);
+                    } else if let Some(ext) = path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()) {
+                        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                        if ["jpg", "jpeg", "png", "webp", "avif", "gif"].contains(&ext.as_str())
+                            && !stem.ends_with("_thumb") && !stem.ends_with("_display")
+                        {
+                            sources.push(path);
+                        }
+                    }
+                }
+            }
+        }
+        sources.sort();
+        for src in sources {
+            let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let thumb = src.with_file_name(format!("{stem}{suffix}"));
+            let stale = std::fs::metadata(&src).ok()
+                .zip(std::fs::metadata(&thumb).ok())
+                .is_some_and(|(source, target)| source.modified().ok() > target.modified().ok());
+            if stale || !thumb.is_file() {
+                let _ = make_thumbnail(&src);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    });
+}
+
 fn queue_thumbnail(src: &Path) {
     static BUSY: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> = std::sync::OnceLock::new();
     let busy = BUSY.get_or_init(Default::default);

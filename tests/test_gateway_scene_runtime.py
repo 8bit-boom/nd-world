@@ -1,10 +1,13 @@
 """Rust-only tests for the linked map/combat Phase 1 scene runtime."""
 import json
+import httpx
+import os
 from sqlalchemy import text
 
 from app.database import SessionLocal
-from app.models import CombatSession, PlayerCharacter, Schematic
+from app.models import CombatSession, InviteCode, PlayerCharacter, Schematic, WorldMembership
 
+from .conftest import PLAYER_PASSWORD
 from .test_gateway_golden import GM_PASSWORD, _python_free_gateway
 
 
@@ -115,6 +118,196 @@ def test_rust_only_patch_token_syncs_and_checks_revisions(client, seed):
                 text("SELECT scene_rev FROM schematics WHERE slug = 'rust-linked-map'")
             ).scalar_one()
             assert stored_scene_rev >= 2
+        finally:
+            db.close()
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
+def test_rust_only_legacy_ollama_pull_streams_progress(client, seed):
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("content-length", "0"))
+            body = json.loads(self.rfile.read(length))
+            if self.path == "/api/pull":
+                assert body["name"] == "llama3.2:3b"
+                assert body["stream"] is True
+                payload = b'{"status":"pulling manifest"}\n{"status":"success"}\n'
+            elif self.path == "/api/generate":
+                assert body["model"] == "llama3.2:3b"
+                assert body["keep_alive"] == 0
+                payload = b'{"done":true}\n'
+            elif self.path == "/api/chat":
+                assert body["model"] == "llama3.2:3b"
+                assert body["stream"] is False
+                payload = b'{"model":"llama3.2:3b","eval_count":100,"eval_duration":2000000000,"prompt_eval_count":20,"prompt_eval_duration":500000000,"load_duration":250000000,"total_duration":2750000000}\n'
+            else:
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *_args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    proc, base, gm = _python_free_gateway(seed, {
+        "OLLAMA_URL": f"http://127.0.0.1:{server.server_address[1]}",
+    })
+    try:
+        r = gm.post("/api/ai/pull", json={"model_id": "llama3.2:3b"})
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/event-stream")
+        assert "pulling manifest" in r.text
+        assert "[DONE]" in r.text
+        unloaded = gm.post("/api/ai/unload", json={"model_id": "llama3.2:3b"})
+        assert unloaded.status_code == 200
+        assert unloaded.json() == {"ok": True}
+        benchmark = gm.post("/api/ai/benchmark", json={"model": "llama3.2:3b"})
+        assert benchmark.status_code == 200
+        assert benchmark.json()["model"] == "llama3.2:3b"
+        assert benchmark.json()["tokens_per_sec"] == 50.0
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+        server.shutdown()
+        server.server_close()
+
+
+def test_rust_only_prompt_preset_create(client, seed):
+    proc, base, gm = _python_free_gateway(seed)
+    try:
+        r = gm.post("/api/ai/prompt-presets", json={
+            "scope": "image",
+            "label": "Rust Neon",
+            "icon": "🎨",
+            "text": "cyberpunk portrait",
+            "negative": "blurry",
+        })
+        assert r.status_code == 200
+        assert r.headers["x-nd-served-by"] == "gateway"
+        preset = r.json()
+        assert preset["scope"] == "image"
+        assert preset["label"] == "Rust Neon"
+        assert preset["text"] == "cyberpunk portrait"
+        assert preset["negative"] == "blurry"
+
+        assert gm.post("/api/ai/prompt-presets", json={"scope": "bogus", "label": "x"}).status_code == 400
+        assert gm.post("/api/ai/prompt-presets", json={"scope": "chat", "label": "   "}).status_code == 400
+
+        player = httpx.Client(base_url=base, timeout=60, follow_redirects=False)
+        login = player.post("/login", data={
+            "email": seed.player_a.email,
+            "password": PLAYER_PASSWORD,
+            "next": "/",
+        })
+        assert login.status_code == 303
+        assert player.post("/api/ai/prompt-presets", json={
+            "scope": "chat", "label": "Player", "text": "not allowed",
+        }).status_code == 403
+
+        db = SessionLocal()
+        try:
+            from app.models import PromptPreset
+            row = db.get(PromptPreset, preset["id"])
+            assert row is not None
+            assert row.world_id == seed.world_a.id
+        finally:
+            db.close()
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
+def test_rust_only_world_delete(client, seed):
+    from app.models import Entity, GameSession, World
+
+    db = SessionLocal()
+    try:
+        doomed = Entity(world_id=seed.world_a.id, kind="location", name="Doomed World")
+        safe = Entity(world_id=seed.world_b.id, kind="location", name="Safe World")
+        session = GameSession(world_id=seed.world_a.id, title="Doomed Recording")
+        db.add_all([doomed, safe, session])
+        db.commit()
+        db.refresh(doomed)
+        db.refresh(safe)
+        db.refresh(session)
+        doomed_id, safe_id, session_id = doomed.id, safe.id, session.id
+    finally:
+        db.close()
+
+    uploads = __import__("pathlib").Path(os.environ["DB_PATH"]).parent / "uploads"
+    live = uploads / "live" / str(session_id)
+    live.mkdir(parents=True, exist_ok=True)
+    (live / "000000.webm").write_bytes(b"fake")
+
+    proc, base, gm = _python_free_gateway(seed, {"ND_DECLINE_TRACE": "1"})
+    try:
+        deleted = gm.post(f"/worlds/{seed.world_a.id}/delete", follow_redirects=False)
+        assert deleted.status_code == 303, (deleted.status_code, deleted.text)
+        assert deleted.headers["location"] == "/worlds"
+        assert deleted.headers["x-nd-served-by"] == "gateway"
+        assert not live.exists()
+
+        db = SessionLocal()
+        try:
+            assert db.get(World, seed.world_a.id) is None
+            assert db.get(Entity, doomed_id) is None
+            assert db.get(Entity, safe_id) is not None
+            assert db.get(World, seed.world_b.id) is not None
+        finally:
+            db.close()
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
+def test_rust_only_signed_in_join_redeems_invite(client, seed):
+    db = SessionLocal()
+    try:
+        db.query(WorldMembership).filter(
+            WorldMembership.world_id == seed.world_b.id,
+            WorldMembership.user_id == seed.player_a.id,
+        ).delete(synchronize_session=False)
+        db.add(InviteCode(code="rust-only-good", world_id=seed.world_b.id))
+        db.commit()
+    finally:
+        db.close()
+
+    proc, base, gm = _python_free_gateway(seed)
+    try:
+        player = httpx.Client(base_url=base, timeout=60, follow_redirects=False)
+        login = player.post("/login", data={
+            "email": seed.player_a.email,
+            "password": PLAYER_PASSWORD,
+            "next": "/",
+        })
+        assert login.status_code == 303
+        joined = player.get("/join/rust-only-good")
+        assert joined.status_code == 303
+        assert joined.headers["location"] == "/"
+        assert joined.headers["x-nd-served-by"] == "gateway"
+
+        db = SessionLocal()
+        try:
+            membership = db.query(WorldMembership).filter(
+                WorldMembership.world_id == seed.world_b.id,
+                WorldMembership.user_id == seed.player_a.id,
+            ).first()
+            invite = db.query(InviteCode).filter(InviteCode.code == "rust-only-good").first()
+            assert membership is not None
+            assert membership.role == "player"
+            assert invite.uses_count == 1
         finally:
             db.close()
     finally:

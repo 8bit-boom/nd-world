@@ -1,24 +1,25 @@
+     7 POST /api/maps/schematic/nan-token/move-token
      4 GET /maps/gw-a
      4 GET /maps/gw-c
      4 GET /static/*
-     3 GET /api/ai/tasks/9AEaYl33rRWEEHs1
      3 GET /boards/gw-bad
      3 GET /boards/gw-bad/notes
      3 GET /boards/gw-far
      3 GET /boards/gw-far/notes
      3 GET /maps/schematic/pv-none/view
      3 GET /maps/schematic/pv-none/view.json
-     2 DELETE /api/ai/imagegen/jobs/{}
-     2 GET /api/ai/models
+     3 POST /api/maps/schematic/battle/move-token
      2 GET /api/ai/tasks
-     2 GET /api/ai/tasks/QwqhzAkPYCF2H60L
-     2 GET /characters/{}/export.pdf
+     2 GET /api/ai/tasks/dveOSnRqy49Fcwl3
      2 GET /world.db
-     1 DELETE /api/ai/tasks/9AEaYl33rRWEEHs1
-     1 DELETE /api/view-prefs
-     1 GET /api/ai/tasks/695LdTfpPXmSYUJj
-     1 GET /api/ai/tasks/VuOMlgkc44tlNoN2
+     2 POST /api/maps/schematic/removed-move/move-token
+     2 POST /boards/save-5-1/save
+     2 POST /maps/schematic/pull-ok/pull-combat
+     1 DELETE /api/ai/tasks/dveOSnRqy49Fcwl3
+     1 GET /api/ai/tasks/12YN24U25VLEIF_b
      1 GET /api/ai/tasks/does-not-exist
+     1 GET /api/ai/tasks/ntm5qKVUsxx_JbUi
+     1 GET /api/ai/tasks/zanEi5o_RIIqxQrp
      1 GET /api/ai/whisper/denoise
      1 GET /api/ai/whisper/glossary
      1 GET /api/ai/whisper/language
@@ -26,7 +27,7 @@
      1 GET /api/maps/docks/ai-markers/{}
      1 GET /api/saved-views/Bad
      1 GET /api/saved-views/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-     1 GET /characters/templates/{}/export.json
+     1 GET /cartographer
      1 GET /display/map/elsewhere
      1 GET /display/map/elsewhere/data.json
      1 GET /display/map/nope/data.json
@@ -49,9 +50,7 @@
      1 GET /maps/schematic/dlg-escape-check
      1 GET /maps/schematic/embed-source-check
      1 GET /maps/schematic/no-bg
-     1 GET /maps/schematic/nope/rooms.json
-     1 GET /maps/schematic/plainmap/bg.webp
-     1 GET /maps/schematic/theirs/walls.json
+     1 GET /maps/schematic/scene-mode-check
      1 GET /maps/schematic/with-bg
      1 GET /maps/schematic/x/view
      1 GET /share/a%2Fb
@@ -60,49 +59,55 @@
      1 HEAD /sw.js
      1 POST /api/ai/whisper/activate
      1 POST /api/ai/whisper/pull
+     1 POST /api/entity/{}/media/audio/x/visibility
+     1 POST /api/entity/{}/media/spell/x/remove
+     1 POST /api/entity/{}/media/upload/complete
      1 POST /api/maps/b-only-map-4/overlay
-     1 POST /api/maps/flood-map/overlay
      1 POST /api/maps/no-such-map/overlay
      1 POST /api/maps/nope/ai-markers/start
-     1 POST /api/maps/save-map/overlay
-     1 POST /api/maps/schematic/gw-sc-0df4fa0203be/move-token
-     1 POST /api/maps/schematic/gw-sc-fe84fbe7e1fd/move-token
-     1 POST /api/maps/schematic/gw-sc-ff8dc78da7f9/move-token
+     1 POST /api/maps/ov-no-such-map/overlay
+     1 POST /api/maps/ov-other-world/overlay
+     1 POST /api/maps/schematic/gm-access/move-token
+     1 POST /api/maps/schematic/gw-sc-2c02434fc4af/move-token
+     1 POST /api/maps/schematic/gw-sc-33ae48a7aa44/move-token
+     1 POST /api/maps/schematic/gw-sc-39494b5869ab/move-token
+     1 POST /api/maps/schematic/gw-sc-8a52682c598c/move-token
+     1 POST /api/maps/schematic/gw-sc-d1c313d5bf05/move-token
+     1 POST /api/maps/schematic/gw-sc-dd0480c313f6/move-token
      1 POST /api/maps/schematic/locked-move/move-token
+     1 POST /api/maps/schematic/member-ok/move-token
      1 POST /api/maps/schematic/removed-buy/buy-item
      1 POST /api/maps/schematic/removed-pickup/pickup-item
-     1 POST /api/maps/shape-map/overlay
-     1 POST /api/sessions/{}/media/image/14bc9cde2b/remove
-     1 POST /api/sessions/{}/media/image/967174e927/remove
+     1 POST /api/sessions/{}/media/image/1ef994e5b9/remove
+     1 POST /api/sessions/{}/media/image/537d982c30/remove
      1 POST /api/sessions/{}/media/image/nope/rename
      1 POST /api/view-prefs/No-Such
-     1 POST /api/view-prefs/preset/nope
-     1 POST /api/view-prefs/preset/player_phone
-     1 POST /boards/save-5-1/save
-     1 POST /handouts/print
-     1 POST /join/ASoK5_14jEF2
-     1 POST /join/presetinvite
-     1 POST /join/presetinvite2
-     1 POST /join/testinvite2fa
      1 POST /maps/b-only-map-2/delete
      1 POST /maps/b-only-map-3/upload
      1 POST /maps/b-only-map/rename
      1 POST /maps/does-not-exist/delete
-     1 POST /maps/gwmap-d-41207b0865d7/delete
-     1 POST /maps/gwmap-r-46e9c61aaf52/rename
-     1 POST /maps/gwmap-r-4c950fd50767/rename
-     1 POST /maps/gwup-171b51569599/upload
+     1 POST /maps/gwmap-d-a407ee596783/delete
+     1 POST /maps/gwmap-d-fea5850e2014/delete
+     1 POST /maps/gwmap-r-102b8b9d371e/rename
+     1 POST /maps/gwmap-r-4074b5d3df6f/rename
+     1 POST /maps/gwmap-r-7cb6f8759f8c/rename
+     1 POST /maps/gwmap-r-8c8a779b1275/rename
+     1 POST /maps/gwup-3288370812bf/upload
      1 POST /maps/no-such-map/upload
      1 POST /maps/schematic/ai-bad/ai-build/start
      1 POST /maps/schematic/del-html-schem/delete
      1 POST /maps/schematic/does-not-exist/embed-image
+     1 POST /maps/schematic/elements-ok/elements
      1 POST /maps/schematic/embed-badext/embed-image
      1 POST /maps/schematic/embed-oversized/embed-image
      1 POST /maps/schematic/lights-14/lights
+     1 POST /maps/schematic/link-ok/link-combat
+     1 POST /maps/schematic/live-bump/elements
      1 POST /maps/schematic/nope/ai-build/start
-     1 POST /maps/schematic/pull-14/push-combat
-     1 POST /maps/schematic/pull-6/pull-combat
+     1 POST /maps/schematic/pull-2/pull-combat
+     1 POST /maps/schematic/pull-4/pull-combat
      1 POST /maps/schematic/pull-8/pull-combat
+     1 POST /maps/schematic/pull-visibility/pull-combat
      1 POST /maps/schematic/rd-10/rooms/detect
      1 POST /maps/schematic/rd-12/rooms/detect
      1 POST /maps/schematic/rd-16/rooms/detect
@@ -112,6 +117,12 @@
      1 POST /maps/schematic/rd-32/rooms/detect
      1 POST /maps/schematic/rd-8/rooms/detect
      1 POST /maps/schematic/rooms-16/rooms
+     1 POST /maps/schematic/sced-2/elements
+     1 POST /maps/schematic/sced-24/link-combat
+     1 POST /maps/schematic/sced-26/link-combat
+     1 POST /maps/schematic/sced-34/link-combat
+     1 POST /maps/schematic/sced-4/elements
+     1 POST /maps/schematic/sced-6/elements
      1 POST /maps/schematic/scup-10/embed-image
      1 POST /maps/schematic/scup-4/upload
      1 POST /maps/schematic/scup-6/upload

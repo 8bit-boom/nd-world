@@ -9,7 +9,7 @@ use axum::http::{header, HeaderMap, Response, StatusCode, Uri};
 use http_body_util::BodyExt;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::config::Config;
@@ -304,6 +304,184 @@ fn plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Pla
 
 pub(crate) fn client() -> &'static crate::net::HttpsClient {
     crate::net::client()
+}
+
+fn legacy_imagegen_type(cfg: &Config) -> Option<(String, String)> {
+    let db = crate::writes::open(cfg)?;
+    let key = db.query_row("SELECT llm_api_key FROM app_settings ORDER BY id LIMIT 1", [], |r| r.get::<_, Option<String>>(0)).ok().flatten().filter(|k| !k.is_empty())
+        .or_else(|| std::env::var("UNSLOTH_API_KEY").ok().filter(|k| !k.is_empty()));
+    if key.is_some() && !std::env::var("UNSLOTH_IMAGE_MODEL").unwrap_or_default().is_empty() {
+        return None;
+    }
+    let kind = std::env::var("IMAGEGEN_TYPE").unwrap_or_default().to_ascii_lowercase();
+    let url = std::env::var("IMAGEGEN_URL").unwrap_or_default().trim_end_matches('/').to_string();
+    if matches!(kind.as_str(), "swarmui" | "comfyui") && !url.is_empty() { Some((kind, url)) } else { None }
+}
+
+async fn legacy_http_json(method: &str, url: &str, body: Option<&Value>, timeout: Duration) -> Option<(u16, Value)> {
+    let data = body.map(|v| serde_json::to_vec(v).unwrap_or_default()).unwrap_or_default();
+    let mut b = hyper::Request::builder().method(method).uri(url);
+    if body.is_some() { b = b.header(header::CONTENT_TYPE, "application/json"); }
+    let req = b.body(http_body_util::Full::new(bytes::Bytes::from(data))).ok()?;
+    let work = async {
+        let resp = client().request(req).await.ok()?;
+        let status = resp.status();
+        let bytes = resp.into_body().collect().await.ok()?.to_bytes();
+        let value = serde_json::from_slice::<Value>(&bytes).unwrap_or(json!({}));
+        Some((status.as_u16(), value))
+    };
+    tokio::time::timeout(timeout, work).await.ok().flatten()
+}
+
+async fn swarm_session(url: &str) -> String {
+    match legacy_http_json("POST", &format!("{url}/API/GetNewSession"), Some(&json!({})), Duration::from_secs(8)).await {
+        Some((_, v)) => v.get("session_id").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("ndworld").to_string(),
+        None => "ndworld".to_string(),
+    }
+}
+
+fn object_list(v: &Value, node: &str, field: &str) -> Vec<String> {
+    v.pointer(&format!("/{node}/input/required/{field}/0")).and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default()
+}
+
+fn legacy_sampler_fallback() -> Vec<String> {
+    ["euler", "euler_ancestral", "euler_cfg_pp", "euler_ancestral_cfg_pp", "heun", "heunpp2",
+     "dpm_2", "dpm_2_ancestral", "lms", "dpm_fast", "dpm_adaptive", "dpmpp_2s_ancestral",
+     "dpmpp_sde", "dpmpp_sde_gpu", "dpmpp_2m", "dpmpp_2m_sde", "dpmpp_2m_sde_gpu",
+     "dpmpp_3m_sde", "dpmpp_3m_sde_gpu", "ddpm", "ddim", "lcm", "uni_pc", "uni_pc_bh2",
+     "ipndm", "ipndm_v", "deis", "res_multistep", "res_multistep_cfg_pp", "sa_solver",
+     "er_sde", "gradient_estimation", "restart"].iter().map(|s| s.to_string()).collect()
+}
+
+fn legacy_scheduler_fallback() -> Vec<String> {
+    ["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform", "beta",
+     "linear_quadratic", "kl_optimal", "ays", "gits"].iter().map(|s| s.to_string()).collect()
+}
+
+pub async fn legacy_imagegen_read(cfg: Arc<Config>, uri: Uri, headers: HeaderMap) -> Option<Response<Body>> {
+    let (kind, url) = tokio::task::spawn_blocking({
+        let cfg = cfg.clone();
+        move || legacy_imagegen_type(&cfg)
+    }).await.ok()??;
+    let path = uri.path();
+    let gm = tokio::task::spawn_blocking({
+        let cfg = cfg.clone();
+        let uri = uri.clone();
+        let headers = headers.clone();
+        move || {
+            let db = crate::writes::open(&cfg)?;
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+            crate::layout::build(&db, &cfg, "GET", &uri, &headers, now).filter(|p| p.is_gm)
+        }
+    }).await.ok().flatten();
+    gm?;
+
+    match path {
+        "/api/ai/imagegen/status" => {
+            let answer = if kind == "swarmui" {
+                match legacy_http_json("POST", &format!("{url}/API/GetNewSession"), Some(&json!({})), Duration::from_secs(5)).await {
+                    Some((status, _)) => json!({"ok": status < 400, "type": kind, "url": url}),
+                    None => json!({"ok": false, "reason": "Could not reach image backend"}),
+                }
+            } else {
+                match legacy_http_json("GET", &format!("{url}/system_stats"), None, Duration::from_secs(5)).await {
+                    Some((status, _)) => json!({"ok": status < 400, "type": kind, "url": url}),
+                    None => json!({"ok": false, "reason": "Could not reach image backend"}),
+                }
+            };
+            crate::edits::json_response(&answer)
+        }
+        "/api/ai/imagegen/models" | "/api/ai/imagegen/loras" | "/api/ai/imagegen/upscalers" | "/api/ai/imagegen/refiners" | "/api/ai/imagegen/ipadapter-models" | "/api/ai/imagegen/samplers-schedulers" => {
+            if kind == "swarmui" {
+                let sid = swarm_session(&url).await;
+                let (body_path, field) = match path {
+                    "/api/ai/imagegen/loras" => ("LoRA", "loras"),
+                    "/api/ai/imagegen/upscalers" => ("Upscale", "upscalers"),
+                    "/api/ai/imagegen/refiners" => ("Refiner", "refiners"),
+                    "/api/ai/imagegen/ipadapter-models" => ("IPAdapter", "models"),
+                    _ => ("", "models"),
+                };
+                if path == "/api/ai/imagegen/samplers-schedulers" {
+                    let endpoint = format!("{url}/comfyui/object_info/KSampler");
+                    let v = match legacy_http_json("GET", &endpoint, None, Duration::from_secs(8)).await {
+                        Some((_, v)) => v,
+                        None => json!({}),
+                    };
+                    let samplers = object_list(&v, "KSampler", "sampler_name");
+                    let schedulers = object_list(&v, "KSampler", "scheduler");
+                    crate::edits::json_response(&json!({
+                        "samplers": if samplers.is_empty() { legacy_sampler_fallback() } else { samplers },
+                        "schedulers": if schedulers.is_empty() { legacy_scheduler_fallback() } else { schedulers },
+                    }))
+                } else {
+                    let body = json!({"session_id": sid, "path": body_path, "depth": 10});
+                    let names = match legacy_http_json("POST", &format!("{url}/API/ListModels"), Some(&body), Duration::from_secs(8)).await {
+                        Some((status, v)) if status < 400 => v.get("files").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|m| m.get("name").and_then(|v| v.as_str()).map(str::to_string)).collect()).unwrap_or_default(),
+                        _ => vec![],
+                    };
+                    crate::edits::json_response(&json!({field: names}))
+                }
+            } else {
+                let (node, field, key) = match path {
+                    "/api/ai/imagegen/models" => ("CheckpointLoaderSimple", "ckpt_name", "models"),
+                    "/api/ai/imagegen/loras" => ("LoraLoader", "lora_name", "loras"),
+                    "/api/ai/imagegen/upscalers" => ("UpscaleModelLoader", "model_name", "upscalers"),
+                    "/api/ai/imagegen/samplers-schedulers" => ("KSampler", "", "samplers"),
+                    _ => ("", "", ""),
+                };
+                if path == "/api/ai/imagegen/samplers-schedulers" {
+                    let v = match legacy_http_json("GET", &format!("{url}/object_info/KSampler"), None, Duration::from_secs(8)).await {
+                        Some((_, v)) => v,
+                        None => json!({}),
+                    };
+                    let samplers = object_list(&v, "KSampler", "sampler_name");
+                    let schedulers = object_list(&v, "KSampler", "scheduler");
+                    crate::edits::json_response(&json!({
+                        "samplers": if samplers.is_empty() { legacy_sampler_fallback() } else { samplers },
+                        "schedulers": if schedulers.is_empty() { legacy_scheduler_fallback() } else { schedulers },
+                    }))
+                } else if node.is_empty() {
+                    crate::edits::json_response(&json!({key: []}))
+                } else {
+                    let v = match legacy_http_json("GET", &format!("{url}/object_info/{node}"), None, Duration::from_secs(8)).await {
+                        Some((_, v)) => v,
+                        None => json!({}),
+                    };
+                    crate::edits::json_response(&json!({key: object_list(&v, node, field)}))
+                }
+            }
+        }
+        "/api/ai/imagegen/updates" | "/api/ai/imagegen/backends" | "/api/ai/imagegen/progress" => {
+            if kind == "swarmui" {
+                let sid = swarm_session(&url).await;
+                if path.ends_with("/updates") {
+                    let body = json!({"session_id": sid});
+                    let v = match legacy_http_json("POST", &format!("{url}/API/CheckForUpdates"), Some(&body), Duration::from_secs(15)).await {
+                        Some((status, v)) if status < 400 && v.get("server").is_some() => v,
+                        _ => json!({}),
+                    };
+                    crate::edits::json_response(&json!({"updates": v}))
+                } else if path.ends_with("/backends") {
+                    let backends = match legacy_http_json("POST", &format!("{url}/API/ListBackends"), Some(&json!({"session_id": sid, "full_data": true})), Duration::from_secs(10)).await {
+                        Some((status, v)) if status < 400 => if let Some(a) = v.as_array() { a.clone() } else if let Some(o) = v.as_object() { o.values().cloned().collect() } else { vec![] },
+                        _ => vec![],
+                    };
+                    let resources = match legacy_http_json("POST", &format!("{url}/API/GetServerResourceInfo"), Some(&json!({"session_id": sid})), Duration::from_secs(10)).await {
+                        Some((status, v)) if status < 400 => v,
+                        _ => json!({}),
+                    };
+                    crate::edits::json_response(&json!({"backends": backends, "resources": resources}))
+                } else {
+                    crate::edits::json_response(&json!({"active": false, "percent": 0.0, "current_percent": 0.0, "preview": ""}))
+                }
+            } else {
+                let body = if path.ends_with("/backends") { json!({"backends": [], "resources": {}}) } else if path.ends_with("/progress") { json!({"active": false, "percent": 0.0, "current_percent": 0.0, "preview": ""}) } else { json!({"updates": {}}) };
+                crate::edits::json_response(&body)
+            }
+        }
+        _ => None,
+    }
 }
 
 pub(crate) fn backend_request(b: &Backend, method: &str, path: &str, body: Option<&Value>) -> Option<hyper::Request<http_body_util::Full<bytes::Bytes>>> {

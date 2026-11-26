@@ -46,6 +46,10 @@
       (edits.rs, nd-perm allowlist) work with no Python; a dropped video is Python's (ffmpeg), as for session media. tests/test_gateway_entity_media.py.
 
 ## Batch 1: still Python-only calls the pages make
+- [x] legacy SwarmUI / ComfyUI image-generation status and discovery reads (`rust/nd-gateway/src/ai.rs::legacy_imagegen_read`):
+      reachability, model / LoRA / upscale / refiner / IPAdapter lists, samplers / schedulers, progress, updates and backend resources.
+      Stand-in HTTP shapes use the same empty / inactive fallback contracts as Python. Direct generation and image-job execution remain
+      Python's until a real generation stand-in covers the complete backend / save / thumbnail chain.
 - [x] imagegen tag lists: GET sources/status/search and POST `fetch`, `/activate`, `/delete` (`tags.rs`, Python-free only: Python keeps a parsed-list cache)
 - [x] `POST /api/ai/unsloth/update`
 - [x] King in Yellow `POST /api/kiy/plays`, `DELETE /api/kiy/plays/{id}`

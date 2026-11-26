@@ -849,6 +849,22 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
+    if req.method() == axum::http::Method::POST && req.uri().path() == "/api/ai/prompt-presets" && app.cfg.rust_routes.iter().any(|r| r == "ai") {
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        if let Some(resp) = tokio::task::spawn_blocking({
+            let cfg = app.cfg.clone();
+            let uri = parts.uri.clone();
+            let headers = parts.headers.clone();
+            let body = bytes.clone();
+            move || apis::prompt_preset_create(&cfg, &uri, &headers, &body)
+        }).await.ok().flatten() {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
+    }
     if req.method() == axum::http::Method::POST && req.uri().path() == "/api/ai/status" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         // the AI dot's poll, on a Studio back end
         if let Some(resp) = studio::ai_status_route(app.cfg.clone()).await {
@@ -909,6 +925,18 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
     if req.method() == axum::http::Method::GET && (req.uri().path().starts_with("/api/ai/unsloth/") || req.uri().path() == "/api/ai/imagegen/models") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         // Unsloth Studio's status routes: what Studio answers, with Python's wording for its errors (no key: apis.rs's 400)
         if let Some(resp) = studio::route(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await {
+            return resp;
+        }
+    }
+    if req.method() == axum::http::Method::GET
+        && matches!(req.uri().path(),
+            "/api/ai/imagegen/status" | "/api/ai/imagegen/models" | "/api/ai/imagegen/loras"
+            | "/api/ai/imagegen/upscalers" | "/api/ai/imagegen/refiners"
+            | "/api/ai/imagegen/ipadapter-models" | "/api/ai/imagegen/progress"
+            | "/api/ai/imagegen/updates" | "/api/ai/imagegen/backends"
+            | "/api/ai/imagegen/samplers-schedulers")
+        && app.cfg.rust_routes.iter().any(|r| r == "ai") {
+        if let Some(resp) = ai::legacy_imagegen_read(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await {
             return resp;
         }
     }

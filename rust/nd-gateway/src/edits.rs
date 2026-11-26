@@ -378,6 +378,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/worlds/{}/notes/{}/{}/delete", private_note_delete),
     ("/worlds/{}/theme/clear", theme_clear),
     ("/worlds/{}/theme/import", theme_import),
+    ("/worlds/{}/delete", world_delete),
     ("/worlds/new", world_create),
     ("/api/worlds", api_world_create),
     ("/worlds/{}/rules/edit", rules_edit),
@@ -9159,6 +9160,139 @@ fn api_world_create(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     json_response(&json!({"id": wid, "slug": slug, "created": true}))
 }
 
+fn world_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    if !c.p.is_gm {
+        return None;
+    }
+    let wid = ids[0];
+    let world = row(&c.db, "SELECT * FROM worlds WHERE id = ?1", wid)
+        .map_or_else(|| None, Some)?;
+    let slug = world.get("slug").and_then(|v| v.as_str()).unwrap_or("");
+
+    let mut entities = vec![];
+    let mut st = c.db.prepare_cached("SELECT id FROM entities WHERE world_id = ?1").ok()?;
+    entities = st.query_map([wid], |r| r.get::<_, i64>(0)).ok()?.filter_map(|r| r.ok()).collect();
+    drop(st);
+    for eid in &entities {
+        c.db.execute("DELETE FROM entity_notes WHERE entity_id = ?1", [eid]).ok()?;
+        c.db.execute("DELETE FROM entity_links WHERE source_id = ?1 OR target_id = ?2", rusqlite::params![eid, eid]).ok()?;
+        c.db.execute("DELETE FROM entity_player_access WHERE entity_id = ?1", [eid]).ok()?;
+    }
+
+    let mut schematics = vec![];
+    let mut st = c.db.prepare_cached("SELECT slug, html_file, elements_json, image_url FROM schematics WHERE world_id = ?1").ok()?;
+    schematics = st.query_map([wid], |r| {
+        Ok((r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+            r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            r.get::<_, Option<String>>(3)?.unwrap_or_default()))
+    }).ok()?.filter_map(|r| r.ok()).collect();
+    drop(st);
+    let uploads = uploads_root(c)?;
+    for (scslug, html_file, elements_raw, image_url) in schematics {
+        if !html_file.is_empty() {
+            c.removals.push(uploads.join("schematics").join(&html_file));
+        }
+        for ext in [".webp", ".jpg", ".jpeg", ".png", ".gif", ".avif"] {
+            let path = uploads.join("schematics").join(format!("{scslug}{ext}"));
+            if path.exists() {
+                c.removals.push(path);
+            }
+        }
+        if let Ok(Value::Array(elements)) = serde_json::from_str::<Value>(&elements_raw) {
+            for el in elements {
+                if let Some(href) = el.get("href").and_then(|v| v.as_str()).filter(|h| h.starts_with("/uploads/schematics/embeds/")) {
+                    let name = href.rsplit('/').next().unwrap_or("");
+                    if !name.is_empty() && name != ".." && name != "." {
+                        c.removals.push(uploads.join("schematics").join("embeds").join(name));
+                    }
+                }
+            }
+        }
+        if !image_url.is_empty() {
+            remove_upload(c, &image_url);
+        }
+    }
+
+    let mut st = c.db.prepare_cached("SELECT id FROM game_sessions WHERE world_id = ?1").ok()?;
+    let session_ids: Vec<i64> = st.query_map([wid], |r| r.get(0)).ok()?.filter_map(|r| r.ok()).collect();
+    drop(st);
+    for sid in session_ids {
+        c.removals.push(uploads.join("live").join(sid.to_string()));
+        c.removals.push(uploads.join("session_media").join(sid.to_string()));
+    }
+
+    for (table, col) in [
+        ("audio_clips", "file_url"), ("video_clips", "file_url"), ("video_clips", "poster_url"),
+        ("calendar_day_icons", "image_url"), ("page_docs", "file_url"), ("map_props", "file_url"),
+    ] {
+        let Ok(mut st) = c.db.prepare_cached(&format!("SELECT {col} FROM {table} WHERE world_id = ?1")) else { continue };
+        let urls: Vec<String> = st.query_map([wid], |r| r.get::<_, Option<String>>(0)).ok()
+            .map(|rows| rows.filter_map(|r| r.ok()).flatten().filter(|u| u.starts_with("/uploads/")).collect())
+            .unwrap_or_default();
+        drop(st);
+        for url in urls {
+            remove_upload(c, &url);
+        }
+    }
+
+    let mut maps = vec![];
+    let data_dir = c.cfg.db_path.parent()?.join("maps");
+    if let Ok(entries) = std::fs::read_dir(&data_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(raw) = std::fs::read_to_string(&path).ok() else { continue };
+            let Ok(data) = serde_json::from_str::<Value>(&raw) else { continue };
+            if data.get("world_id").and_then(|v| v.as_i64()) == Some(wid) {
+                if let Some(slug) = path.file_stem().and_then(|s| s.to_str()) {
+                    maps.push(slug.to_string());
+                }
+            }
+        }
+    }
+    let data_dir = c.cfg.db_path.parent()?.join("maps");
+    let map_upload_dir = uploads.join("maps");
+    for map_slug in maps {
+        c.removals.push(data_dir.join(format!("{map_slug}.json")));
+        c.db.execute("DELETE FROM map_overlays WHERE slug = ?1", [&map_slug]).ok()?;
+        for ext in [".webp", ".jpg", ".jpeg", ".png", ".gif", ".avif"] {
+            let path = map_upload_dir.join(format!("{map_slug}{ext}"));
+            if path.exists() {
+                c.removals.push(path);
+            }
+        }
+    }
+
+    let mut tables = vec![];
+    let mut st = c.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").ok()?;
+    let names: Vec<String> = st.query_map([], |r| r.get(0)).ok()?.filter_map(|r| r.ok()).collect();
+    drop(st);
+    for table in names {
+        let mut qt = c.db.prepare_cached(&format!("PRAGMA table_info({table})")).ok()?;
+        let has_world = qt.query_map([], |r| r.get::<_, String>(1)).ok()
+            .map(|rows| rows.filter_map(|r| r.ok()).any(|c| c == "world_id"))
+            .unwrap_or(false);
+        drop(qt);
+        if has_world {
+            tables.push(table);
+        }
+    }
+    for table in tables {
+        c.db.execute(&format!("DELETE FROM main.{table} WHERE world_id = ?1"), [wid]).ok()?;
+    }
+
+    c.db.execute("DELETE FROM main.worlds WHERE id = ?1", [wid]).ok()?;
+    let mut r = redirect("/worlds")?;
+    r.headers_mut().append(header::SET_COOKIE, "active_world=; Max-Age=0; Path=/; SameSite=lax".parse().ok()?);
+    if slug.is_empty() {
+        return Some(r);
+    }
+    Some(r)
+}
+
 fn world_create(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     let f = c.form()?;
     let name = f.get("name")?.to_string();
@@ -9225,13 +9359,26 @@ const OLLAMA_UNSLOTH: &str = "Upload-from-PC needs the Ollama backend. With Unsl
 /// The Ollama upload routes on the Unsloth backend (app/ai.py `import_local_gguf_model`): the file is taken and dropped again, and the import the
 /// page polls ends in Studio's advice - Ollama's blob push has no equivalent there. Anything else (a real Ollama) is Python's.
 fn ollama_gate(c: &Ctx) -> Option<()> {
-    (c.p.is_gm && crate::ai::backend(&c.db).is_some()).then_some(())
+    (c.p.is_gm).then_some(())
 }
 
-fn ollama_import_start(name: &str) -> Option<Response<Body>> {
-    let id: String = (0..16).map(|_| format!("{:02x}", rand::random::<u8>())).collect();
-    let err = if strip(name).is_empty() { "No model name given" } else { OLLAMA_UNSLOTH };
-    crate::knowledge::imports().lock().ok()?.insert(id.clone(), json!({"error": err}));
+fn ollama_import_start(cfg: &Config, gguf: std::path::PathBuf, name: String) -> Option<Response<Body>> {
+    if py_strip_pub(&name).is_empty() {
+        let id: String = (0..16).map(|_| format!("{:02x}", rand::random::<u8>())).collect();
+        crate::knowledge::imports().lock().ok()?.insert(id.clone(), json!({"error": "No model name given"}));
+        return json_response(&json!({"import_id": id, "status": "queued"}));
+    }
+    let key = std::env::var("UNSLOTH_API_KEY").unwrap_or_default();
+    let has_key = !key.is_empty() || {
+        let db = crate::writes::open(cfg)?;
+        db.query_row("SELECT llm_api_key FROM app_settings ORDER BY id LIMIT 1", [], |r| r.get::<_, Option<String>>(0)).ok().flatten().is_some_and(|k| !k.trim().is_empty())
+    };
+    if has_key {
+        let id: String = (0..16).map(|_| format!("{:02x}", rand::random::<u8>())).collect();
+        crate::knowledge::imports().lock().ok()?.insert(id.clone(), json!({"error": OLLAMA_UNSLOTH}));
+        return json_response(&json!({"import_id": id, "status": "queued"}));
+    }
+    let id = crate::knowledge::start_ollama_gguf_import(std::sync::Arc::new(cfg.clone()), gguf, name);
     json_response(&json!({"import_id": id, "status": "queued"}))
 }
 
@@ -9249,7 +9396,11 @@ fn ollama_direct(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     if up.files[0].len as i64 > env_bytes("MAX_MODEL_UPLOAD_BYTES", 80 * 1024 * 1024 * 1024)? {
         return None;
     }
-    ollama_import_start(&name)
+    let target = uploads_root(c)?.join("ollama_models");
+    std::fs::create_dir_all(&target).ok()?;
+    let dest = target.join(format!("{}.gguf", rand::random::<u64>()));
+    c.upload.as_ref()?.copy_part(&up.files[0], &dest)?;
+    ollama_import_start(c.cfg, dest, name)
 }
 
 fn ollama_chunk(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
@@ -9262,15 +9413,39 @@ fn ollama_complete(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     ollama_gate(c)?;
     let f = c.form()?;
     let id = f.get("upload_id").filter(|v| !v.is_empty())?.to_string();
-    let name = f.get("filename")?.to_string();
+    let filename = f.get("filename")?.to_string();
     let total = form_int_required(&f, "total_chunks")?;
     let model = f.get("model_name")?.to_string();
-    if py_suffix_lower(&name)? != ".gguf" {
+    if py_suffix_lower(&filename)? != ".gguf" {
         return Some(bad400("Only .gguf files are supported"));
     }
-    let (dir, _parts, _size) = chunk_parts(c, "ollama_models", &id, total)?;
+    // Python validates missing/incomplete chunks before backend-specific handling.
+    let (dir, parts, size) = chunk_parts(c, "ollama_models", &id, total)?;
+    if size as i64 > env_bytes("MAX_MODEL_UPLOAD_BYTES", 80 * 1024 * 1024 * 1024)? {
+        return None;
+    }
+    let key = std::env::var("UNSLOTH_API_KEY").unwrap_or_default();
+    let has_key = !key.is_empty() || {
+        let db = crate::writes::open(c.cfg)?;
+        db.query_row("SELECT llm_api_key FROM app_settings ORDER BY id LIMIT 1", [], |r| r.get::<_, Option<String>>(0)).ok().flatten().is_some_and(|k| !k.trim().is_empty())
+    };
+    if has_key {
+        let id: String = (0..16).map(|_| format!("{:02x}", rand::random::<u8>())).collect();
+        crate::knowledge::imports().lock().ok()?.insert(id.clone(), json!({"error": OLLAMA_UNSLOTH}));
+        c.removals.clear();
+        return json_response(&json!({"import_id": id, "status": "queued"}));
+    }
+    let target = uploads_root(c)?.join("ollama_models");
+    std::fs::create_dir_all(&target).ok()?;
+    let dest = target.join(format!("{}.gguf", rand::random::<u64>()));
+    let id = crate::knowledge::start_ollama_gguf_reassembly(
+        std::sync::Arc::new(c.cfg.clone()),
+        parts,
+        dest,
+        model,
+    );
     c.removals.push(dir);
-    ollama_import_start(&model)
+    json_response(&json!({"import_id": id, "status": "queued"}))
 }
 
 fn rules_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
@@ -11793,7 +11968,7 @@ fn combat_touch(c: &Ctx, cs: &Map<String, Value>) -> Option<i64> {
     let rev = cs.get("rev").and_then(|v| v.as_i64()).unwrap_or(0) + 1;
     orm::update(&c.db, "combat_sessions", cs.get("id")?.as_i64()?, &[("rev", Sql::Integer(rev))])?;
     orm::signal(&c.db, cs.get("world_id")?.as_i64()?, "combat")?;
-    scene_sync_combat_to_tokens(c, cs.get("id")?.as_i64()?)?;
+    let _ = scene_sync_combat_to_tokens(c, cs.get("id")?.as_i64()?);
     Some(rev)
 }
 
@@ -13126,7 +13301,7 @@ fn sc_unlink_combat(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     }
     let sc = sc_for_manager(c, slug)?;
     orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("combat_session_id", Sql::Null)])?;
-    orm::bump_scene(&c.db, sc.get("id")?.as_i64()?, sc.get("world_id")?.as_i64()?)?;
+    let _ = orm::bump_scene(&c.db, sc.get("id")?.as_i64()?, sc.get("world_id")?.as_i64()?);
     redirect(&format!("/maps/schematic/{slug}"))
 }
 
@@ -13142,7 +13317,8 @@ fn cond_list(m: &Map<String, Value>) -> Option<Value> {
     match m.get("conditions") {
         None => Some(json!([])),
         Some(Value::Array(a)) => Some(Value::Array(a.clone())),
-        _ => None,
+        Some(Value::String(s)) => Some(json!(s.chars().map(|c| json!(c.to_string())).collect::<Vec<_>>())),
+        _ => Some(json!([])),
     }
 }
 
@@ -13193,7 +13369,7 @@ fn stale_scene_response(sc: &Map<String, Value>, cs: Option<&Map<String, Value>>
 /// later token link to an already claimed combatant id is removed.
 fn scene_sync_combat_to_tokens(c: &Ctx, combat_id: i64) -> Option<()> {
     let cs = row(&c.db, "SELECT * FROM combat_sessions WHERE id = ?1", combat_id)?;
-    let combatants = obj_list(cs.get("combatants_json"))?;
+    let combatants = obj_list(cs.get("combatants_json")).unwrap_or_default();
     let mut first_combatant = std::collections::HashMap::<String, usize>::new();
     let mut ambiguous = std::collections::HashSet::<String>::new();
     for (i, cb) in combatants.iter().enumerate() {
@@ -13246,7 +13422,7 @@ fn scene_sync_combat_to_tokens(c: &Ctx, combat_id: i64) -> Option<()> {
         }
         if changed {
             orm::update(&c.db, "schematics", sid, &[("elements_json", s(&nd_render::py_dumps(&Value::Array(elements))))])?;
-            orm::bump_scene(&c.db, sid, wid)?;
+            let _ = orm::bump_scene(&c.db, sid, wid);
         }
     }
     Some(())
@@ -13306,8 +13482,11 @@ fn sc_linked(c: &Ctx, slug: &str) -> Option<(Map<String, Value>, Map<String, Val
 
 /// `schematic_pull_combat`: a token for every combatant (matched by its combatant_id), refreshed or added
 fn sc_pull_combat(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
-    let (sc, cs) = sc_linked(c, slug)?;
-    let combatants = obj_list(cs.get("combatants_json"))?;
+    let sc = sc_for_manager(c, slug)?;
+    let cs_id = sc.get("combat_session_id").and_then(|v| v.as_i64()).filter(|i| *i != 0);
+    let Some(cs_id) = cs_id else { return Some(crate::idpages::refusal(404)) };
+    let cs = match row(&c.db, "SELECT * FROM combat_sessions WHERE id = ?1", cs_id) { Some(v) => v, None => return Some(crate::idpages::refusal(404)) };
+    let combatants = match obj_list(cs.get("combatants_json")) { Some(v) => v, None => return None };
     let raw = sc.get("elements_json").and_then(|v| v.as_str()).unwrap_or("[]");
     let Value::Array(mut elements) = canonical_json(raw)? else { return None };
     // by_combatant_id: the LAST token with that id wins, as a dict built in order keeps it
@@ -13324,7 +13503,7 @@ fn sc_pull_combat(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     let (cx, cy) = (dim("canvas_width", 2000.0) / 2.0, dim("canvas_height", 1500.0) / 2.0);
     let mut new_count = 0i64;
     for cb in &combatants {
-        let id = cb.get("id")?.as_str()?.to_string();
+        let id = match cb.get("id").and_then(|v| v.as_str()) { Some(v) => v.to_string(), None => continue };
         let conditions = cond_list(cb)?;
         if let Some(&(_, i)) = by_cid.iter().find(|(k, _)| *k == id) {
             let t = elements[i].as_object_mut()?;
@@ -13372,13 +13551,17 @@ fn sc_pull_combat(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
 
 /// `schematic_push_combat`: each token's hp / max_hp / conditions back onto its combatant
 fn sc_push_combat(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
-    let (sc, cs) = sc_linked(c, slug)?;
-    let elements = obj_list(sc.get("elements_json"))?;
-    let mut combatants = obj_list(cs.get("combatants_json"))?;
+    let sc = sc_for_manager(c, slug)?;
+    let cs_id = match sc.get("combat_session_id").and_then(|v| v.as_i64()).filter(|i| *i != 0) { Some(v) => v, None => return Some(crate::idpages::refusal(404)) };
+    let cs = match row(&c.db, "SELECT * FROM combat_sessions WHERE id = ?1", cs_id) { Some(v) => v, None => return Some(crate::idpages::refusal(404)) };
+    let elements = obj_list(sc.get("elements_json")).unwrap_or_default();
+    let mut combatants = obj_list(cs.get("combatants_json")).unwrap_or_default();
     // by_id: every combatant needs a (string) id; the last of equal ids wins
     let mut ids = vec![];
     for cb in &combatants {
-        ids.push(cb.get("id")?.as_str()?.to_string());
+        if let Some(id) = cb.get("id").and_then(|v| v.as_str()) {
+            ids.push(id.to_string());
+        }
     }
     let mut synced = vec![];
     for el in &elements {
@@ -13399,8 +13582,10 @@ fn sc_push_combat(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     let list = Value::Array(combatants.into_iter().map(Value::Object).collect());
     orm::update(&c.db, "combat_sessions", cs.get("id")?.as_i64()?, &[("combatants_json", s(&nd_render::py_dumps(&list)))])?;
     let cs = row(&c.db, "SELECT * FROM combat_sessions WHERE id = ?1", cs.get("id")?.as_i64()?)?;
-    combat_touch(c, &cs)?;
-    orm::bump_scene(&c.db, sc.get("id")?.as_i64()?, sc.get("world_id")?.as_i64()?)?;
+    let rev = cs.get("rev").and_then(|v| v.as_i64()).unwrap_or(0) + 1;
+    orm::update(&c.db, "combat_sessions", cs.get("id")?.as_i64()?, &[("rev", Sql::Integer(rev))])?;
+    orm::signal(&c.db, cs.get("world_id")?.as_i64()?, "combat")?;
+    let _ = orm::bump_scene(&c.db, sc.get("id")?.as_i64()?, sc.get("world_id")?.as_i64()?);
     json_response(&json!({"synced": synced}))
 }
 

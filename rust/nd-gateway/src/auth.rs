@@ -549,7 +549,7 @@ fn login_2fa(pages: &Pages, db: &rusqlite::Connection, headers: &HeaderMap, body
 /// `_redeem(request, db, invite)`: a signed-in non-GM joins the invite's world as a player (once; the use is counted), then to "/" with the world
 /// chosen; a world with a starting layout preset applies it for a player with no saved layouts yet (`_start_with_world_layout`). None: an odd slug
 /// (Python quotes it in the cookie)
-fn redeem(db: &rusqlite::Connection, session: &mut Map<String, Value>, invite: Map<String, Value>) -> Option<Response<Body>> {
+pub(crate) fn redeem(db: &rusqlite::Connection, session: &mut Map<String, Value>, invite: Map<String, Value>) -> Option<Response<Body>> {
     use rusqlite::types::Value as Sql;
     let world_id = invite.get("world_id")?.as_i64()?;
     let world = db.query_row("SELECT * FROM worlds WHERE id = ?1", [world_id], |r| crate::layout::row_map(r)).ok();
@@ -582,6 +582,17 @@ fn redeem(db: &rusqlite::Connection, session: &mut Map<String, Value>, invite: M
         r.headers_mut().append(header::SET_COOKIE, format!("active_world={slug}; Max-Age=31536000; Path=/; SameSite=lax").parse().ok()?);
     }
     Some(r)
+}
+
+/// Complete an invite opened by an already-signed-in browser.
+pub(crate) fn redeem_join_get(pages: &Pages, db: &rusqlite::Connection,
+                              headers: &HeaderMap, invite: Map<String, Value>) -> Option<Response<Body>> {
+    let (mut session, had) = read_session(pages, headers);
+    if session.get("user_id").is_none() {
+        return None;
+    }
+    let response = redeem(db, &mut session, invite)?;
+    Some(with_cookie(response, session_cookie(pages, &session, had)))
 }
 
 /// `POST /join/<code>` (app/routers/auth.py `join_submit`): sign up with an invite (or log in with it), then join the world

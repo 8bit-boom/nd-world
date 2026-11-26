@@ -466,7 +466,6 @@ pub(crate) fn ollama_plan(db: &rusqlite::Connection, p: &PageCtx, path: &str, bo
     if !p.is_gm {
         return None;
     }
-    let b = backend(db)?;
     let Value::Object(o) = serde_json::from_slice::<Value>(body).ok()? else { return None };
     match path {
         "/api/ai/unload" => {
@@ -475,18 +474,205 @@ pub(crate) fn ollama_plan(db: &rusqlite::Connection, p: &PageCtx, path: &str, bo
             if id.is_empty() {
                 return refusal(StatusCode::BAD_REQUEST, "model_id is required".into());
             }
+            let st = db.query_row("SELECT * FROM app_settings ORDER BY id LIMIT 1", [], |r| crate::layout::row_map(r)).ok().unwrap_or_default();
+            let key = st.get("llm_api_key").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let env_key = std::env::var("UNSLOTH_API_KEY").unwrap_or_default();
+            if key.is_empty() && env_key.is_empty() {
+                let saved = st.get("ollama_url").and_then(|v| v.as_str()).unwrap_or("").trim().trim_end_matches('/');
+                let url = if !saved.is_empty() { saved.to_string() } else {
+                    let env_url = std::env::var("OLLAMA_URL").unwrap_or_default();
+                    let env_url = env_url.trim().trim_end_matches('/');
+                    if env_url.is_empty() { "http://127.0.0.1:11434".to_string() } else { env_url.to_string() }
+                };
+                return Some(Box::pin(async move {
+                    let uri: hyper::Uri = match format!("{url}/api/generate").parse() {
+                        Ok(uri) => uri,
+                        Err(_) => return crate::ai_more::detail(StatusCode::BAD_GATEWAY, format!("Could not unload {id} — is Ollama reachable?")),
+                    };
+                    let req = hyper::Request::builder().method("POST").uri(uri).header("content-type", "application/json")
+                        .body(http_body_util::Full::new(bytes::Bytes::from(nd_render::py_dumps(&json!({"model": id, "prompt": "", "keep_alive": 0})))));
+                    let req = match req {
+                        Ok(req) => req,
+                        Err(_) => return crate::ai_more::detail(StatusCode::BAD_GATEWAY, format!("Could not unload {id} — is Ollama reachable?")),
+                    };
+                    let response = match crate::net::client().request(req).await {
+                        Ok(response) => response,
+                        Err(_) => return crate::ai_more::detail(StatusCode::BAD_GATEWAY, format!("Could not unload {id} — is Ollama reachable?")),
+                    };
+                    if !response.status().is_success() {
+                        return crate::ai_more::detail(StatusCode::BAD_GATEWAY, format!("Could not unload {id} — is Ollama reachable?"));
+                    }
+                    match crate::edits::json_response(&json!({"ok": true})) {
+                        Some(response) => response,
+                        None => crate::ai_more::detail(StatusCode::BAD_GATEWAY, format!("Could not unload {id} — is Ollama reachable?")),
+                    }
+                }));
+            }
             refusal(StatusCode::BAD_GATEWAY, format!("Could not unload {id} — is Ollama reachable?"))
         }
         "/api/ai/pull" => {
             let Value::String(id) = o.get("model_id")? else { return None };
-            let msg = format!("Model pull needs the Ollama backend. With Unsloth, download the model in Studio Model Hub instead (the id to use there: {id})");
-            let text = format!("data: {}\n\ndata: [DONE]\n\n", nd_render::py_dumps(&json!({"error": msg})));
+            let id = strip(id);
+            if id.is_empty() {
+                let text = nd_render::py_dumps(&json!({"detail": "model_id is required"}));
+                return Some(Box::pin(async move {
+                    Response::builder().status(StatusCode::UNPROCESSABLE_ENTITY)
+                        .header("content-type", "application/json")
+                        .header("x-nd-served-by", "gateway")
+                        .body(Body::from(text)).unwrap()
+                }));
+            }
+            let st = db.query_row("SELECT * FROM app_settings ORDER BY id LIMIT 1", [], |r| crate::layout::row_map(r)).ok().unwrap_or_default();
+            let key = st.get("llm_api_key").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let env_key = std::env::var("UNSLOTH_API_KEY").unwrap_or_default();
+            if !key.is_empty() || !env_key.is_empty() {
+                let msg = format!("Model pull needs the Ollama backend. With Unsloth, download the model in Studio Model Hub instead (the id to use there: {id})");
+                let text = format!("data: {}\n\ndata: [DONE]\n\n", nd_render::py_dumps(&json!({"error": msg})));
+                return Some(Box::pin(async move {
+                    Response::builder().status(StatusCode::OK).header("content-type", "text/event-stream; charset=utf-8").header("x-accel-buffering", "no")
+                        .header("cache-control", "no-cache").header("x-nd-served-by", "gateway").body(Body::from(text)).unwrap()
+                }));
+            }
+            let saved = st.get("ollama_url").and_then(|v| v.as_str()).unwrap_or("").trim().trim_end_matches('/');
+            let url = if !saved.is_empty() { saved.to_string() } else {
+                let env_url = std::env::var("OLLAMA_URL").unwrap_or_default();
+                let env_url = env_url.trim().trim_end_matches('/');
+                if env_url.is_empty() { "http://127.0.0.1:11434".to_string() } else { env_url.to_string() }
+            };
             Some(Box::pin(async move {
+                let pull_url = format!("{}/api/pull", url);
+                let uri: hyper::Uri = match pull_url.parse() {
+                    Ok(uri) => uri,
+                    Err(_) => {
+                        let text = format!("data: {}\n\ndata: [DONE]\n\n", nd_render::py_dumps(&json!({"error": "Invalid Ollama URL"})));
+                        return Response::builder().status(StatusCode::OK).header("content-type", "text/event-stream; charset=utf-8")
+                            .header("x-nd-served-by", "gateway").body(Body::from(text)).unwrap();
+                    }
+                };
+                let req = hyper::Request::builder().method("POST").uri(uri).header("content-type", "application/json")
+                    .body(http_body_util::Full::new(bytes::Bytes::from(nd_render::py_dumps(&json!({"name": id, "stream": true})))));
+                let req = match req {
+                    Ok(req) => req,
+                    Err(_) => {
+                        let text = format!("data: {}\n\ndata: [DONE]\n\n", nd_render::py_dumps(&json!({"error": "Could not build Ollama pull request"})));
+                        return Response::builder().status(StatusCode::OK).header("content-type", "text/event-stream; charset=utf-8")
+                            .header("x-nd-served-by", "gateway").body(Body::from(text)).unwrap();
+                    }
+                };
+                let response = match crate::net::client().request(req).await {
+                    Ok(response) => response,
+                    Err(e) => {
+                        let text = format!("data: {}\n\ndata: [DONE]\n\n", nd_render::py_dumps(&json!({"error": e.to_string()})));
+                        return Response::builder().status(StatusCode::OK).header("content-type", "text/event-stream; charset=utf-8")
+                            .header("x-nd-served-by", "gateway").body(Body::from(text)).unwrap();
+                    }
+                };
+                let status = response.status();
+                let bytes = match response.into_body().collect().await {
+                    Ok(bytes) => bytes.to_bytes(),
+                    Err(e) => {
+                        let text = format!("data: {}\n\ndata: [DONE]\n\n", nd_render::py_dumps(&json!({"error": e.to_string()})));
+                        return Response::builder().status(StatusCode::OK).header("content-type", "text/event-stream; charset=utf-8")
+                            .header("x-nd-served-by", "gateway").body(Body::from(text)).unwrap();
+                    }
+                };
+                let mut text = String::new();
+                if status.is_success() {
+                    for line in String::from_utf8_lossy(&bytes).split(['\n', '\r']).filter(|line| !line.trim().is_empty()) {
+                        if let Ok(progress) = serde_json::from_str::<Value>(line) {
+                            text.push_str(&format!("data: {}\n\n", nd_render::py_dumps(&progress)));
+                        }
+                    }
+                } else {
+                    let detail = serde_json::from_slice::<Value>(&bytes).ok()
+                        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
+                        .unwrap_or_else(|| "Ollama returned an unreadable error".to_string());
+                    text.push_str(&format!("data: {}\n\n", nd_render::py_dumps(&json!({"error": format!("Ollama {}: {}", status.as_u16(), detail)}))));
+                }
+                text.push_str("data: [DONE]\n\n");
                 Response::builder().status(StatusCode::OK).header("content-type", "text/event-stream; charset=utf-8").header("x-accel-buffering", "no")
                     .header("cache-control", "no-cache").header("x-nd-served-by", "gateway").body(Body::from(text)).unwrap()
             }))
         }
         _ => {
+            let st = db.query_row("SELECT * FROM app_settings ORDER BY id LIMIT 1", [], |r| crate::layout::row_map(r)).ok().unwrap_or_default();
+            let key = st.get("llm_api_key").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let env_key = std::env::var("UNSLOTH_API_KEY").unwrap_or_default();
+            if key.is_empty() && env_key.is_empty() {
+                let ollama_url = st.get("ollama_url").and_then(|v| v.as_str()).unwrap_or("").trim().trim_end_matches('/');
+                let ollama_url = if ollama_url.is_empty() {
+                    let env_url = std::env::var("OLLAMA_URL").unwrap_or_default();
+                    let env_url = env_url.trim().trim_end_matches('/');
+                    if env_url.is_empty() { "http://127.0.0.1:11434".to_string() } else { env_url.to_string() }
+                } else { ollama_url.to_string() };
+                let model = match o.get("model") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(s)) => (!s.is_empty()).then(|| s.clone()),
+                    _ => return None,
+                }.or_else(|| st.get("ollama_model").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_string))
+                    .or_else(|| st.get("llm_model").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_string))
+                    .or_else(|| std::env::var("OLLAMA_MODEL").ok().filter(|s| !s.is_empty()))
+                    .unwrap_or_else(|| "gemma4:26b".to_string());
+                return Some(Box::pin(async move {
+                    let uri: hyper::Uri = match format!("{ollama_url}/api/chat").parse() {
+                        Ok(uri) => uri,
+                        Err(_) => return crate::ai_more::detail(StatusCode::BAD_GATEWAY, String::from("Could not reach Ollama")),
+                    };
+                    let body = json!({
+                        "model": model,
+                        "messages": [{"role": "user", "content": "Write a two-sentence description of a rainy city street at night."}],
+                        "stream": false,
+                        "options": {"num_predict": 128, "think": false}
+                    });
+                    let req = hyper::Request::builder().method("POST").uri(uri).header("content-type", "application/json")
+                        .body(http_body_util::Full::new(bytes::Bytes::from(nd_render::py_dumps(&body))));
+                    let req = match req {
+                        Ok(req) => req,
+                        Err(_) => return crate::ai_more::detail(StatusCode::BAD_GATEWAY, String::from("Could not build Ollama benchmark request")),
+                    };
+                    let response = match crate::net::client().request(req).await {
+                        Ok(response) => response,
+                        Err(e) => return crate::ai_more::detail(StatusCode::BAD_GATEWAY, e.to_string()),
+                    };
+                    let status = response.status();
+                    let bytes = match response.into_body().collect().await {
+                        Ok(bytes) => bytes.to_bytes(),
+                        Err(e) => return crate::ai_more::detail(StatusCode::BAD_GATEWAY, e.to_string()),
+                    };
+                    if !status.is_success() {
+                        let detail = serde_json::from_slice::<Value>(&bytes).ok()
+                            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
+                            .unwrap_or_else(|| "Ollama benchmark failed".to_string());
+                        return crate::ai_more::detail(StatusCode::BAD_GATEWAY, detail);
+                    }
+                    let data = match serde_json::from_slice::<Value>(&bytes) {
+                        Ok(Value::Object(o)) => o,
+                        _ => return crate::ai_more::detail(StatusCode::BAD_GATEWAY, String::from("Ollama benchmark returned unreadable JSON")),
+                    };
+                    let eval_count = data.get("eval_count").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let prompt_count = data.get("prompt_eval_count").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let eval_ns = data.get("eval_duration").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let prompt_ns = data.get("prompt_eval_duration").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let load_ns = data.get("load_duration").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let total_ns = data.get("total_duration").and_then(|v| v.as_i64()).unwrap_or(eval_ns.saturating_add(prompt_ns).saturating_add(load_ns));
+                    let r1 = |x: f64| (x * 10.0).round() / 10.0;
+                    let tokens_per_sec = if eval_ns > 0 { r1(eval_count as f64 / (eval_ns as f64 / 1e9)) } else { 0.0 };
+                    let prompt_tokens_per_sec = if prompt_ns > 0 { r1(prompt_count as f64 / (prompt_ns as f64 / 1e9)) } else { 0.0 };
+                    crate::edits::json_response(&json!({
+                        "model": model,
+                        "tokens_per_sec": tokens_per_sec,
+                        "prompt_tokens_per_sec": prompt_tokens_per_sec,
+                        "eval_count": eval_count,
+                        "eval_duration_ms": r1(eval_ns as f64 / 1e6),
+                        "prompt_eval_count": prompt_count,
+                        "prompt_eval_duration_ms": r1(prompt_ns as f64 / 1e6),
+                        "load_duration_ms": r1(load_ns as f64 / 1e6),
+                        "total_duration_ms": r1(total_ns as f64 / 1e6),
+                    }))
+                        .unwrap_or_else(|| crate::ai_more::detail(StatusCode::INTERNAL_SERVER_ERROR, String::from("Could not encode benchmark result")))
+                }));
+            }
+            let b = backend(db)?;
             let model = match o.get("model") { None => String::new(), Some(Value::String(s)) => s.clone(), _ => return None };
             Some(Box::pin(async move {
                 let m = if model.is_empty() { b.model.clone() } else { model };
@@ -513,12 +699,64 @@ pub(crate) fn imports() -> &'static Mutex<HashMap<String, Value>> {
     I.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+pub fn start_ollama_gguf_import(cfg: std::sync::Arc<Config>, gguf: std::path::PathBuf, name: String) -> String {
+    let id: String = (0..16).map(|_| format!("{:02x}", rand::random::<u8>())).collect();
+    imports().lock().ok().map(|mut m| m.insert(id.clone(), json!({"status":"queued"})));
+    let import_id = id.clone();
+    tokio::spawn(async move {
+        imports().lock().ok().map(|mut m| m.insert(import_id.clone(), json!({"status":"reassembling"})));
+        let cfg2 = cfg.clone();
+        let result = crate::lore_forge::jobs::push_to_ollama(&cfg2, &gguf, &name).await;
+        let final_value = match result {
+            Ok(v) => json!({"status":"done","model": v.get("model").cloned().unwrap_or(Value::String(name))}),
+            Err(e) => json!({"error": e}),
+        };
+        imports().lock().ok().map(|mut m| m.insert(import_id, final_value));
+        let _ = std::fs::remove_file(&gguf);
+    });
+    id
+}
+
+pub fn start_ollama_gguf_reassembly(cfg: std::sync::Arc<Config>, parts: Vec<std::path::PathBuf>, dest: std::path::PathBuf, name: String) -> String {
+    let id: String = (0..16).map(|_| format!("{:02x}", rand::random::<u8>())).collect();
+    imports().lock().ok().map(|mut m| m.insert(id.clone(), json!({"status":"queued"})));
+    let import_id = id.clone();
+    tokio::spawn(async move {
+        imports().lock().ok().map(|mut m| m.insert(import_id.clone(), json!({"status":"reassembling"})));
+        let mut out = match std::fs::File::create(&dest) {
+            Ok(out) => out,
+            Err(e) => {
+                imports().lock().ok().map(|mut m| m.insert(import_id, json!({"error":format!("Reassembly failed: {e}")})));
+                return;
+            }
+        };
+        for part in &parts {
+            match std::fs::File::open(part).and_then(|mut src| std::io::copy(&mut src, &mut out).map(|_| ()) ) {
+                Ok(_) => {}
+                Err(e) => {
+                    imports().lock().ok().map(|mut m| m.insert(import_id, json!({"error":format!("Reassembly failed: {e}")})));
+                    let _ = std::fs::remove_file(&dest);
+                    return;
+                }
+            }
+        }
+        let result = crate::lore_forge::jobs::push_to_ollama(&cfg, &dest, &name).await;
+        let final_value = match result {
+            Ok(v) => json!({"status":"done","model": v.get("model").cloned().unwrap_or(Value::String(name))}),
+            Err(e) => json!({"error":e}),
+        };
+        imports().lock().ok().map(|mut m| m.insert(import_id, final_value));
+        let _ = std::fs::remove_file(&dest);
+    });
+    id
+}
+
 /// `GET /api/ai/ollama/upload/status/<id>`: a finished (or failed) import is served once and forgotten
 pub fn import_status(cfg: &Config, uri: &axum::http::Uri, headers: &axum::http::HeaderMap) -> Option<Response<Body>> {
     let db = crate::writes::open(cfg)?;
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
     let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
-    if !p.is_gm || backend(&db).is_none() {
+    if !p.is_gm {
         return None;
     }
     let id = uri.path().strip_prefix("/api/ai/ollama/upload/status/")?;

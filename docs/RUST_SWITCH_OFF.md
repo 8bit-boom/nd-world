@@ -31,6 +31,25 @@ them after each batch; the phase is done when both are empty and the steps below
 
 ### Done so far
 
+- **Real-Ollama GGUF uploads** (`edits.rs`, `knowledge.rs`, Lore Forge `jobs.rs`): direct and chunked
+  `/api/ai/ollama/upload/*` routes validate `.gguf` files, background reassemble/push into Ollama's blob/create API,
+  and consume terminal status once. Studio keeps its existing advice/queued import behavior.
+- **Audio-job resume** (`ai.rs::audio_job_resume`): Rust owns interrupted audio-job resume, including
+  GM/background-job permission, cross-world isolation, status/phase/file checks, and reset of resumed_count.
+- **Legacy Ollama benchmark** (`knowledge.rs`): Rust-only `POST /api/ai/benchmark` uses the
+  configured legacy Ollama chat endpoint and reports timing/token fields; Studio keeps its existing branch.
+- **World deletion** (`edits.rs`): Rust now owns `POST /worlds/{id}/delete` with GM-only authorization, a
+  world-scoped table cascade, live-recording/audio cleanup, map/schematic/media cleanup, and an active-world cookie clear.
+- **Legacy Ollama model pull/unload** (`knowledge.rs`): Rust-only `POST /api/ai/pull` proxies NDJSON progress from
+  the configured legacy Ollama `/api/pull` endpoint, and `POST /api/ai/unload` sends Ollama's `keep_alive: 0` unload
+  request. Unsloth keeps its existing guidance/502 branches and all SSE/DONE shapes.
+- **Rust-only startup thumbnail warmup** (`imaging.rs`, `startup.rs`): on Rust-only boot, stale or missing thumbnails
+  under uploads and bundled static map/race folders are remade in the configured preview format by a daemon thread.
+- **Prompt-preset creation** (`apis.rs`, `lib.rs`): Rust now owns `POST /api/ai/prompt-presets` with GM/world/scope
+  checks and `chat`/`image` validation. Create/delete/list behavior stays per-world and is covered by Rust-only tests.
+- **Signed-in invite redemption** (`share.rs`, `auth.rs`): `GET /join/<code>` now completes a valid invite for an
+  already-authenticated browser in Rust, including membership, invite-use count, active-world cookie, and the starting
+  layout preset. Rust-only coverage is in `tests/test_gateway_scene_runtime.py`.
 - **Linked map/combat scene runtime MVP** (`edits.rs`, `orm.rs`, `pages.rs`, `startup.rs`): Rust-only automatic sync for existing
   schematic combat tokens. Matching is by unique `combatant_id`; combat writes refresh linked token HP/max HP/conditions and
   token patches push those fields back into the linked fight. Scene and combat revisions catch stale writes, duplicate ids/tokens
@@ -96,6 +115,13 @@ them after each batch; the phase is done when both are empty and the steps below
 - **Image generation reads without a back end** (apis.rs): `GET /api/ai/imagegen/status|loras|upscalers|refiners|ipadapter-models|progress|updates|backends|samplers-schedulers`
   answer from the configuration alone (`IMAGEGEN_TYPE` / `IMAGEGEN_URL` / Studio as the image back end) - nothing configured, Studio, or not SwarmUI; a SwarmUI /
   ComfyUI to ask is Python's. `GET /api/ai/imagegen/starred` reads the starred pictures.
+- **Configured legacy image-generation reads** (`ai.rs::legacy_imagegen_read`): the gateway now asks configured SwarmUI / ComfyUI back ends for
+  reachability, model / LoRA / upscale / refiner / IPAdapter discovery, progress, update checks and backend/resource status. SwarmUI uses
+  `GetNewSession`, `ListModels`, `ListBackends`, `GetServerResourceInfo`, `CheckForUpdates` and its ComfyUI sampler proxy; ComfyUI uses
+  `/system_stats`, `/object_info/*` and `/comfyui/object_info/KSampler` only where the proxy shape requires it. Network failures return the
+  same empty / inactive contracts as Python (`[]`, `{}`, inactive progress), and GM-only/session-gated reads stay Python-compatible. Direct
+  `/imagegen/generate` and legacy SwarmUI/ComfyUI image jobs remain Python's because the Rust port has no stand-in parity fixture for the
+  full generation / image-save call chain.
 - **Media rename page** (pages.rs, lib.rs): `GET /media-rename[?kind=&album=]` with the start kind, style presets, `ai_ready` and the last 10 batches..
 - **Join page** (`GET /join/<code>`, share.rs `join_form`): the sign-up form for a good invite and the reason for a bad one (invalid, revoked,
   expired, used up). A signed-in browser with a good link is redeemed by Python; the POST (accounts, passwords, 2FA) stays Python's.

@@ -1761,8 +1761,7 @@ pub fn schematic_views(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderM
         out.insert("own_pc_currency".into(), scene.own_pc_currency);
         out.insert("combat_active_combatant_id".into(), scene.active_combatant_id);
         out.insert("combat_round".into(), scene.combat_round);
-        out.insert("scene_rev".into(), scene.scene_rev);
-        out.insert("combat_rev".into(), scene.combat_rev);
+        // Python's /view.json payload does not include revision fields.
         out.extend(scene.fog_part);
         return crate::edits::json_response(&Value::Object(out));
     }
