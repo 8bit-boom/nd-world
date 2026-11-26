@@ -18,6 +18,7 @@ function igSetSize(w, h, btn) {
   document.getElementById('ig-height').value = h;
   document.querySelectorAll('.ig-preset-btn').forEach(b => b.classList.remove('ig-preset-active'));
   if (btn) btn.classList.add('ig-preset-active');
+  igUpdateOut();
 }
 
 function igSetBatch(btn) {
@@ -30,6 +31,39 @@ function igSetUpscale(btn) {
   _igUpscaleFactor = parseFloat(btn.dataset.scale);
   document.querySelectorAll('.ig-batch-btn[data-scale]').forEach(b => b.classList.remove('ig-batch-active'));
   btn.classList.add('ig-batch-active');
+  igUpdateOut();
+}
+
+// What comes out: the generated size, the size after the upscale model (x factor) and the Highres-fix target, in pixels and megapixels. The sizes go up to 2048 for a
+// generation and 4096 for an upscale / Highres-fix target; anything over 4096 px on a side is flagged (Studio takes up to 6272, but it needs a lot of memory).
+const IG_OUT_WARN_SIDE = 4096;
+function igUpdateOut() {
+  const el = document.getElementById('ig-upscale-out');
+  if (!el) return;
+  const num = (id, d) => parseInt(document.getElementById(id)?.value || d, 10) || d;
+  const w = num('ig-width', 512), h = num('ig-height', 512);
+  const mp = (a, b) => (a * b / 1e6).toFixed(1) + ' MP';
+  const lines = ['Generated: ' + w + ' × ' + h + ' (' + mp(w, h) + ')'];
+  let biggest = Math.max(w, h);
+  const model = (document.getElementById('ig-upscaler')?.value || '').trim();
+  if (model) {
+    const ow = Math.round(w * _igUpscaleFactor), oh = Math.round(h * _igUpscaleFactor);
+    lines.push('After the upscaler ×' + _igUpscaleFactor + ': ' + ow + ' × ' + oh + ' (' + mp(ow, oh) + ')');
+    biggest = Math.max(biggest, ow, oh);
+  } else {
+    lines.push('No upscale model chosen: the picture stays at its generated size.');
+  }
+  if (typeof _igHiresFix !== 'undefined' && _igHiresFix) {
+    const hw = num('ig-hires-w', 0), hh = num('ig-hires-h', 0);
+    if (hw && hh) { lines.push('Highres-fix target: ' + hw + ' × ' + hh + ' (' + mp(hw, hh) + ')'); biggest = Math.max(biggest, hw, hh); }
+  }
+  el.replaceChildren(...lines.map(t => { const d = document.createElement('div'); d.textContent = t; return d; }));
+  if (biggest > IG_OUT_WARN_SIDE) {
+    const warn = document.createElement('div');
+    warn.style.color = '#e0a030';
+    warn.textContent = '⚠ More than ' + IG_OUT_WARN_SIDE + ' px on a side: this needs a lot of memory and time; pick a smaller size or factor if it fails.';
+    el.appendChild(warn);
+  }
 }
 
 function igPreviewInit(input) {
@@ -1275,6 +1309,7 @@ function igUpdateHiresState() {
     body.style.opacity = _igHiresFix ? '1' : '.4';
     body.style.pointerEvents = _igHiresFix ? '' : 'none';
   }
+  igUpdateOut();
 }
 
 function igSetHiresScale(btn) {
@@ -1285,6 +1320,7 @@ function igSetHiresScale(btn) {
   const h = parseInt(document.getElementById('ig-height')?.value || 512);
   _setClosestOpt(document.getElementById('ig-hires-w'), Math.round(w * scale / 64) * 64);
   _setClosestOpt(document.getElementById('ig-hires-h'), Math.round(h * scale / 64) * 64);
+  igUpdateOut();
 }
 
 function _setClosestOpt(sel, val) {
@@ -1697,6 +1733,7 @@ async function igLoadUpscalers() {
   } catch(e) {
     sel.innerHTML = '<option value="">— unavailable —</option>';
   }
+  igUpdateOut();
 }
 
 // ── Image generation history (localStorage) ────────────────────────────────────
@@ -1839,6 +1876,7 @@ function igReuseParams(idx) {
     const cfgVal = document.getElementById('ig-cfg-val');
     if (cfgVal && p.cfg) cfgVal.textContent = p.cfg;
     igUpdateCfgWarning();
+    igUpdateOut();
     document.querySelector('.ig-main')?.scrollTo({top: 0, behavior: 'smooth'});
   } catch(e) { alert('Could not load parameters: ' + e.message); }
 }
@@ -2353,3 +2391,6 @@ async function igSetAsPortrait(url, entityId, entityName, btn) {
     btn.disabled = false;
   }
 }
+
+// the size read-out is filled once the page is built
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', igUpdateOut); else igUpdateOut();

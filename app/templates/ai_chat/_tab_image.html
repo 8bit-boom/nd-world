@@ -157,9 +157,11 @@
           <button class="ig-preset-btn" onclick="igSetSize(1024,1024,this)">1024²</button>
           <button class="ig-preset-btn" onclick="igSetSize(1216,832,this)">1216×832</button>
           <button class="ig-preset-btn" onclick="igSetSize(832,1216,this)">832×1216</button>
+          <button class="ig-preset-btn" onclick="igSetSize(1536,1536,this)">1536²</button>
+          <button class="ig-preset-btn" onclick="igSetSize(2048,2048,this)">2048²</button>
         </div>
         <div class="ig-size-row">
-          <select id="ig-width" class="ig-select">
+          <select id="ig-width" class="ig-select" onchange="igUpdateOut()">
             <option value="512" selected>512 W</option>
             <option value="640">640 W</option>
             <option value="768">768 W</option>
@@ -167,9 +169,14 @@
             <option value="1024">1024 W</option>
             <option value="1152">1152 W</option>
             <option value="1216">1216 W</option>
+            <option value="1280">1280 W</option>
+            <option value="1344">1344 W</option>
+            <option value="1536">1536 W</option>
+            <option value="1792">1792 W</option>
+            <option value="2048">2048 W</option>
           </select>
           <span class="ig-size-sep">×</span>
-          <select id="ig-height" class="ig-select">
+          <select id="ig-height" class="ig-select" onchange="igUpdateOut()">
             <option value="512" selected>512 H</option>
             <option value="640">640 H</option>
             <option value="768">768 H</option>
@@ -177,6 +184,11 @@
             <option value="1024">1024 H</option>
             <option value="1152">1152 H</option>
             <option value="1216">1216 H</option>
+            <option value="1280">1280 H</option>
+            <option value="1344">1344 H</option>
+            <option value="1536">1536 H</option>
+            <option value="1792">1792 H</option>
+            <option value="2048">2048 H</option>
           </select>
         </div>
       </div>
@@ -373,7 +385,7 @@
           <div>
             <label class="ig-label">Upscale model</label>
             <div style="display:flex;gap:.25rem;margin-bottom:.3rem">
-              <select id="ig-upscaler" class="ig-select" style="flex:1;font-size:.78rem">
+              <select id="ig-upscaler" class="ig-select" style="flex:1;font-size:.78rem" onchange="igUpdateOut()">
                 <option value="">— none (output at gen size) —</option>
               </select>
               <button class="ig-btn" type="button" onclick="igLoadUpscalers()" title="Refresh upscaler list"
@@ -389,6 +401,7 @@
               <button class="ig-batch-btn" data-scale="4" onclick="igSetUpscale(this)">×4</button>
             </div>
           </div>
+          <div id="ig-upscale-out" style="font-size:.74rem;color:var(--text-dim);line-height:1.5"></div>
         </div>
       </details>
 
@@ -592,22 +605,30 @@
               </div>
             </div>
             <div class="ig-size-row">
-              <select id="ig-hires-w" class="ig-select">
+              <select id="ig-hires-w" class="ig-select" onchange="igUpdateOut()">
                 <option value="1024">1024 W</option>
                 <option value="1152">1152 W</option>
                 <option value="1216">1216 W</option>
                 <option value="1344">1344 W</option>
                 <option value="1536">1536 W</option>
                 <option value="2048">2048 W</option>
+                <option value="2560">2560 W</option>
+                <option value="3072">3072 W</option>
+                <option value="3584">3584 W</option>
+                <option value="4096">4096 W</option>
               </select>
               <span class="ig-size-sep">×</span>
-              <select id="ig-hires-h" class="ig-select">
+              <select id="ig-hires-h" class="ig-select" onchange="igUpdateOut()">
                 <option value="1024">1024 H</option>
                 <option value="1152">1152 H</option>
                 <option value="1216">1216 H</option>
                 <option value="1344">1344 H</option>
                 <option value="1536">1536 H</option>
                 <option value="2048">2048 H</option>
+                <option value="2560">2560 H</option>
+                <option value="3072">3072 H</option>
+                <option value="3584">3584 H</option>
+                <option value="4096">4096 H</option>
               </select>
             </div>
             <div>
