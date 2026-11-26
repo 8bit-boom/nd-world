@@ -55,6 +55,10 @@ def test_studio_is_mounted_natively(client, seed, tmp_path):
         assert idx.status_code == 200, idx.text
         assert '<base href="/cartographer/studio/">' in idx.text
         assert gm.get("/cartographer/studio/app.js").status_code == 200
+        app_js = gm.get("/cartographer/studio/app.js").text
+        assert "for (const [mx, my] of mirrored(cellX, cellY)) state.painting.add" in app_js
+        assert "  render();\n  clearTimeout(state.pendingFlush);\n}" in app_js
+        assert "setTimeout(flushStroke, 120)" not in app_js
         # the trailing slash redirects to the index (the studio's nest redirect)
         assert gm.get("/cartographer/studio/", follow_redirects=False).status_code in (301, 302, 303, 307, 308)
 
