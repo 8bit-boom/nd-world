@@ -599,9 +599,7 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
                     .unwrap();
             }
             use tower::ServiceExt;
-            let is_app_js = req.uri().path() == "/cartographer/studio/app.js";
             return match app.studio.clone().oneshot(req).await {
-                Ok(resp) if is_app_js => cartographer::patch_app_js(resp).await,
                 Ok(resp) => resp,
                 Err(infallible) => match infallible {},
             };

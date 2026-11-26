@@ -706,6 +706,25 @@ def test_schematic_editor_uploads_image_instead_of_embedding_base64(client, seed
     assert "href:url" in r.text
 
 
+def test_schematic_editor_has_live_edit_play_mode(client, seed):
+    """The GM editor exposes an in-place Play view and a one-click return to Edit."""
+    db = SessionLocal()
+    try:
+        _make_schematic(db, seed.world_a.id, "scene-mode-check")
+    finally:
+        db.close()
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.get("/maps/schematic/scene-mode-check")
+    assert r.status_code == 200
+    assert 'id="scene-play-overlay"' in r.text
+    assert 'id="scene-play-frame"' in r.text
+    assert 'id="scene-play-btn"' in r.text
+    assert "setSceneMode(true)" in r.text
+    assert "setSceneMode(false)" in r.text
+    assert "await save();" in r.text
+    assert "/maps/schematic/scene-mode-check/view" in r.text
+
+
 def test_schematic_editor_dialogs_close_on_escape_and_backdrop_click(client, seed):
     """Phase 14 regression guard (source-level — no JS runtime in this test
     suite): the editor's five modal dialogs (text/party/token/merchant-

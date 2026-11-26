@@ -16,9 +16,9 @@
 - [x] Bidirectional map/AI context: Cartographer Ask can retrieve nd-world lore through `/api/ai/world-context-smart`, and GM AI Chat
       now adds persisted Cartographer project/floor/label/marker text to the same RAG context. The read is read-only, bounded, GM-only,
       and works in both Python and the Rust-only gateway; `tests/test_gateway_cartographer.py` covers the gateway surface.
-- [x] Live cell-paint preview: the gateway patches the embedded studio's `app.js` so cell painting calls a full overlay `render()` for
-      every pointer move and waits for pointer release before flushing the stroke. This removes the missing-during-drag and mid-drag
-      timeout behavior; tested by `tests/test_gateway_cartographer.py`.
+- [x] Schematic live Play/Edit switch: the GM map editor has an in-place `Play` overlay that saves first and embeds the existing
+      player live view, with a one-click `Edit map` return to the editor. It reuses token movement, combat state, fog, SSE/live polling,
+      and the second-screen/table view instead of maintaining a second virtual-table engine.
 
 ## Measured starting point (main at 3f217ee)
 - 90% of the app's parameterless GET routes work with no Python (crawl); about 54% of routes are answered only by the gateway, 37% mixed, 9% Python only

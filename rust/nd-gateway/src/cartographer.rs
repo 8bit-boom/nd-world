@@ -178,55 +178,6 @@ pub fn world_context(cfg: &Config, query: &str) -> String {
     lines.join("\n")
 }
 
-fn patch_app_js_source(js: &str) -> String {
-    let old = r#"function queuePaint(cellX, cellY) {
-  if (!state.painting) state.painting = new Set();
-  for (const [mx, my] of mirrored(cellX, cellY)) state.painting.add(`${mx},${my}`);
-  drawStrokePreview();
-  clearTimeout(state.pendingFlush);
-  state.pendingFlush = setTimeout(flushStroke, 120);
-}"#;
-    let live = r#"function queuePaint(cellX, cellY) {
-  if (!state.painting) state.painting = new Set();
-  for (const [mx, my] of mirrored(cellX, cellY)) state.painting.add(`${mx},${my}`);
-  render();
-  clearTimeout(state.pendingFlush);
-}"#;
-    js.replace(old, live)
-}
-
-pub async fn patch_app_js(resp: Response<Body>) -> Response<Body> {
-    use http_body_util::BodyExt;
-    let (parts, body) = resp.into_parts();
-    let Ok(bytes) = body.collect().await.map(|c| c.to_bytes()) else {
-        return Response::from_parts(parts, Body::from(Vec::<u8>::new()));
-    };
-    let Ok(js) = std::str::from_utf8(&bytes) else {
-        return Response::from_parts(parts, Body::from(bytes));
-    };
-    let patched = patch_app_js_source(js);
-    Response::from_parts(parts, Body::from(patched))
-}
-
-#[cfg(test)]
-mod live_paint_tests {
-    use super::patch_app_js_source;
-
-    #[test]
-    fn queue_paint_rerenders_without_mid_drag_flush() {
-        let source = r#"function queuePaint(cellX, cellY) {
-  if (!state.painting) state.painting = new Set();
-  for (const [mx, my] of mirrored(cellX, cellY)) state.painting.add(`${mx},${my}`);
-  drawStrokePreview();
-  clearTimeout(state.pendingFlush);
-  state.pendingFlush = setTimeout(flushStroke, 120);
-}"#;
-        let patched = patch_app_js_source(source);
-        assert!(patched.contains("  render();\n  clearTimeout(state.pendingFlush);"));
-        assert!(!patched.contains("setTimeout(flushStroke"));
-    }
-}
-
 fn reply(code: StatusCode, v: Value) -> Response<Body> {
     Response::builder()
         .status(code)

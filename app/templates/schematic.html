@@ -2,6 +2,13 @@
 {% block title %}{{ schematic.name }} — Schematic{% endblock %}
 {% block content %}
 <div id="sch-wrap">
+  <div id="scene-play-overlay" hidden>
+    <div id="scene-play-bar">
+      <span id="scene-play-title">▶ Playing {{ schematic.name }}</span>
+      <button type="button" class="tb" onclick="setSceneMode(false)">✏ Edit map</button>
+    </div>
+    <iframe id="scene-play-frame" title="Live playable map" allow="fullscreen"></iframe>
+  </div>
 
   <!-- ── Toolbar (row 1: tools) ────────────────────────────────────────────── -->
   <div id="sch-bar">
@@ -72,6 +79,7 @@
     <button class="tb" id="bar2-toggle" onclick="toggleBar2()" title="More tools (edit/align/export)">⋯ More</button>
     <div style="flex:1"></div>
     <button class="tb" id="save-btn" onclick="save()" style="border-color:#44ff88;color:#44ff88">💾 Save</button>
+    <button class="tb" id="scene-play-btn" onclick="setSceneMode(true)" style="border-color:#ff8844;color:#ff8844" title="Switch to the live player view while keeping this editor one click away">▶ Play</button>
     <button class="tb" onclick="aiBuildOpen()" style="border-color:var(--neon,#0ff);color:var(--neon,#0ff)" title="AI-build a layout from a description (and optional sketch images)">✨ AI Build</button>
   </div>
 
@@ -497,6 +505,18 @@
 
 <style>
 #sch-wrap { display:flex; flex-direction:column; height:calc(100vh - 56px); user-select:none; }
+#scene-play-overlay[hidden] { display:none; }
+#scene-play-overlay {
+  position:absolute; z-index:1000; inset:56px 0 0 0;
+  display:flex; flex-direction:column; background:#050505;
+}
+#scene-play-bar {
+  display:flex; align-items:center; justify-content:space-between; gap:.6rem;
+  min-height:42px; padding:.35rem .6rem; background:rgba(0,0,0,.92);
+  border-bottom:1px solid rgba(255,255,255,.12);
+}
+#scene-play-title { color:#ff8844; font-weight:bold; }
+#scene-play-frame { flex:1; width:100%; border:0; background:#050505; }
 #sch-bar, #sch-bar2 {
   display:flex; align-items:center; gap:.18rem; flex-wrap:wrap;
   padding:.25rem .5rem; background:rgba(0,0,0,.78);
@@ -2490,6 +2510,21 @@ async function save() {
     if (r.ok) markClean();
   } catch { btn.textContent='✗ Error'; }
   setTimeout(()=>{btn.textContent='💾 Save'; btn.disabled=false;},1500);
+}
+
+async function setSceneMode(play) {
+  const overlay = document.getElementById('scene-play-overlay');
+  if (!play) {
+    overlay.hidden = true;
+    document.getElementById('scene-play-frame').removeAttribute('src');
+    try { await save(); } catch (_) {}
+    redraw();
+    return;
+  }
+  await save();
+  const frame = document.getElementById('scene-play-frame');
+  frame.src = {{ ('/maps/schematic/' + schematic.slug + '/view') | wq | tojson }};
+  overlay.hidden = false;
 }
 
 // ── Combat Tracker sync ────────────────────────────────────────────────────────
