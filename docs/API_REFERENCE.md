@@ -664,8 +664,9 @@ The next confirmed session also shows on the in-world calendar page and in each 
 |---|---|---|---|
 | GET | `/maps/schematic/new` | GM / Assistant | New schematic form. |
 | POST | `/maps/schematic/new` | GM / Assistant | Creates a schematic (optional `folder`). |
-| GET | `/maps/schematic/{slug}`
 | GET | `/maps/schematic/{slug}` | GM / Assistant | GM editor canvas. |
+| POST | `/maps/schematic/{slug}/add-floor` | GM / Assistant | Adds an empty floor to the schematic's floor group, inheriting its canvas and grid settings; JSON body `{"label":"Upper Floor"}` (1–80 ASCII characters), returns the new `slug` and `url`. |
+| POST | `/maps/schematic/{slug}/portal` | GM / Assistant | Creates reciprocal visible exit pins between two floors in the same group. JSON body: `destination_slug`, source `x`/`y`, destination arrival `destination_x`/`destination_y`, and optional `label`. |
 | GET | `/maps/schematic/{}/preview.svg` | GM / Player* | Server-side SVG rendering of the schematic's elements (rooms, walls, tokens) for list-card previews; an uploaded background image is inlined as a data URI. Gated like the schematics list (maps section view). |
 | POST | `/maps/schematic/{slug}/link-combat` | GM / Assistant | Links the schematic to a `CombatSession` for token sync. |
 | POST | `/maps/schematic/{slug}/unlink-combat` | GM / Assistant | Removes the combat link. |
@@ -674,7 +675,7 @@ The next confirmed session also shows on the in-world calendar page and in each 
 | GET | `/maps/schematic/{slug}/view` | Player | Read/interact-only player view (hides GM-only elements). |
 | GET | `/maps/schematic/{slug}/view.json` | Player | Player-view state as JSON (refetched when the world's live counter moves; a 20 s poll is the safety net). Includes `fog` settings and, only while fog or darkness is on, the `walls` (a secret door arrives as a plain wall) and, only while darkness is above zero, the lights that are on (id, x, y, range, color, intensity - no labels). |
 | GET | `/maps/schematic/{slug}/bg.webp` | Player (Maps view) | A STRICT map's picture with everything the party has not seen painted over (only for maps with fog + strict secrecy; 404 otherwise). Players are refused the original `/uploads/schematics/...` file of such a map. See `app/map_strict.py`. |
-| POST | `/api/maps/schematic/{slug}/move-token` | Player | Moves a token — a non-GM player may only move the one token linked to their own `PlayerCharacter`. |
+| POST | `/api/maps/schematic/{slug}/move-token` | Player | Moves a token — a non-GM player may only move the one token linked to their own `PlayerCharacter`. Reaching a visible floor-exit pin transfers that character token to the paired floor and returns a `transition.url` for the player view. |
 | PATCH | `/api/maps/schematic/{slug}/tokens/{token_id}` | GM / Player (owned token) | Linked scene runtime MVP: patches an existing token's position and optional combat-linked HP/max HP/conditions. Accepts `scene_rev` and `combat_rev`; stale values return 409 with current scene/combat state. |
 | POST | `/api/maps/schematic/{slug}/pickup-item` | Player | A player picks up an entire item-token stack into their own character's inventory. |
 | POST | `/api/maps/schematic/{slug}/buy-item` | Player | A player buys one stock row from a merchant token, deducting currency and reducing stock (row-level locked against concurrent buys). |

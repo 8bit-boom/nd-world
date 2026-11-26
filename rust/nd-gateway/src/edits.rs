@@ -543,6 +543,7 @@ type SlugHandler = fn(&mut Ctx, &str) -> Option<Response<Body>>;
 const SLUG_ROUTES: &[(&str, &str, SlugHandler)] = &[("/api/maps/schematic/", "/move-token", sc_move_token), ("/api/maps/schematic/", "/pickup-item", sc_pickup),
     ("/api/maps/schematic/", "/buy-item", sc_buy),
     ("/api/maps/schematic/", "/play-manifest", sc_play_manifest), ("/api/maps/schematic/", "/play", sc_play),
+    ("/maps/schematic/", "/add-floor", sc_add_floor), ("/maps/schematic/", "/portal", sc_floor_portal),
     ("/maps/schematic/", "/door", sc_door), ("/maps/schematic/", "/fog", sc_fog),
     ("/maps/schematic/", "/rooms", sc_rooms), ("/maps/schematic/", "/rooms/detect", sc_rooms_detect), ("/maps/schematic/", "/lights", sc_lights), ("/maps/schematic/", "/walls", sc_walls),
     ("/maps/schematic/", "/elements", sc_elements), ("/maps/schematic/", "/rename", sc_rename), ("/maps/schematic/", "/delete", sc_delete),
@@ -12998,6 +12999,236 @@ fn sc_for_edit(c: &Ctx, slug: &str) -> Option<Map<String, Value>> {
     c.can_edit_section("maps")?.then_some(sc)
 }
 
+fn schematic_floor_group(db: &Connection, schematic_id: i64) -> Option<String> {
+    db.query_row(
+        "SELECT group_id FROM schematic_floors WHERE schematic_id = ?1",
+        [schematic_id],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
+pub fn schematic_floor_navigation(db: &Connection, sc: &Map<String, Value>) -> Option<Vec<Value>> {
+    let (Some(sid), Some(wid), Some(slug)) = (
+        sc.get("id").and_then(Value::as_i64),
+        sc.get("world_id").and_then(Value::as_i64),
+        sc.get("slug").and_then(Value::as_str),
+    ) else {
+        return None;
+    };
+    let Some(group) = schematic_floor_group(db, sid) else {
+        return Some(vec![json!({
+            "slug": slug,
+            "label": "Floor 1",
+            "selected": true
+        })]);
+    };
+    let mut st = db.prepare_cached(
+        "SELECT s.slug, f.label FROM schematic_floors f
+         JOIN schematics s ON s.id = f.schematic_id
+         WHERE f.world_id = ?1 AND f.group_id = ?2 AND s.is_html = 0
+         ORDER BY f.floor_order, s.id",
+    ).ok()?;
+    let floors = st
+        .query_map(rusqlite::params![wid, group], |r| {
+            let floor_slug: String = r.get(0)?;
+            let label: String = r.get(1)?;
+            Ok(json!({
+                "slug": floor_slug,
+                "label": label,
+                "selected": floor_slug == slug
+            }))
+        })
+        .ok()?
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    (!floors.is_empty()).then_some(floors)
+}
+
+fn sc_add_floor(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let body = c.json()?;
+    let sc = sc_for_manager(c, slug)?;
+    let wid = sc.get("world_id")?.as_i64()?;
+    if Some(wid) != c.world_id() {
+        return Some(crate::idpages::refusal(404));
+    }
+    let label = body.get("label").and_then(Value::as_str).unwrap_or("").trim();
+    if label.is_empty() || label.len() > 80 || !label.is_ascii() {
+        return Some(bad400("Floor name must be 1–80 ASCII characters"));
+    }
+    let sid = sc.get("id")?.as_i64()?;
+    let group = match schematic_floor_group(&c.db, sid) {
+        Some(group) => group,
+        None => {
+            c.db.execute(
+                "INSERT INTO schematic_floors (schematic_id, world_id, group_id, floor_order, label)
+                 VALUES (?1, ?2, ?3, 1, 'Floor 1')",
+                rusqlite::params![sid, wid, slug],
+            ).ok()?;
+            slug.to_string()
+        }
+    };
+    let next_order: i64 = c.db.query_row(
+        "SELECT COALESCE(MAX(floor_order), 0) + 1 FROM schematic_floors
+         WHERE world_id = ?1 AND group_id = ?2",
+        rusqlite::params![wid, group],
+        |r| r.get(0),
+    ).ok()?;
+    let name = format!(
+        "{} - {}",
+        sc.get("name").and_then(Value::as_str).unwrap_or("Map"),
+        label
+    );
+    let mut base_slug = py_slug(&name, 256)?;
+    if base_slug.is_empty() {
+        return Some(bad400("Floor name must contain a letter or number"));
+    }
+    let mut floor_slug = base_slug.clone();
+    let mut suffix = 2;
+    loop {
+        let exists: bool = c.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM schematics WHERE slug = ?1)",
+            [&floor_slug],
+            |r| r.get(0),
+        ).ok()?;
+        if !exists {
+            break;
+        }
+        base_slug = py_slug(&format!("{name}-{suffix}"), 256)?;
+        floor_slug = base_slug.clone();
+        suffix += 1;
+    }
+    let mut fields = vec![
+        ("world_id", Sql::Integer(wid)),
+        ("name", s(&name)),
+        ("slug", s(&floor_slug)),
+        ("description", sc.get("description").and_then(Value::as_str).map_or(Sql::Null, |v| Sql::Text(v.to_string()))),
+        ("is_html", Sql::Integer(0)),
+        ("canvas_width", Sql::Integer(sc.get("canvas_width").and_then(Value::as_i64).unwrap_or(2000))),
+        ("canvas_height", Sql::Integer(sc.get("canvas_height").and_then(Value::as_i64).unwrap_or(1500))),
+        ("canvas_bg", s(sc.get("canvas_bg").and_then(Value::as_str).unwrap_or("dark"))),
+        ("elements_json", s("[]")),
+        ("grid_type", s(sc.get("grid_type").and_then(Value::as_str).unwrap_or("none"))),
+        ("grid_config_json", s(sc.get("grid_config_json").and_then(Value::as_str).unwrap_or("{}"))),
+    ];
+    if let Some(folder) = sc.get("folder").and_then(Value::as_str).filter(|v| !v.is_empty()) {
+        fields.push(("folder", s(folder)));
+    }
+    let new_id = orm::insert(&c.db, "schematics", &fields)?;
+    c.db.execute(
+        "INSERT INTO schematic_floors (schematic_id, world_id, group_id, floor_order, label)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![new_id, wid, group, next_order, label],
+    ).ok()?;
+    orm::touch(&c.db, wid)?;
+    json_response(&json!({
+        "ok": true,
+        "slug": floor_slug,
+        "url": format!("/maps/schematic/{floor_slug}")
+    }))
+}
+
+fn sc_floor_portal(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let body = c.json()?;
+    let source = sc_for_manager(c, slug)?;
+    let wid = source.get("world_id")?.as_i64()?;
+    if Some(wid) != c.world_id() {
+        return Some(crate::idpages::refusal(404));
+    }
+    let source_id = source.get("id")?.as_i64()?;
+    let source_group = schematic_floor_group(&c.db, source_id)?;
+    let destination_slug = body.get("destination_slug")?.as_str()?;
+    if destination_slug.is_empty()
+        || !destination_slug.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        || destination_slug == slug
+    {
+        return Some(bad400("Choose another floor in this map group"));
+    }
+    let destination = c.db.query_row(
+        "SELECT * FROM schematics WHERE slug = ?1 AND world_id = ?2 AND is_html = 0",
+        rusqlite::params![destination_slug, wid],
+        |r| crate::layout::row_map(r),
+    ).ok()?;
+    let destination_id = destination.get("id")?.as_i64()?;
+    if schematic_floor_group(&c.db, destination_id).as_deref() != Some(source_group.as_str()) {
+        return Some(bad400("The destination must be another floor in this map group"));
+    }
+    let finite = |key: &str| body.get(key).and_then(Value::as_f64).filter(|n| n.is_finite());
+    let (x, y, destination_x, destination_y) = match (
+        finite("x"), finite("y"), finite("destination_x"), finite("destination_y"),
+    ) {
+        (Some(x), Some(y), Some(dx), Some(dy)) => (x, y, dx, dy),
+        _ => return Some(bad400("Portal positions must be finite numbers")),
+    };
+    let in_bounds = |map: &Map<String, Value>, x: f64, y: f64| {
+        x >= 0.0 && y >= 0.0
+            && x <= map.get("canvas_width").and_then(Value::as_i64).unwrap_or(2000) as f64
+            && y <= map.get("canvas_height").and_then(Value::as_i64).unwrap_or(1500) as f64
+    };
+    if !in_bounds(&source, x, y) || !in_bounds(&destination, destination_x, destination_y) {
+        return Some(bad400("Portal positions must be inside their maps"));
+    }
+    let label = body.get("label").and_then(Value::as_str).unwrap_or("Stairs").trim();
+    if label.is_empty() || label.len() > 60 {
+        return Some(bad400("Portal label must be 1–60 characters"));
+    }
+    let source_name = source.get("name").and_then(Value::as_str).unwrap_or("Previous floor");
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_nanos();
+    let source_portal_id = format!("floor-portal-{timestamp}-a");
+    let destination_portal_id = format!("floor-portal-{timestamp}-b");
+    let mut source_elements = parse_elements_json(&source)?;
+    let mut destination_elements = parse_elements_json(&destination)?;
+    source_elements.push(json!({
+        "id": source_portal_id,
+        "type": "pin",
+        "x": x,
+        "y": y,
+        "label": label,
+        "stroke": "#ffc857",
+        "floor_portal": true,
+        "destination_slug": destination_slug,
+        "destination_x": destination_x,
+        "destination_y": destination_y
+    }));
+    destination_elements.push(json!({
+        "id": destination_portal_id,
+        "type": "pin",
+        "x": destination_x,
+        "y": destination_y,
+        "label": format!("Return to {source_name}"),
+        "stroke": "#ffc857",
+        "floor_portal": true,
+        "destination_slug": slug,
+        "destination_x": x,
+        "destination_y": y
+    }));
+    orm::update(
+        &c.db,
+        "schematics",
+        source_id,
+        &[("elements_json", s(&nd_render::py_dumps(&Value::Array(source_elements.clone()))))],
+    )?;
+    orm::update(
+        &c.db,
+        "schematics",
+        destination_id,
+        &[("elements_json", s(&nd_render::py_dumps(&Value::Array(destination_elements))))],
+    )?;
+    orm::bump_scene(&c.db, source_id, wid)?;
+    orm::bump_scene(&c.db, destination_id, wid)?;
+    json_response(&json!({
+        "ok": true,
+        "elements": source_elements,
+        "destination_slug": destination_slug
+    }))
+}
+
+fn parse_elements_json(sc: &Map<String, Value>) -> Option<Vec<Value>> {
+    let raw = sc.get("elements_json").and_then(Value::as_str).filter(|s| !s.is_empty()).unwrap_or("[]");
+    let Value::Array(elements) = serde_json::from_str(raw).ok()? else { return None };
+    elements.iter().all(Value::is_object).then_some(elements)
+}
+
 pub fn py_round_pub(x: f64, nd: i32) -> Option<f64> {
     py_round(x, nd)
 }
@@ -13635,7 +13866,36 @@ fn sc_delete(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
             }
         }
     }
-    c.db.execute("DELETE FROM main.schematics WHERE id = ?1", [sc.get("id")?.as_i64()?]).ok()?;
+    let schematic_id = sc.get("id")?.as_i64()?;
+    if let Some(group) = schematic_floor_group(&c.db, schematic_id) {
+        let wid = sc.get("world_id")?.as_i64()?;
+        let others: Vec<(i64, String, Option<String>)> = {
+            let mut st = c.db.prepare_cached(
+                "SELECT s.id, s.slug, s.elements_json FROM schematic_floors f
+                 JOIN schematics s ON s.id = f.schematic_id
+                 WHERE f.world_id = ?1 AND f.group_id = ?2 AND s.id != ?3",
+            ).ok()?;
+            let rows = st.query_map(rusqlite::params![wid, group, schematic_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            }).ok()?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        for (other_id, _, raw) in others {
+            let Some(raw) = raw else { continue };
+            let Ok(Value::Array(mut other_elements)) = serde_json::from_str::<Value>(&raw) else { continue };
+            if crate::map_floors::remove_portals_to(&mut other_elements, slug) {
+                orm::update(
+                    &c.db,
+                    "schematics",
+                    other_id,
+                    &[("elements_json", s(&nd_render::py_dumps(&Value::Array(other_elements))))],
+                )?;
+                orm::bump_scene(&c.db, other_id, wid)?;
+            }
+        }
+    }
+    c.db.execute("DELETE FROM schematic_floors WHERE schematic_id = ?1", [schematic_id]).ok()?;
+    c.db.execute("DELETE FROM main.schematics WHERE id = ?1", [schematic_id]).ok()?;
     redirect("/maps")
 }
 
@@ -14265,8 +14525,70 @@ fn sc_move_token(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
             return None;
         }
     }
+    let pc_id = el.get("pc_id").and_then(Value::as_i64);
+    let token_radius = el.get("r").and_then(Value::as_f64).unwrap_or(20.0);
+    let (from_x, from_y) = (
+        el.get("x").and_then(Value::as_f64).unwrap_or(fx),
+        el.get("y").and_then(Value::as_f64).unwrap_or(fy),
+    );
     el.insert("x".into(), Value::Number(serde_json::Number::from_f64(fx)?));
     el.insert("y".into(), Value::Number(serde_json::Number::from_f64(fy)?));
+    if let Some(pc_id) = pc_id {
+        if let Some((destination_slug, destination_x, destination_y)) =
+            crate::map_floors::portal_destination(&elements, pc_id, from_x, from_y, fx, fy, token_radius)
+        {
+            let source_group = schematic_floor_group(&c.db, sc.get("id")?.as_i64()?);
+            let destination = c.db.query_row(
+                "SELECT * FROM schematics WHERE slug = ?1 AND world_id = ?2 AND is_html = 0",
+                rusqlite::params![destination_slug, wid],
+                |r| crate::layout::row_map(r),
+            ).ok();
+            if let (Some(source_group), Some(destination)) = (source_group, destination) {
+                let destination_id = destination.get("id").and_then(Value::as_i64)?;
+                let same_group = schematic_floor_group(&c.db, destination_id).as_deref() == Some(source_group.as_str());
+                if same_group {
+                    if let Some(mut destination_elements) = parse_elements_json(&destination) {
+                        let moved_token = elements.iter()
+                            .find(|e| e.get("id").and_then(Value::as_str) == Some(token.as_str()))
+                            .cloned()?;
+                        let mut moved_token = moved_token;
+                        moved_token["x"] = json!(destination_x);
+                        moved_token["y"] = json!(destination_y);
+                        crate::map_floors::remove_pc_tokens(&mut destination_elements, pc_id, &token);
+                        destination_elements.push(moved_token);
+                        crate::map_floors::remove_pc_tokens(&mut elements, pc_id, &token);
+                        let source_text = nd_render::py_dumps(&Value::Array(elements.clone()));
+                        let destination_text = nd_render::py_dumps(&Value::Array(destination_elements));
+                        let sid = sc.get("id")?.as_i64()?;
+                        orm::update(&c.db, "schematics", sid, &[("elements_json", s(&source_text))])?;
+                        orm::update(&c.db, "schematics", destination_id, &[("elements_json", s(&destination_text))])?;
+                        if let Some(cs_id) = sc.get("combat_session_id").and_then(Value::as_i64).filter(|id| *id != 0) {
+                            if let Some(cs) = row(&c.db, "SELECT * FROM combat_sessions WHERE id = ?1", cs_id) {
+                                let Value::Array(source_elements) = serde_json::from_str::<Value>(&source_text).ok()? else { return None };
+                                let (changed, combat_text) = scene_sync_tokens_to_combat(c, &sc, &source_elements, &cs)?;
+                                if changed {
+                                    orm::update(&c.db, "combat_sessions", cs_id, &[("combatants_json", s(&combat_text))])?;
+                                    let fresh = row(&c.db, "SELECT * FROM combat_sessions WHERE id = ?1", cs_id)?;
+                                    combat_touch(c, &fresh)?;
+                                }
+                            }
+                        }
+                        orm::bump_scene(&c.db, sid, wid)?;
+                        orm::bump_scene(&c.db, destination_id, wid)?;
+                        return json_response(&json!({
+                            "ok": true,
+                            "transition": {
+                                "slug": destination_slug,
+                                "url": format!("/maps/schematic/{destination_slug}/view"),
+                                "x": destination_x,
+                                "y": destination_y
+                            }
+                        }));
+                    }
+                }
+            }
+        }
+    }
     let elements_text = nd_render::py_dumps(&Value::Array(elements));
     let sid = sc.get("id")?.as_i64()?;
     orm::update(&c.db, "schematics", sid, &[("elements_json", s(&elements_text))])?;
@@ -18273,4 +18595,38 @@ fn em_complete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let answer = em_ingest(c, ids, &entity, &f, &filename, EmSource::Chunks(parts, size))?;
     c.removals.push(dir);
     Some(answer)
+}
+
+#[cfg(test)]
+mod schematic_floor_tests {
+    use super::*;
+
+    #[test]
+    fn floor_navigation_is_ordered_and_marks_the_current_floor() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE schematics (id INTEGER PRIMARY KEY, slug TEXT, is_html INTEGER);
+             CREATE TABLE schematic_floors (
+                 schematic_id INTEGER PRIMARY KEY, world_id INTEGER, group_id TEXT,
+                 floor_order INTEGER, label TEXT
+             );
+             INSERT INTO schematics VALUES (1, 'lower', 0), (2, 'upper', 0), (3, 'ignored', 1);
+             INSERT INTO schematic_floors VALUES
+                 (1, 7, 'lower', 1, 'Ground'),
+                 (2, 7, 'lower', 2, 'Upper'),
+                 (3, 7, 'lower', 3, 'HTML');",
+        ).unwrap();
+        let current = serde_json::from_value::<Map<String, Value>>(json!({
+            "id": 2,
+            "world_id": 7,
+            "slug": "upper"
+        })).unwrap();
+        assert_eq!(
+            schematic_floor_navigation(&db, &current).unwrap(),
+            vec![
+                json!({"slug":"lower","label":"Ground","selected":false}),
+                json!({"slug":"upper","label":"Upper","selected":true})
+            ]
+        );
+    }
 }

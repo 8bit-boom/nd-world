@@ -63,6 +63,21 @@ you're free to use any coordinates.
    below — the save endpoint replaces the whole array, so you need the
    current contents first if you want to add rather than overwrite.
 
+### Floors and exits in the editor
+
+The schematic editor's **＋ Floor** action creates a separate schematic in
+the same floor group. Each floor keeps its own drawing, rooms, walls, lighting,
+and fog; the new floor inherits the canvas and grid settings, but starts with
+no elements or background image. Use the floor selector to move between them.
+
+Choose **Exit**, click the source point, then select another floor and its
+arrival point to create paired exit pins. The editor saves its current floor
+before adding the pair. While moving a character's token in the player view,
+bringing it within reach of a visible exit transfers the token and opens the
+destination floor view at the paired arrival point. Exit coordinates are map
+pixels, not grid squares. Room paint/erase tools also show the brush cell or
+rectangle on the canvas while you work.
+
 ### Example: create + populate in two calls
 
 ```bash

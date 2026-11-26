@@ -42,6 +42,7 @@ fn run_schema(db: &rusqlite::Connection) -> Option<()> {
         }
     }
     let _ = ensure_scene_rev(db);
+    ensure_schematic_floors(db).ok()?;
     Some(())
 }
 
@@ -64,6 +65,29 @@ pub(crate) fn ensure_scene_rev(db: &rusqlite::Connection) -> Result<bool, String
     db.execute_batch("ALTER TABLE schematics ADD COLUMN scene_rev INTEGER NOT NULL DEFAULT 0")
         .map_err(|e| e.to_string())?;
     Ok(true)
+}
+
+pub(crate) fn ensure_schematic_floors(db: &rusqlite::Connection) -> Result<bool, String> {
+    let before: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'schematic_floors'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS schematic_floors (
+            schematic_id INTEGER PRIMARY KEY,
+            world_id INTEGER NOT NULL,
+            group_id TEXT NOT NULL,
+            floor_order INTEGER NOT NULL,
+            label TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_schematic_floors_group
+            ON schematic_floors(world_id, group_id, floor_order);",
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(before == 0)
 }
 
 /// `_seed` (app/database.py): the starter rows. Every insert is guarded by a check, exactly as Python's is, so a
@@ -278,6 +302,11 @@ pub(crate) fn heal_schema(db: &rusqlite::Connection) -> Result<Vec<String>, Stri
     // after the statements, so a database made from the snapshot (which has no `scene_rev` in `schematics`) gets the column in this pass and a second pass has nothing to do
     match ensure_scene_rev(db) {
         Ok(true) => done.push("added column schematics.scene_rev".into()),
+        Ok(false) => {}
+        Err(e) => return Err(e),
+    }
+    match ensure_schematic_floors(db) {
+        Ok(true) => done.push("created table schematic_floors".into()),
         Ok(false) => {}
         Err(e) => return Err(e),
     }
@@ -543,5 +572,22 @@ mod tests {
         assert_eq!((fmt.as_str(), delay), ("webp", 5000));
         // a second pass has nothing left to do
         assert!(heal_schema(&db).unwrap().is_empty());
+    }
+
+    #[test]
+    fn schematic_floor_table_is_created_idempotently() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE schematics (id INTEGER PRIMARY KEY);").unwrap();
+
+        assert!(ensure_schematic_floors(&db).unwrap());
+        assert!(!ensure_schematic_floors(&db).unwrap());
+        let columns: Vec<String> = {
+            let mut st = db.prepare("PRAGMA table_info(schematic_floors)").unwrap();
+            st.query_map([], |r| r.get(1)).unwrap().flatten().collect()
+        };
+        assert_eq!(
+            columns,
+            ["schematic_id", "world_id", "group_id", "floor_order", "label"]
+        );
     }
 }

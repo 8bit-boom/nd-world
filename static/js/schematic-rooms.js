@@ -9,7 +9,7 @@
   'use strict';
   var NS = 'http://www.w3.org/2000/svg';
   var M = root.ndMapRooms;
-  var o = null, st = null, mode = 'paint', current = 0, layer = null, drag = null, hoverEdge = null;
+  var o = null, st = null, mode = 'paint', current = 0, layer = null, drag = null, hoverEdge = null, hoverCell = null;
   var undoStack = [], redoStack = [], saveTimer = null;
 
   function $(id) { return document.getElementById(id); }
@@ -65,12 +65,14 @@
     if (!layer) return;
     layer.textContent = '';
     if (!st || o.getTool() !== 'rooms') return;
-    if (drag && drag.kind === 'rect') {
-      var a = M.cellAt(st, drag.x0, drag.y0), b = M.cellAt(st, drag.x1, drag.y1);
+    if ((mode === 'paint' || mode === 'erase') && (drag || hoverCell)) {
+      var a = drag && drag.kind === 'rect' ? M.cellAt(st, drag.x0, drag.y0) : (drag ? M.cellAt(st, drag.x1, drag.y1) : hoverCell);
+      var b = drag && drag.kind === 'rect' ? M.cellAt(st, drag.x1, drag.y1) : a;
       if (a && b) {
         var x0 = Math.min(a.x, b.x), y0 = Math.min(a.y, b.y), x1 = Math.max(a.x, b.x) + 1, y1 = Math.max(a.y, b.y) + 1;
         layer.appendChild(el('rect', { x: st.ox + x0 * st.cell, y: st.oy + y0 * st.cell, width: (x1 - x0) * st.cell, height: (y1 - y0) * st.cell,
-          fill: mode === 'erase' ? 'rgba(255,80,80,.25)' : 'rgba(0,240,255,.25)', stroke: mode === 'erase' ? '#ff5050' : '#00f0ff', 'stroke-width': 2, 'stroke-dasharray': '6 3' }));
+          fill: mode === 'erase' ? 'rgba(255,65,65,.58)' : 'rgba(0,225,255,.58)',
+          stroke: mode === 'erase' ? '#ff5050' : '#00f0ff', 'stroke-width': 3, 'stroke-dasharray': '6 3' }));
       }
     }
     if (hoverEdge && ['door', 'window', 'secret', 'open', 'clear'].indexOf(mode) >= 0) {
@@ -95,6 +97,7 @@
     if (mode === 'paint' || mode === 'erase') {
       var c = M.cellAt(st, raw.x, raw.y);
       if (!c) return;
+      hoverCell = c;
       drag = { kind: $('rooms-brush') && $('rooms-brush').checked ? 'brush' : 'rect', x0: raw.x, y0: raw.y, x1: raw.x, y1: raw.y, last: c };
       if (drag.kind === 'brush') { applyPaint(c, c); }
       draw();
@@ -111,7 +114,10 @@
     if (drag) {
       drag.x1 = raw.x; drag.y1 = raw.y;
       if (drag.kind === 'brush') { var c = M.cellAt(st, raw.x, raw.y); if (c && (c.x !== drag.last.x || c.y !== drag.last.y)) { applyPaint(c, c); drag.last = c; } }
-    } else hoverEdge = ['door', 'window', 'secret', 'open', 'clear'].indexOf(mode) >= 0 ? M.nearestEdge(st, raw.x, raw.y) : null;
+    } else {
+      hoverCell = (mode === 'paint' || mode === 'erase') ? M.cellAt(st, raw.x, raw.y) : null;
+      hoverEdge = ['door', 'window', 'secret', 'open', 'clear'].indexOf(mode) >= 0 ? M.nearestEdge(st, raw.x, raw.y) : null;
+    }
     draw();
   }
   function pointerUp(raw) {
@@ -121,6 +127,13 @@
       var a = M.cellAt(st, d.x0, d.y0), b = M.cellAt(st, raw.x, raw.y) || M.cellAt(st, d.x1, d.y1);
       if (a && b) applyPaint(a, b);
     }
+    hoverCell = M.cellAt(st, raw.x, raw.y);
+    draw();
+  }
+  function pointerLeave() {
+    if (drag) return;
+    hoverCell = null;
+    hoverEdge = null;
     draw();
   }
 
@@ -222,7 +235,7 @@
   function init(opts) {
     o = opts; M = root.ndMapRooms;
     layer = el('g', { id: 'rooms-layer', 'pointer-events': 'none' });
-    o.svg.insertBefore(layer, o.prevLayer);
+    o.svg.appendChild(layer);
     bind(); panel();
     fetch('/maps/schematic/' + encodeURIComponent(o.slug) + '/rooms.json').then(function (r) { return r.ok ? r.json() : {}; }).then(function (d) {
       if (d && d.cols) { st = M.unpack(d); current = st.spaces.length ? st.spaces[0].id : 0; panel(); }
@@ -230,5 +243,5 @@
   }
   function activate() { if (ensureState()) { showGridOffer(false); msg(st.spaces.length ? '' : 'Start with ＋ New room.'); } draw(); }
 
-  root.ndRooms = { init: init, activate: activate, pointerDown: pointerDown, pointerMove: pointerMove, pointerUp: pointerUp, undo: undo, redo: redo, draw: draw };
+  root.ndRooms = { init: init, activate: activate, pointerDown: pointerDown, pointerMove: pointerMove, pointerUp: pointerUp, pointerLeave: pointerLeave, undo: undo, redo: redo, draw: draw };
 })(window);

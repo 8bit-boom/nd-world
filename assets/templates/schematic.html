@@ -14,6 +14,8 @@
   <div id="sch-bar">
     <a href="{{ '/maps'|wq }}" class="tb">← Maps</a>
     <span class="tb-title">{{ schematic.name }}</span>
+    <select id="floor-select" class="tb" aria-label="Map floor" title="Switch floor"></select>
+    <button class="tb" type="button" onclick="addFloor()">＋ Floor</button>
     <span id="dirty-dot" style="display:none;color:#ff8844;font-size:.8rem" title="Unsaved changes">●</span>
     <a class="tb" href="{{ ('/maps/schematic/' + schematic.slug + '/view')|wq }}" target="_blank" title="Open the read-only live view players see">🔴 Live View</a>
     <button class="tb" type="button" title="Float the live view in a small always-available window (stays open while you edit or browse)"
@@ -29,6 +31,7 @@
     <button class="tb"    id="t-poly"    onclick="setTool('poly')"    title="Polygon · P  (dblclick=finish)">⬡</button>
     <button class="tb"    id="t-text"    onclick="setTool('text')"    title="Text · T">T</button>
     <button class="tb"    id="t-pin"     onclick="setTool('pin')"     title="Pin · N">📍</button>
+    <button class="tb"    id="t-portal"  onclick="setTool('portal')"  title="Place paired exit/entrance to another floor">↕ Exit</button>
     <button class="tb"    id="t-party"   onclick="setTool('party')"   title="Place Party">🧑‍🤝‍🧑</button>
     <button class="tb"    id="t-token"   onclick="setTool('token')"   title="Token (PC/creature/NPC) · G">🧙</button>
     <button class="tb"    id="t-rooms"   onclick="setTool('rooms')"   title="Draw rooms · D  (paint floor on the grid; walls appear around it, then mark doors and windows)">🏠▦</button>
@@ -387,6 +390,27 @@
       <button class="btn-primary" onclick="confirmPartyPlacement()">Place Here</button>
       <button class="btn-cancel"  onclick="hideDlg('party-dlg')">Cancel</button>
     </div>
+  </div>
+</div>
+
+<!-- ── Link floors dialog ─────────────────────────────────────────────────── -->
+<div id="floor-portal-dlg" class="dlg-back">
+  <div class="dlg-box" style="min-width:320px;max-width:460px">
+    <h3 style="margin:0 0 .6rem">Link floors</h3>
+    <label style="font-size:.8rem;opacity:.6">Destination floor</label>
+    <select id="portal-destination" style="width:100%"></select>
+    <label style="font-size:.8rem;opacity:.6;margin-top:.5rem;display:block">Arrival position on destination</label>
+    <div style="display:flex;gap:.4rem">
+      <input type="number" id="portal-x" aria-label="Arrival X" step="1" class="pnum"/>
+      <input type="number" id="portal-y" aria-label="Arrival Y" step="1" class="pnum"/>
+    </div>
+    <label style="font-size:.8rem;opacity:.6;margin-top:.5rem;display:block">Exit label</label>
+    <input type="text" id="portal-label" value="Stairs" maxlength="60"/>
+    <div style="display:flex;gap:.5rem;margin-top:.8rem">
+      <button type="button" class="btn-primary" onclick="confirmFloorPortal()">Create paired exits</button>
+      <button type="button" class="btn-cancel" onclick="hideDlg('floor-portal-dlg')">Cancel</button>
+    </div>
+    <div id="portal-status" role="status" style="font-size:.75rem;color:#ffb066;margin-top:.4rem"></div>
   </div>
 </div>
 
@@ -782,6 +806,7 @@ const WORLD_SLUG = {{ (world.slug if world else '') | tojson }};
 const CW   = {{ schematic.canvas_width  or 2000 }};
 const CH   = {{ schematic.canvas_height or 1500 }};
 let elements = JSON.parse({{ elements_json | tojson }});
+const FLOOR_NAV = JSON.parse({{ floor_navigation_json | tojson }});
 // JSON.parse(...|tojson) — not |safe — so a party/PC/entity/item name can't
 // break out of this inline script (tojson HTML-escapes <, >, &; |safe on a
 // raw json.dumps() string does not).
@@ -830,6 +855,7 @@ const TOUCH = window.matchMedia('(pointer:coarse)').matches;
 let activeWpHandle = null;          // {elId, idx} for waypoint delete
 let pendingPartyPt = null;          // {x,y} awaiting party-placement dialog confirm
 let pendingTokenPt = null;          // {x,y} awaiting token-placement dialog confirm
+let pendingPortalPt = null;         // {x,y} awaiting paired-floor-link confirmation
 let tokenTab = 'pc';                // active tab in the token placement dialog
 
 let clipboard = [];
@@ -934,6 +960,104 @@ function setTool(t) {
     ndWalls.render();
     const wb = document.getElementById('walls-body');
     if (t === 'wall' && wb && !wb.classList.contains('open')) toggleWallsPanel();
+  }
+}
+
+function initFloorNavigation() {
+  const select = document.getElementById('floor-select');
+  if (!select) return;
+  select.textContent = '';
+  FLOOR_NAV.forEach(floor => {
+    const option = document.createElement('option');
+    option.value = floor.slug;
+    option.textContent = floor.label;
+    option.selected = floor.selected;
+    select.appendChild(option);
+  });
+  select.addEventListener('change', () => {
+    window.location.assign('/maps/schematic/' + encodeURIComponent(select.value));
+  });
+}
+
+async function addFloor() {
+  const label = prompt('Name this floor:', 'Floor ' + (FLOOR_NAV.length + 1));
+  if (!label || !label.trim()) return;
+  if (!await save()) { alert('Save the current floor before adding another.'); return; }
+  try {
+    const r = await fetch(`/maps/schematic/${SLUG}/add-floor`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label: label.trim() }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || 'Could not add floor');
+    window.location.assign(data.url);
+  } catch (e) {
+    alert(e.message || 'Could not add floor');
+  }
+}
+
+function openFloorPortal(pt) {
+  const choices = FLOOR_NAV.filter(floor => floor.slug !== SLUG);
+  if (!choices.length) {
+    alert('Add another floor first, then place an exit between the floors.');
+    setTool('select');
+    return;
+  }
+  pendingPortalPt = pt;
+  const select = document.getElementById('portal-destination');
+  select.textContent = '';
+  choices.forEach(floor => {
+    const option = document.createElement('option');
+    option.value = floor.slug;
+    option.textContent = floor.label;
+    select.appendChild(option);
+  });
+  document.getElementById('portal-x').value = Math.round(CW / 2);
+  document.getElementById('portal-y').value = Math.round(CH / 2);
+  document.getElementById('portal-label').value = 'Stairs';
+  document.getElementById('portal-status').textContent = '';
+  document.getElementById('floor-portal-dlg').style.display = 'flex';
+}
+
+async function confirmFloorPortal() {
+  if (!pendingPortalPt) return;
+  const status = document.getElementById('portal-status');
+  const destinationX = Number(document.getElementById('portal-x').value);
+  const destinationY = Number(document.getElementById('portal-y').value);
+  if (!Number.isFinite(destinationX) || !Number.isFinite(destinationY)) {
+    status.textContent = 'Enter a valid arrival position.';
+    return;
+  }
+  if (!await save()) {
+    status.textContent = 'Save the current floor before linking exits.';
+    return;
+  }
+  status.textContent = 'Creating paired exits…';
+  try {
+    const r = await fetch(`/maps/schematic/${SLUG}/portal`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        x: pendingPortalPt.x,
+        y: pendingPortalPt.y,
+        destination_slug: document.getElementById('portal-destination').value,
+        destination_x: destinationX,
+        destination_y: destinationY,
+        label: document.getElementById('portal-label').value.trim() || 'Stairs',
+      }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || 'Could not link floors');
+    elements = data.elements;
+    selIds.clear();
+    redraw();
+    snapshot();
+    markClean();
+    pendingPortalPt = null;
+    hideDlg('floor-portal-dlg');
+  } catch (e) {
+    status.textContent = e.message || 'Could not link floors';
   }
 }
 
@@ -1483,8 +1607,14 @@ hit.addEventListener('pointerdown', e => {
     return;
   }
   if (tool === 'wall')   { ndWalls.pointerDown(svgXYRaw(e), e.shiftKey); return; }
-  if (tool === 'rooms')  { ndRooms.pointerDown(svgXYRaw(e)); return; }
+  if (tool === 'rooms')  {
+    if (hit.setPointerCapture) hit.setPointerCapture(e.pointerId);
+    e.preventDefault();
+    ndRooms.pointerDown(svgXYRaw(e));
+    return;
+  }
   if (tool === 'light')  { ndLights.pointerDown(svgXYRaw(e)); return; }
+  if (tool === 'portal') { openFloorPortal(pt); return; }
   if (tool === 'text')   { pendingTextPt=pt; openTextDlg(); return; }
   if (tool === 'pin')    { addPin(pt); return; }
   if (tool === 'party')  { pendingPartyPt=pt; openPartyDlg(); return; }
@@ -1506,6 +1636,7 @@ hit.addEventListener('pointerdown', e => {
 });
 
 hit.addEventListener('pointermove', e => { if (tool === 'wall') ndWalls.pointerMove(svgXYRaw(e)); else if (tool === 'rooms') ndRooms.pointerMove(svgXYRaw(e)); else if (tool === 'light') ndLights.pointerMove(svgXYRaw(e)); });
+hit.addEventListener('pointerleave', () => { if (tool === 'rooms') ndRooms.pointerLeave(); });
 hit.addEventListener('pointerup', e => { if (tool === 'rooms') ndRooms.pointerUp(svgXYRaw(e)); else if (tool === 'light') ndLights.pointerUp(); });
 hit.addEventListener('dblclick', e => {
   if (tool === 'wall') { ndWalls.finish(); return; }
@@ -2501,15 +2632,18 @@ async function save() {
   const btn=document.getElementById('save-btn');
   const orig = btn.textContent;
   btn.textContent='⏳'; btn.disabled=true;
+  let ok = false;
   try {
     const r = await fetch(`/maps/schematic/${SLUG}/elements`,{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({elements}),
     });
     btn.textContent = r.ok ? '✓ Saved' : '✗ Error';
-    if (r.ok) markClean();
+    ok = r.ok;
+    if (ok) markClean();
   } catch { btn.textContent='✗ Error'; }
   setTimeout(()=>{btn.textContent='💾 Save'; btn.disabled=false;},1500);
+  return ok;
 }
 
 async function setSceneMode(play) {
@@ -2577,6 +2711,7 @@ const DLG_CANCEL = {
   'token-dlg': () => hideDlg('token-dlg'),
   'merchant-inventory-dlg': () => hideDlg('merchant-inventory-dlg'),
   'grid-dlg': () => cancelGridDlg(),
+  'floor-portal-dlg': () => hideDlg('floor-portal-dlg'),
 };
 function openDialogId() {
   return Object.keys(DLG_CANCEL).find(id => document.getElementById(id).style.display === 'flex') || null;
@@ -2673,6 +2808,7 @@ function hideDlg(id){document.getElementById(id).style.display='none';}
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 buildStamps();
+initFloorNavigation();
 renderLayersPanel();
 redraw();
 syncUndo();

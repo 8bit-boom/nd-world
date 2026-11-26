@@ -1888,6 +1888,12 @@ pub fn schematic_editor(pages: &Pages, cfg: &Config, uri: &Uri, headers: &Header
         c.insert("combat_rev".into(), json!(0));
     }
     c.insert("gallery_images".into(), Value::Array(gallery));
+    c.insert(
+        "floor_navigation_json".into(),
+        json!(nd_render::py_dumps(&Value::Array(
+            crate::edits::schematic_floor_navigation(&db, &sc)?
+        ))),
+    );
     c.insert("schematic".into(), Value::Object(sc));
     render_with(pages, "schematic.html", p.ctx, headers)
 }

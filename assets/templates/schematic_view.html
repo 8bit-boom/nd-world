@@ -326,10 +326,13 @@ svg.addEventListener('pointermove', e => {
 svg.addEventListener('pointerup', async e => {
   if (!dragEl) return;
   const el = dragEl; dragEl = null;
-  await fetch(`/api/maps/schematic/${SLUG}/move-token`, {
+  const r = await fetch(`/api/maps/schematic/${SLUG}/move-token`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token_id: el.id, x: el.x, y: el.y }),
   });
+  if (!r.ok) return;
+  const data = await r.json();
+  if (data.transition && data.transition.url) window.location.assign(data.transition.url);
 });
 
 // ── Poll for live updates ─────────────────────────────────────────────────────

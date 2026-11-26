@@ -296,7 +296,7 @@ pub fn admin_backup(pages: &crate::pages::Pages, cfg: &Config, uri: &Uri, header
     manifest.insert("created_at".into(), json!(iso(now)));
     let mut tables = Map::new();
     for t in ["worlds", "entities", "users", "world_memberships", "invite_codes", "player_characters", "combat_sessions",
-              "quests", "parties", "game_sessions", "schematics", "map_overlays", "invest_boards", "private_notes",
+              "quests", "parties", "game_sessions", "schematics", "schematic_floors", "map_overlays", "invest_boards", "private_notes",
               "entity_notes", "entity_templates"] {
         tables.insert(t.into(), json!(count(t)?));
     }

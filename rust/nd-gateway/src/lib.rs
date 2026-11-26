@@ -74,6 +74,7 @@ pub mod live;
 pub mod map_folders;
 pub mod props;
 pub mod uvtt;
+pub mod map_floors;
 pub mod maps;
 pub mod orm;
 pub mod media;
