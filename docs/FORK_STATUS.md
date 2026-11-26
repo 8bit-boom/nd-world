@@ -7,6 +7,8 @@ The remaining Python-only edges are explicit exceptions, not blockers to running
 `/docs`, `/redoc` and `/openapi.json`; rare-input refusal wording that is only ported when real-use decline traces justify it;
 and direct legacy SwarmUI / ComfyUI generation and image-job execution, which still depend on Python's complete backend-to-file
 pipeline. Python also remains temporarily as the parity-test oracle until the separate trim plan's freeze-and-remove stages land.
+The latest full gateway census recorded 781 gateway-only routes, 414 mixed routes and 145 Python-only routes; the Python-only
+list is dominated by invalid/test-only probes and the explicit exceptions above, rather than a remaining general port backlog.
 
 ## nd-cartographer integration (map maker + one-click play)
 - [x] Embedded map maker (`crate::cartographer` + the compiled-in `ndcart-server` crate, tag `v0.2.0`): the studio is built into the
@@ -61,7 +63,7 @@ pipeline. Python also remains temporarily as the parity-test oracle until the se
 - [x] King in Yellow `POST /api/kiy/plays`, `DELETE /api/kiy/plays/{id}`
 - [x] King in Yellow `POST /api/kiy/generate` (`ai.rs::kiy_generate`, Python-free only: random and web-fed; tested against the Studio stand-in)
 - [x] `POST /api/worlds`
-- [x] legacy Ollama: `POST /api/ai/pull`, `GET /api/ai/test-chat`: will not be ported (the owner runs Unsloth, not Ollama); in a Python-free install they answer the "Not available here" refusal
+- [x] legacy Ollama: `POST /api/ai/pull` is implemented in Rust-only mode (`knowledge.rs`); `GET /api/ai/test-chat` remains unported because the owner runs Unsloth, not Ollama, and answers the "Not available here" refusal
 - [x] `GET /characters/templates/{id}/export.json` (the other exports were already ported; the all-pages crawl found no further gaps)
 
 ## Batch 2: exports and documents
