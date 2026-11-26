@@ -2,6 +2,12 @@
 
 **2026-11-02: `rust-fork` was promoted to `main`** (the old hybrid-only `main` is kept as the branch `hybrid-python-main`). This file keeps the checklist. Rules: `CLAUDE.md`. Update this file with every batch (move items between sections, add the commit).
 
+**Rust-only production port: complete for the supported application surface.** There is no remaining general route-port batch.
+The remaining Python-only edges are explicit exceptions, not blockers to running the Rust-only image: FastAPI's unused
+`/docs`, `/redoc` and `/openapi.json`; rare-input refusal wording that is only ported when real-use decline traces justify it;
+and direct legacy SwarmUI / ComfyUI generation and image-job execution, which still depend on Python's complete backend-to-file
+pipeline. Python also remains temporarily as the parity-test oracle until the separate trim plan's freeze-and-remove stages land.
+
 ## nd-cartographer integration (map maker + one-click play)
 - [x] Embedded map maker (`crate::cartographer` + the compiled-in `ndcart-server` crate, tag `v0.2.0`): the studio is built into the
       gateway and mounted under `/cartographer/studio/*` on its own origin, gated by the GM session (`tower::oneshot` into the studio router).
