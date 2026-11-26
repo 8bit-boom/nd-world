@@ -11,7 +11,7 @@ The latest full gateway census recorded 781 gateway-only routes, 414 mixed route
 list is dominated by invalid/test-only probes and the explicit exceptions above, rather than a remaining general port backlog.
 
 ## nd-cartographer integration (map maker + one-click play)
-- [x] Embedded map maker (`crate::cartographer` + the compiled-in `ndcart-server` crate, tag `v0.2.0`): the studio is built into the
+- [x] Embedded map maker (`crate::cartographer` + the compiled-in `ndcart-server` crate, tag `v0.4.0`): the studio is built into the
       gateway and mounted under `/cartographer/studio/*` on its own origin, gated by the GM session (`tower::oneshot` into the studio router).
       `/cartographer` is the embed page; always on for the GM — no separate binary, download, child process, proxy, install or uninstall
       (this replaced the managed-child design, which 404'd in Docker because the child's loopback port was unreachable from the browser).

@@ -16,6 +16,8 @@ use crate::pages::Pages;
 
 /// The studio is mounted under this path on the gateway's own origin.
 pub const STUDIO_BASE: &str = "/cartographer/studio";
+// nd-cartographer's v0.4.0 tag still declares 0.1.0 in its Cargo workspace metadata.
+pub const VERSION: &str = "0.4.0";
 
 pub fn base(cfg: &Config) -> PathBuf {
     cfg.accel_root.join("cartographer")
@@ -51,9 +53,30 @@ pub fn status(cfg: &Config) -> Value {
         "running": true,
         "autostart": true,
         "url": STUDIO_BASE,
-        "version": ndcart_server::VERSION,
+        "version": VERSION,
         "dir": base(cfg).to_string_lossy(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_reports_the_pinned_cartographer_release() {
+        let cfg = Config {
+            listen: "127.0.0.1:8000".into(),
+            static_dir: PathBuf::new(),
+            accel_root: PathBuf::from("/tmp/nd-cartographer-test"),
+            accel_token: String::new(),
+            trust_proxy: false,
+            templates_dir: PathBuf::new(),
+            rust_routes: vec![],
+            db_path: PathBuf::new(),
+            secret_key: None,
+        };
+        assert_eq!(status(&cfg)["version"], VERSION);
+    }
 }
 
 fn collect_context_strings(v: &Value, found: &mut Vec<String>) {
