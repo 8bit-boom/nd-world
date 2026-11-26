@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 #[test]
 fn survey() {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app/templates");
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/templates");
     let env = nd_render::environment(&dir, &dir);
     let mut ok = 0;
     let mut bad: Vec<(String, String)> = vec![];

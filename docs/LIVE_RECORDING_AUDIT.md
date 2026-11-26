@@ -7,8 +7,8 @@ time, and **only chunk 1 was saved**. No error, no failed-chunk retry prompt.
 Line numbers are as of commit `aef3b79`. If drift is suspected, grep for the
 quoted function name instead.
 
-**Surfaces covered:** `app/templates/sessions/detail.html:244-280` (panel markup)
-and `:1076-1414` (panel JS); `app/templates/base.html:337-408` (`ndMicRecorder`,
+**Surfaces covered:** `assets/templates/sessions/detail.html:244-280` (panel markup)
+and `:1076-1414` (panel JS); `assets/templates/base.html:337-408` (`ndMicRecorder`,
 shared with the one-shot 🎤 buttons); `app/routers/sessions.py:1051-1268`
 (append/archive/download routes).
 
@@ -40,7 +40,7 @@ and the failed-chunk retry UI never triggers. Everything after chunk 1 is lost.
 
 **Root cause — a three-link chain, all three links required:**
 
-1. `app/templates/base.html:363-388` — `ndMicRecorder`'s `start()` guards
+1. `assets/templates/base.html:363-388` — `ndMicRecorder`'s `start()` guards
    `getUserMedia` in a `try/catch` (`:369-376`), but that branch is **skipped
    entirely when `existingStream` is passed**, which is the case for every live
    segment (`detail.html:1274` passes `_liveMicStream`). The two lines that
@@ -54,13 +54,13 @@ and the failed-chunk retry UI never triggers. Everything after chunk 1 is lost.
    (`:363`), a synchronous throw inside it does not propagate to the caller as
    an exception — it becomes a **rejected promise**.
 
-2. `app/templates/sessions/detail.html:1276-1285` — `_liveCurrentRecorder.start().then(...)`
+2. `assets/templates/sessions/detail.html:1276-1285` — `_liveCurrentRecorder.start().then(...)`
    has **no `.catch()`**. On rejection the callback never runs, so
    `_liveChunkTimer` is never re-armed, `_liveRecording` is never cleared, and
    the button/status text are never updated. The state machine simply stops with
    every flag still saying "recording".
 
-3. `app/templates/sessions/detail.html:1277` — even the non-throwing failure path
+3. `assets/templates/sessions/detail.html:1277` — even the non-throwing failure path
    lies. `if (!started) { _liveRecording = false; return; }` clears the flag but
    leaves the button on "⏹ Stop Recording", the status on "Recording…", and
    `_liveMicStream` un-released.
@@ -86,10 +86,10 @@ re-acquires the mic. A dead stream is permanent.
 **The fix.** Three parts. All three are needed — 1a alone only makes it visible,
 1b/1c make it survivable.
 
-**(1a)** `app/templates/base.html`, `ndMicRecorder.start()` — guard construction
+**(1a)** `assets/templates/base.html`, `ndMicRecorder.start()` — guard construction
 and start, and wire the error event.
 
-**(1b)** `app/templates/sessions/detail.html`, `liveStartSegment()` — add a
+**(1b)** `assets/templates/sessions/detail.html`, `liveStartSegment()` — add a
 `.catch()` routing failure into a new recovery handler.
 
 **(1c)** New `liveHandleMicFailure()` / `liveWatchMicTracks()` — restores the

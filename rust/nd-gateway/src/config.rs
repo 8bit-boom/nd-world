@@ -5,8 +5,6 @@ use std::path::PathBuf;
 pub struct Config {
     /// Where the gateway listens (the port people connect to).
     pub listen: String,
-    /// The Python server's address (`host:port`).
-    pub upstream: String,
     /// `static/` of the app.
     pub static_dir: PathBuf,
     /// Files Python may hand over by path (`X-Nd-Accel-Path`) must be below this folder (the data folder, which holds `uploads/`).
@@ -15,7 +13,7 @@ pub struct Config {
     pub accel_token: String,
     /// Pass a client's `X-Forwarded-Proto` / `-Host` on (set when another reverse proxy is in front that sets them).
     pub trust_proxy: bool,
-    /// `app/templates` of the app, for the pages the gateway renders itself.
+    /// `assets/templates` of the app, for the pages the gateway renders itself.
     pub templates_dir: PathBuf,
     /// Pages the gateway renders itself (`ND_RUST_ROUTES`, comma separated; empty = none: Python answers all of them). Rollback is this list.
     pub rust_routes: Vec<String>,
@@ -30,12 +28,11 @@ impl Config {
         let get = |k: &str, d: &str| std::env::var(k).ok().filter(|v| !v.is_empty()).unwrap_or_else(|| d.to_string());
         Config {
             listen: get("ND_GATEWAY_LISTEN", "0.0.0.0:8000"),
-            upstream: get("ND_UPSTREAM", "127.0.0.1:8001"),
             static_dir: PathBuf::from(get("ND_STATIC_DIR", "/app/static")),
             accel_root: PathBuf::from(get("ND_ACCEL_ROOT", "/data")),
             accel_token: get("ND_ACCEL_TOKEN", ""),
             trust_proxy: matches!(get("ND_GATEWAY_TRUST_PROXY", "0").as_str(), "1" | "true" | "yes"),
-            templates_dir: PathBuf::from(get("ND_TEMPLATES_DIR", "/app/app/templates")),
+            templates_dir: PathBuf::from(get("ND_TEMPLATES_DIR", "/app/assets/templates")),
             rust_routes: get("ND_RUST_ROUTES", "login").split(',').map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect(),
             db_path: PathBuf::from(get("DB_PATH", "/data/world.db")),
             secret_key: std::env::var("SECRET_KEY").ok().filter(|v| !v.is_empty()).or_else(python_free_key),

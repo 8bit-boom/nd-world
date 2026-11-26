@@ -2,8 +2,8 @@ This repository uses two separate licenses:
 
 - The **application code** (everything except the content listed below) is
   MIT-licensed — see the license text below.
-- **Game/lore content** — `lore/`, `app/core_rules.md`, `docs/asterion_rules.md`,
-  `docs/asterion_rules.json`, `app/game_data/`, `app/maps/`, `static/maps/`,
+- **Game/lore content** — `lore/`, `assets/core_rules.md`, `docs/asterion_rules.md`,
+  `docs/asterion_rules.json`, `assets/game_data/`, `assets/maps/`, `static/maps/`,
   and `static/schematics/` — is licensed separately and more restrictively
   under CC BY-NC-ND 4.0. See [LICENSE-CONTENT.md](LICENSE-CONTENT.md).
 

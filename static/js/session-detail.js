@@ -1,4 +1,4 @@
-// The GM session page's script for a saved session (transcript, media, recap audio, NPCs, live recording, prep, loot, XP); loaded after session-detail-common.js - moved out of app/templates/sessions/detail.html (docs/LEFTOVERS_PLAN.md, step 3) so the browser caches it. The page's own values
+// The GM session page's script for a saved session (transcript, media, recap audio, NPCs, live recording, prep, loot, XP); loaded after session-detail-common.js - moved out of assets/templates/sessions/detail.html (docs/LEFTOVERS_PLAN.md, step 3) so the browser caches it. The page's own values
 // (session id, title, prep, loot, ...) come from the <script type="application/json" id="nd-session-data"> block as ND_SESSION.
 // The transcript (often hundreds of KB) is not embedded in the page: it is fetched once, after the page is up (efficiency plan, step 6).
 let _liveTranscriptShown = false;

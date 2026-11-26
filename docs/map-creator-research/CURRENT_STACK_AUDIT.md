@@ -21,12 +21,12 @@ Two facts stand out: the second screen **cannot show a live map at all** today, 
 
 | Piece | Where | Size | Notes |
 |---|---|---|---|
-| Schematic editor (GM) | `app/templates/schematic.html` | 2,356 lines, one inline script, ~110 functions | SVG; `redraw()` rebuilds every node, the element list, minimap and layers panel |
-| Player live view | `app/templates/schematic_view.html` + `static/js/schematic-render.js` (415 lines, shared with the editor) | 277 lines | polls `view.json` every 4 s (`ndPoll`, skips hidden tabs); **no zoom, pan or pinch**; own-token drag calls `redraw()` on every pointer move |
+| Schematic editor (GM) | `assets/templates/schematic.html` | 2,356 lines, one inline script, ~110 functions | SVG; `redraw()` rebuilds every node, the element list, minimap and layers panel |
+| Player live view | `assets/templates/schematic_view.html` + `static/js/schematic-render.js` (415 lines, shared with the editor) | 277 lines | polls `view.json` every 4 s (`ndPoll`, skips hidden tabs); **no zoom, pan or pinch**; own-token drag calls `redraw()` on every pointer move |
 | Server | `app/main.py` ~3188–3970 (routes), 3411 `_schematic_player_payload`, 7235 AI Build | | whole `elements_json` rewritten on every save and every token move (`BEGIN IMMEDIATE` read-modify-write) |
 | Model | `Schematic` (`models.py:1958`) | | `slug` is **globally** unique; `grid_type`, `grid_config_json` (`cell_size`, `offset`, `orientation`, **`unit_per_cell`, `unit_label`**); `combat_session_id`; `updated_at` |
 | Preview thumbnails | `/maps/schematic/{slug}/preview.svg` | | a **second, Python renderer** of a subset of the element types |
-| Image maps | `map_viewer.html` (702 lines), `app/maps/*.json`, `MapOverlay` | | Leaflet **loaded from unpkg** (lines 4–5) — the only external script left in the templates |
+| Image maps | `map_viewer.html` (702 lines), `assets/maps/*.json`, `MapOverlay` | | Leaflet **loaded from unpkg** (lines 4–5) — the only external script left in the templates |
 | Combat link | `link-combat`, `pull-combat`, `push-combat` | | tokens ↔ `CombatSession.combatants_json` |
 | Importer / AI | `app/routers/importer.py` kind `schematic_elements`; `SYSTEM_TEMPLATE` (`main.py:7235`) | | AI Build asks a model for raw coordinates; its jobs live in an in-memory dict (by design, per the code comment: a restart means clicking Build again) |
 | MCP | `app/mcp_server.py` | | **no map or schematic tool** (the tool list was checked) |

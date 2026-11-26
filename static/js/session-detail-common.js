@@ -1,4 +1,4 @@
-// The GM session page's script, the part the New Session form uses too (AI recap, audio jobs, mic) - moved out of app/templates/sessions/detail.html (docs/LEFTOVERS_PLAN.md, step 3) so the browser caches it. The page's own values
+// The GM session page's script, the part the New Session form uses too (AI recap, audio jobs, mic) - moved out of assets/templates/sessions/detail.html (docs/LEFTOVERS_PLAN.md, step 3) so the browser caches it. The page's own values
 // (session id, title, prep, loot, ...) come from the <script type="application/json" id="nd-session-data"> block as ND_SESSION.
 const ND_SESSION = JSON.parse(document.getElementById('nd-session-data').textContent);
 // ── AI recap assist — unconditional (works on the New Session form too,
@@ -355,7 +355,7 @@ const sessionAudioJobs = ndAudioJobs(document.getElementById('audio-jobs-panel')
   onUse: (job) => {
     // A background job's own failure/retry story already lives on the
     // Background Jobs page (auto-retry + one-click "Retry without
-    // Thinking", see app/templates/background_jobs.html) — this callback
+    // Thinking", see assets/templates/background_jobs.html) — this callback
     // only fires from "Use this" on a job the GM picked to bring over, so
     // _showRecapDraft (not _showRecapFailed) is always the right state
     // here; it still resets any stale Apply/Retry visibility left over

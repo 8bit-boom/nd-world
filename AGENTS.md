@@ -48,7 +48,7 @@ tools that require GM access still check `is_gm` at call time.)
 
 The app is a Rust gateway (`rust/nd-gateway`) in front of the Python app. The gateway renders many pages and answers many APIs itself, identically to Python; what it does not
 answer goes to Python (hybrid image) or is refused (the Rust-only image, `ND_PYTHON_FREE=1`). So a change to a Python route or template usually needs the same change in Rust
-(`rust/nd-gateway/src/*.rs`, `rust/nd-render`), and the golden tests in `tests/test_gateway_golden.py` will fail until both agree. Templates in `app/templates` are shared by both renderers.
+(`rust/nd-gateway/src/*.rs`, `rust/nd-render`), and the golden tests in `tests/test_gateway_golden.py` will fail until both agree. Templates in `assets/templates` are shared by both renderers.
 Rules and the working loop: `CLAUDE.md`, `docs/FORK_RUST_PORT_GUIDE.md`. Which build and mode is running is shown in the footer and `GET /health`.
 
 ## If you're asked to modify the application code itself
@@ -112,7 +112,7 @@ Rules and the working loop: `CLAUDE.md`, `docs/FORK_RUST_PORT_GUIDE.md`. Which b
   `stats_json` is filled. The shared pieces: `app/pc_digest.py` (one system-aware line
   per character for AI prompts — chat RAG `retrieval.characters_context`, party insights,
   session prep, audio hints all use it), `sheet_systems.system_rules_markdown` (a rules
-  digest per built-in system in `app/game_data/systems/<slug>.md`, which AI reviews and the
+  digest per built-in system in `assets/game_data/systems/<slug>.md`, which AI reviews and the
   AI character creator ground in instead of "standard N&D"), `parties._roster_table`, and
   the MCP character/party tools in `app/mcp_server.py` (every test that drives the MCP
   client must live in `tests/test_mcp.py`'s module — it imports `tests/mcp_character_cases.py`
@@ -518,8 +518,8 @@ Rules and the working loop: `CLAUDE.md`, `docs/FORK_RUST_PORT_GUIDE.md`. Which b
 ## License — code vs. content are different
 
 This repo is dual-licensed: application code is MIT, but the game/lore
-content (`lore/`, `app/core_rules.md`, `docs/asterion_rules.md`/`.json`,
-`app/game_data/`, `app/maps/`, `static/maps/`, `static/schematics/`) is
+content (`lore/`, `assets/core_rules.md`, `docs/asterion_rules.md`/`.json`,
+`assets/game_data/`, `assets/maps/`, `static/maps/`, `static/schematics/`) is
 CC BY-NC-ND 4.0 — no commercial use, no redistributing modified versions,
 attribution required. See [LICENSE](LICENSE) and
 [LICENSE-CONTENT.md](LICENSE-CONTENT.md). If you're an AI agent reading,

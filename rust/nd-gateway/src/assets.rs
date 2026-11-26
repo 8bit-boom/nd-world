@@ -1,5 +1,5 @@
 //! The image build's static-file work (what `python -m app.static_thumbs --avif-maps`, `app.map_tiles` and `app.precompress --minify` do for the normal
-//! image), as one Rust program - `nd-assets <static dir> <app/maps dir>` - so the Python-free image needs no Python stage at all:
+//! image), as one Rust program - `nd-assets <static dir> <assets/maps dir>` - so the Python-free image needs no Python stage at all:
 //!   1. bundled map pictures re-saved as AVIF when smaller (not above 40 MP; the original goes),
 //!   2. a `_thumb.avif` for every picture under static/maps and static/races,
 //!   3. the map tile pyramids into static/map_tiles (the gateway's own cutter, same keys as at run time),
@@ -112,7 +112,7 @@ pub fn thumbnails(roots: &[PathBuf]) -> u32 {
     n
 }
 
-/// 3. `python -m app.map_tiles`: a pyramid for every `app/maps/<slug>.json` that has a picture in static/maps
+/// 3. `python -m app.map_tiles`: a pyramid for every `assets/maps/<slug>.json` that has a picture in static/maps
 pub fn tiles(static_dir: &Path, maps_json: &Path) -> u32 {
     std::env::set_var("ND_STATIC_DIR", static_dir);
     std::env::set_var("DB_PATH", static_dir.join("world.db")); // the cutter writes beside the DB: <static>/map_tiles

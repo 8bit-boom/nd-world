@@ -2976,7 +2976,7 @@ body.home-night-on .home-edit-link { display: none; }
 .nd-job-sf-field input[type=number] { width: 5.2rem; }
 .nd-job-sf-extra { width: 100%; box-sizing: border-box; }
 
-/* the players' start page (app/templates/index_player.html) */
+/* the players' start page (assets/templates/index_player.html) */
 .ps-page { max-width: 1100px; margin: 0 auto; }
 .ps-preview { margin: .6rem 0; padding: .45rem .8rem; border: 1px dashed var(--neon); border-radius: 4px; color: var(--neon); font-size: .8rem; }
 .ps-section { margin: 1.6rem 0; }
@@ -3012,7 +3012,7 @@ body.home-night-on .home-edit-link { display: none; }
 .ps-page .tool-item:hover { background: #1a1a1a; color: var(--neon); }
 .ps-page .tool-date { font-size: .72rem; color: #555; flex-shrink: 0; }
 
-/* player groups page (app/templates/groups.html) */
+/* player groups page (assets/templates/groups.html) */
 .grp-page { max-width: 820px; margin: 0 auto; }
 .grp-title { font-size: 1.3rem; color: var(--neon); }
 .grp-intro { color: var(--text-dim); font-size: .85rem; }

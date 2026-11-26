@@ -77,7 +77,7 @@ signal" longer than the cap allows — the UX concern that matters on a
 homelab where cost doesn't. → Item 1.1 uses explicit numbers, never -1/-2.
 
 **Interactive Ask AI with Thinking on has NO widening at all.** The entity
-detail panel's checkbox (`app/templates/entities/detail.html:218-221`) sends
+detail panel's checkbox (`assets/templates/entities/detail.html:218-221`) sends
 `ChatBody.think` (`app/routers/ai.py:187`) into `ai_stream` (`:800-833`),
 which passes `_clamp_options(body.options)` straight to `stream_chat` — no
 `_thinking_num_predict_override` anywhere on this path. A GM-configured
@@ -290,7 +290,7 @@ first two cases asserting `condense_call_options` was called with
 `expanded=True` on the climb.
 
 **1.3 Surface the ladder to the GM. (Small)**
-`app/templates/background_jobs.html`: on done audio cards render dim
+`assets/templates/background_jobs.html`: on done audio cards render dim
 `bg-job-note-text` lines — when `job.expanded_thinking`: *"Thinking needed a
 larger token budget — this run automatically retried with an expanded limit
 (slower, no action needed)."*; when `job.think_fallback`: *"Thinking ran out
@@ -332,10 +332,10 @@ the guard exists for exactly this). Test: in
 smaller budget than the same-length ASCII system.
 
 **1.6 Copy updates. (Small; text-only)**
-- `app/templates/settings.html:230`: extend the existing help line: *"…if
+- `assets/templates/settings.html:230`: extend the existing help line: *"…if
   even that runs out, the run automatically retries with a much larger
   expanded limit (THINKING_EXPANDED_HEADROOM_TOKENS, default 12288)."*
-- `app/templates/sessions/detail.html:57` (Thinking tooltip): append *"if
+- `assets/templates/sessions/detail.html:57` (Thinking tooltip): append *"if
   thinking runs out of room, background runs retry automatically with a
   bigger budget."*
 - `.env.example` (if it lists THINKING_HEADROOM_TOKENS) gains the new var.
@@ -440,7 +440,7 @@ drift again. Tests: `tests/test_ai_chat_lore_kv_cache.py` /
 query → response `entities` non-empty.
 
 **2.4 Live recording: stop losing failed chunks, unstick the status line. (Small)**
-`app/templates/sessions/detail.html`:
+`assets/templates/sessions/detail.html`:
 - `liveProcessQueue` (`:724-752`) drops a chunk permanently after 3 failed
   uploads (`_liveQueue.shift()` regardless). Keep a `_liveFailedChunks`
   array instead; render *"⚠ N chunk(s) failed to upload — Retry"* in
@@ -458,7 +458,7 @@ query → response `entities` non-empty.
 JS-source tests in the `tests/test_live_recording_wake_lock.py` style.
 
 **2.5 Background Jobs page: stop wiping form state every 3 seconds. (Small–Medium)**
-`bgRefresh` (`app/templates/background_jobs.html:478-503`) re-renders the
+`bgRefresh` (`assets/templates/background_jobs.html:478-503`) re-renders the
 whole list (`list.innerHTML = ''`) on every 3s poll while anything is in
 progress — which destroys whatever a GM has typed into a retry row's
 "Extra instructions" input, resets the model select and Thinking checkbox,
@@ -499,7 +499,7 @@ session is known there). Pure-function tests on the new ordering.
 ### Wave 3 — reliability & budget-accounting (some UI/JS surgery; 3.2 depends on Part 1)
 
 **3.1 One mic stream for the whole live recording. (Medium)**
-`ndMicRecorder` (`app/templates/base.html:329-368`) calls `getUserMedia`
+`ndMicRecorder` (`assets/templates/base.html:329-368`) calls `getUserMedia`
 fresh on every `start()` and stops all tracks in `onstop` — and the live
 loop creates a new recorder per ~60s segment
 (`liveStartSegment`, `sessions/detail.html:754-774`). Cost: an audible gap

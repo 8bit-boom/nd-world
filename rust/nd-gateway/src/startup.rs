@@ -284,10 +284,10 @@ pub(crate) fn heal_schema(db: &rusqlite::Connection) -> Result<Vec<String>, Stri
     Ok(done)
 }
 
-/// `_seed_bundled_maps` (app/main.py): copy any bundled map (app/maps/*.json) into the data folder's maps directory when it isn't there yet -
-/// never overwrites, so it is safe on every start. The bundle's folder is ND_BUNDLED_MAPS_DIR (default /app/app/maps).
+/// `_seed_bundled_maps` (app/main.py): copy any bundled map (assets/maps/*.json) into the data folder's maps directory when it isn't there yet -
+/// never overwrites, so it is safe on every start. The bundle's folder is ND_BUNDLED_MAPS_DIR (default /app/assets/maps).
 pub fn seed_bundled_maps(cfg: &Config) {
-    let src = std::env::var("ND_BUNDLED_MAPS_DIR").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "/app/app/maps".into());
+    let src = std::env::var("ND_BUNDLED_MAPS_DIR").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "/app/assets/maps".into());
     let Ok(rd) = std::fs::read_dir(&src) else { return };
     let Some(dest_dir) = cfg.db_path.parent().map(|p| p.join("maps")) else { return };
     let _ = std::fs::create_dir_all(&dest_dir);

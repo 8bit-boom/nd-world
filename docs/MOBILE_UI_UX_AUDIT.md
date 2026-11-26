@@ -52,7 +52,7 @@ breakage.
 - **Schematic's event layer is exemplary**: Pointer Events end-to-end with
   `pointercancel` (iOS-commented), two-finger pan, `touch-action:none`,
   coarse-pointer handle sizing, collapsible "⋯ More" toolbar
-  (`app/templates/schematic.html:427–453, 580, 776–795, 1147–1194`).
+  (`assets/templates/schematic.html:427–453, 580, 776–795, 1147–1194`).
 - **Recording pipeline design is iOS-tolerant**: default (not forced)
   MediaRecorder mimeType, benign getUserMedia constraints, no AudioWorklet,
   one shared mic stream per recording (explicitly for mobile Safari), retry

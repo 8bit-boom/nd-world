@@ -1,4 +1,4 @@
-// GM Cockpit — modular window workspace (app/templates/cockpit.html renders
+// GM Cockpit — modular window workspace (assets/templates/cockpit.html renders
 // the shell and the per-world data). The cockpit's job is to replace the
 // GM's "ten browser tabs" with movable, resizable, closable windows that
 // each host ONE live tool: the battle map, the dice tray, a party's

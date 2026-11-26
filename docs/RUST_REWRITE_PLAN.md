@@ -241,7 +241,7 @@ agenda, year, settings), small form pages, pages addressed by an id, the media l
 `discover_world_images`), the map list and viewer (with tile pyramids), boards, rules (with `rules_render` ported and differential-tested),
 search (FTS5 with the same weights) and the home dashboard. Exit criteria: golden HTML matches for every ported page (`tests/test_gateway_golden.py`,
 three roles each); throughput is in `docs/RUST_PAGES.md`. Which GET pages are still Python's, and why, is in `docs/RUST_PAGES.md` ("Phase 2
-status"). Fixed on the way: `app/core_rules.md` lines that markdown2 turned into headings; dict and float fidelity (insertion order, exact
+status"). Fixed on the way: `assets/core_rules.md` lines that markdown2 turned into headings; dict and float fidelity (insertion order, exact
 round-trip, Python's `repr`); `|thumb` on a non-text value.
 
 ## 17. Phase 3, full port: write routes (batches 1-51)

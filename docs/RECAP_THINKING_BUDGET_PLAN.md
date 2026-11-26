@@ -57,7 +57,7 @@ Recorded up front so the implementer doesn't have to re-derive any of it:
   `_looks_like_failure` sites (`app/audio_jobs.py:702-703` condense, `719-721`
   session_recap). → Item 1.2.
 - **One-click "Retry without Thinking": straightforward.** The Retry-summary panel
-  (`app/templates/background_jobs.html:228-283`) already has everything needed —
+  (`assets/templates/background_jobs.html:228-283`) already has everything needed —
   `bgResummarize(jobId, model, instructions, think, btn)` at `:410` posts
   `POST /api/audio-jobs/{id}/resummarize` with `think=false`
   (`app/routers/audio_jobs.py:174-203`). Only detection + a button are missing.
@@ -70,7 +70,7 @@ Recorded up front so the implementer doesn't have to re-derive any of it:
   NOT add it there. The one real gap: the log line records `had_thinking` as a bool, not
   the thinking length, which is exactly what a GM would need to calibrate headroom across
   several failed jobs. Folded into item 1.5. Settings has no hint about the
-  thinking/num_predict interaction (`app/templates/settings.html:227-230`) → item 1.6.
+  thinking/num_predict interaction (`assets/templates/settings.html:227-230`) → item 1.6.
 - **Other think=True call sites are already protected.** The player session-log recap
   (`app/routers/sessions.py:1027`) calls `summarize_session_from_facts` without `think`
   (→ defaults True, no player-facing toggle) but that function is f57db01-wired; the
@@ -154,7 +154,7 @@ in `app/models.py` (next to `think`, `:873`) — heals automatically on existing
 via `_heal_table_from_model` ("audio_jobs" is already in the healed list,
 `app/database.py:861-867`). Setting `job.think = False` also makes the Retry-summary
 checkbox reflect what actually produced the recap
-(`app/templates/background_jobs.html:259` reads `job.think !== false`). Add
+(`assets/templates/background_jobs.html:259` reads `job.think !== false`). Add
 `"think_fallback"` to `app/routers/audio_jobs.py:_job_to_dict` (`:36-61`) and render a
 dim `bg-job-note-text` line on done cards when set — e.g. *"Thinking ran out of output
 budget on the first pass — this recap was written with Thinking off."*
@@ -182,7 +182,7 @@ to `_job_to_dict` in `app/routers/audio_jobs.py:36-61` (and optionally to
 `app/routers/sessions.py:_job_to_dict`, `:734-746`, for the Sessions page's inline
 panel). Client string-matching would duplicate sentinel knowledge — don't.
 
-UI: `app/templates/background_jobs.html`, inside the existing
+UI: `assets/templates/background_jobs.html`, inside the existing
 `job.purpose === 'session_recap' && job.transcript` retry block (`:228-283`): when
 `job.status === 'error' && job.thinking_starved`, (a) render a visually distinct button
 ("🧠✕ Retry without Thinking") whose onclick is exactly
@@ -236,10 +236,10 @@ to base one on, and the bookkeeping isn't worth building for this). Changes:
   non-negative int.
 
 **1.6 Settings/UI hints for the thinking ↔ num_predict interaction. (Small; text-only)**
-- `app/templates/settings.html:227-230`: add a dim help line under "Max output tokens":
+- `assets/templates/settings.html:227-230`: add a dim help line under "Max output tokens":
   *"Recap/Condense actions run with Thinking on temporarily widen this cap (by 4096
   tokens by default) so hidden reasoning can't starve the visible answer."*
-- `app/templates/sessions/detail.html:86-90`: the Condense "Max tokens" tooltip still
+- `assets/templates/sessions/detail.html:86-90`: the Condense "Max tokens" tooltip still
   says "Hard cap … (Ollama's num_predict)" — since f57db01 that's only true with
   Thinking off; append "(enforced only when 🧠 Thinking is off; with Thinking on it's a
   soft target)". The Thinking checkbox tooltip (`:56-59`) already warns about
@@ -344,7 +344,7 @@ Background jobs are clean (see the preserved-patterns list). The BLOCKING routes
 `…/complete` (`:684-718`) transcribe to a temp file, summarize, return
 `{transcript, recap}`, and delete the audio. When the summarize step returns a failure
 sentinel, the client treats any non-empty `recap` as the draft (`aiRunRecap`,
-`app/templates/sessions/detail.html:297-321` — the sentinel is even offered as applyable
+`assets/templates/sessions/detail.html:297-321` — the sentinel is even offered as applyable
 text), and the only retry is re-uploading and re-transcribing the entire recording —
 hours of Whisper compute to redo a step that already succeeded.
 

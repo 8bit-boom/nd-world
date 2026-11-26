@@ -48,7 +48,7 @@ Suggested order: 1 -> 6 -> 2 -> 5 -> 3 -> 9 -> 4 (batches) -> 7 / 8 / 11 / 12 as
 
 ## 2. TV combat display: from a 2 s poll to a live signal
 
-**Why it was left:** `app/templates/display_combat.html` is a separate full-screen page inside the second screen; it does not load
+**Why it was left:** `assets/templates/display_combat.html` is a separate full-screen page inside the second screen; it does not load
 `static/js/nd-live.js`, so it polls `/api/display/combat/{id}/state` every 2 s (1,800 requests an hour per TV, each a database read).
 
 **How:**
@@ -64,7 +64,7 @@ and polls at 30 s; by hand, a turn change shows on the TV within a second. **Eff
 
 ## 3. Session page: the 108 KB inline script as a cacheable file
 
-**Why it was left:** `app/templates/sessions/detail.html` lines 550-2694 are one inline `<script>` of 108 KB that is sent, parsed and not
+**Why it was left:** `assets/templates/sessions/detail.html` lines 550-2694 are one inline `<script>` of 108 KB that is sent, parsed and not
 cached on every view of a GM session page; it contains 28 Jinja expressions (`{{ ... }}` / `{% ... %}`), so it cannot simply be moved.
 
 **How:**
@@ -106,7 +106,7 @@ length of the slowest handler" to a few milliseconds; the perf log's route timin
 ## 5. Display copies for handouts and gallery albums
 
 **Why it was left:** step 13 of the efficiency plan only covered the lightbox. Two places still load original uploads (often 3-10 MB from a
-phone camera or an AI image): `app/templates/handouts_gallery.html` shows **every** handout's original picture in its grid
+phone camera or an AI image): `assets/templates/handouts_gallery.html` shows **every** handout's original picture in its grid
 (`<img src="{{ item.entity.image_url }}">`), and the gallery album's filmstrip layout (`static/js/nd-views.js`) shows the original in its
 big preview.
 

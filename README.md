@@ -828,7 +828,7 @@ Neon & Dragons Core Rules character creation procedure:
    creation-eligible rarities (Simple/Standard)
 
 The wizard is backed by a bundled copy of the same race/profession/feat/equipment catalog
-(`app/game_data/*.json`) used by the **NeonDragonsApp** Android app and **NeonDragonsEditor**
+(`assets/game_data/*.json`) used by the **NeonDragonsApp** Android app and **NeonDragonsEditor**
 desktop tool (from the sibling `UoY-Neon-Dragons` rules repo), so characters created here use the
 same content IDs as those two apps.
 
@@ -847,12 +847,12 @@ format), so nd-world only needs to produce a matching file.
 
 ### Refreshing the bundled game-data catalog
 
-`app/game_data/*.json` is a point-in-time copy of `NeonDragonsApp/app/src/main/assets/data/*.json`
+`assets/game_data/*.json` is a point-in-time copy of `NeonDragonsApp/app/src/main/assets/data/*.json`
 from the `UoY-Neon-Dragons` repo. When race/profession/feat/equipment content changes there
 (after running `extract_all_data.py`), refresh the copy here:
 
 ```bash
-cp /path/to/UoY-Neon-Dragons/NeonDragonsApp/app/src/main/assets/data/*.json app/game_data/
+cp /path/to/UoY-Neon-Dragons/NeonDragonsApp/app/src/main/assets/data/*.json assets/game_data/
 ```
 
 ---
@@ -1050,7 +1050,6 @@ nd-world/
 ├── truenas-compose.yml      # TrueNAS SCALE stack (bind mounts)
 ├── .env.example             # SECRET_KEY / GM_EMAIL / GM_PASSWORD / COOKIE_SECURE template
 ├── Dockerfile
-├── requirements.txt
 ```
 
 ---

@@ -1,0 +1,279 @@
+{% extends "base.html" %}
+{% from "_views.html" import pl_bar, pl_attrs %}
+{% block title %}Maps — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+{# _can_edit = content management (new/upload/rename/delete + the schematic
+   editor links) — GM-Assistants get these, the routes are in
+   _is_assistant_safe. _is_gm stays ONLY on the 🖼 Gallery picker bits below:
+   the handler passes gallery_images to GMs exclusively, since that list
+   includes images used on GM-only/hidden entities (see maps_page in
+   app/main.py) and assistants see player visibility. #}
+{% set _can_edit = can_edit(request) %}
+{% set _is_gm = request.state.user and request.state.user.is_gm %}
+<div class="list-header">
+  <h1>🗺 MAPS</h1>
+  {% if _can_edit %}
+  <a href="{{ ('/maps/new' ~ ('?folder=' ~ (fold.current|urlencode) if fold.current else ''))|wq }}" class="btn-new">+ New Map</a>
+  {% endif %}
+</div>
+
+
+<div class="folder-bar" style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:.4rem 0 .8rem">
+  <a href="{{ '/maps'|wq }}" class="pill">📁 All</a>
+  {% for c in fold.crumbs %}
+  <span>›</span><a href="{{ ('/maps?folder=' ~ (c.path|urlencode))|wq }}" class="pill">{{ c.name }}</a>
+  {% endfor %}
+  {% for f in fold.subfolders %}
+  <a href="{{ ('/maps?folder=' ~ (f.path|urlencode))|wq }}" class="pill" style="border-style:dashed">📂 {{ f.name }} ({{ f.count }})</a>
+  {% endfor %}
+  {% if _can_edit and fold.current %}
+  <form action="/map-folders/rename" method="post" style="display:inline">
+    <input type="hidden" name="old" value="{{ fold.current }}"><input type="hidden" name="new" value="">
+    <button type="button" class="btn-edit-sm" data-path="{{ fold.current }}"
+            onclick="var n=prompt('Rename folder (use / to nest):', this.dataset.path); if(n===null) return; this.form.new.value=n; this.form.submit()">✏ Rename folder</button>
+  </form>
+  {% endif %}
+</div>
+{% if _can_edit %}
+<datalist id="folder-list">{% for f in fold.all %}<option value="{{ f }}"></option>{% endfor %}</datalist>
+{% endif %}
+{{ pl_bar("maps") }}
+<div class="maps-grid" {{ pl_attrs("maps", request) }}>
+  {% for m in maps %}
+  <div class="map-card">
+    <div class="map-img-wrap">
+      <a href="{{ ('/maps/' + m.slug)|wq }}">
+        {% if m.image_url %}
+        <img class="map-img" src="{{ m.image_url|thumb }}" alt="{{ m.name }}" loading="lazy"/>
+        {% else %}
+        <div class="map-placeholder">🗺</div>
+        {% endif %}
+      </a>
+    </div>
+    <div class="map-card-body">
+      <div class="map-name"><a href="{{ ('/maps/' + m.slug)|wq }}" style="color:inherit;text-decoration:none">{{ m.name }}</a></div>
+      <div class="map-meta">
+        {{ m.width }}×{{ m.height }}
+        {% if m.markers %} · {{ m.markers }} marker{{ 's' if m.markers != 1 }}{% endif %}
+      </div>
+      {% if _can_edit %}
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
+        <form action="/maps/{{ m.slug }}/upload" method="post" enctype="multipart/form-data" class="map-upload-form">
+          <label class="map-upload-label" title="Upload map image">
+            📎 {% if m.image_url %}Replace{% else %}Upload{% endif %} image
+            <input type="file" name="file" accept="image/*" onchange="this.form.submit()" style="display:none"/>
+          </label>
+          <label class="map-fit" style="font-size:.72rem;color:var(--text-dim);display:block;margin-top:.2rem" title="Set the map's size to the picture's size (longest side up to 8000)">
+            <input type="checkbox" name="match_size" value="1"/> match map size to image
+          </label>
+        </form>
+        {% if _is_gm %}
+        <button type="button" class="btn-gallery-pick" style="padding:.25rem .55rem;font-size:.75rem"
+                onclick="ndMapGalleryPick(this)">🖼 Gallery</button>
+        {% endif %}
+      </div>
+      <div style="display:flex;gap:.4rem;margin-top:.4rem">
+        <form action="/maps/{{ m.slug }}/folder" method="post" style="display:inline">
+          <input type="hidden" name="folder" value=""><input type="hidden" name="back" value="{{ fold.current }}">
+          <button type="button" class="btn-edit-sm" data-folder="{{ m.folder }}"
+                  onclick="var n=prompt('Move to folder (blank = top level, / to nest):', this.dataset.folder); if(n===null) return; this.form.folder.value=n; this.form.submit()">📁 Move</button>
+        </form>
+        <form action="/maps/{{ m.slug }}/rename" method="post" style="display:inline">
+          <input type="hidden" name="name" value="">
+          <button type="button" class="btn-edit-sm" data-name="{{ m.name }}"
+                  onclick="renameViaPrompt(this, 'map')">✏ Rename</button>
+        </form>
+        <form action="/maps/{{ m.slug }}/delete" method="post" onsubmit="return confirm('Delete {{ m.name }}? This cannot be undone.')" style="display:inline">
+          <button type="submit" class="btn-delete-sm">🗑 Delete</button>
+        </form>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+  {% else %}
+  <p class="empty">{% if fold.current %}No maps in this folder.{% else %}No maps found.{% endif %}</p>
+  {% endfor %}
+</div>
+
+<!-- Schematics -->
+<div class="list-header" style="margin-top:2.5rem">
+  <h2>📐 SCHEMATICS</h2>
+  {% if _can_edit %}
+  <span>
+    <button type="button" class="btn-new" id="uvtt-btn" style="cursor:pointer" title="Make a schematic from a Dungeondraft, Dungeon Alchemist or other Universal VTT file: the picture, the grid, the walls and doors come with it">⬆ Import Universal VTT</button>
+    <input type="file" id="uvtt-file" accept=".dd2vtt,.uvtt,.df2vtt,.json" style="display:none"/>
+    <a href="{{ ('/maps/schematic/new' ~ ('?folder=' ~ (fold.current|urlencode) if fold.current else ''))|wq }}" class="btn-new">+ New Schematic</a>
+  </span>
+  {% endif %}
+</div>
+{% if _can_edit %}
+<div id="uvtt-msg" role="status" style="font-size:.8rem;color:var(--text-dim);white-space:pre-line;margin:.3rem 0"></div>
+<script>
+(function () {
+  const btn = document.getElementById('uvtt-btn'), input = document.getElementById('uvtt-file'), msg = document.getElementById('uvtt-msg');
+  btn.onclick = () => input.click();
+  input.onchange = async () => {
+    const f = input.files[0]; input.value = ''; if (!f) return;
+    msg.textContent = 'Importing ' + f.name + '…';
+    const fd = new FormData(); fd.append('file', f);
+    try {
+      const r = await fetch('/maps/schematic/import-uvtt', { method: 'POST', body: fd });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { msg.textContent = '⚠ ' + (d.detail || ('Import failed (' + r.status + ')')); return; }
+      msg.textContent = '✓ Imported: ' + d.stats.wall_lines + ' wall lines, ' + d.stats.doors + ' doors.' + (d.warnings.length ? '\n⚠ ' + d.warnings.join('\n⚠ ') : '');
+      setTimeout(() => { location.href = d.url; }, d.warnings.length ? 3500 : 700);
+    } catch (e) { msg.textContent = '⚠ Import failed — network error'; }
+  };
+})();
+</script>
+{% endif %}
+
+<div class="maps-grid">
+  {% for s in schematics %}
+  {# The full editor at /maps/schematic/{slug} is GM/Assistant-only; players
+     get the read-only /view route instead. HTML-type schematics have no
+     player-safe view at all, so their card is shown without a link for
+     non-editors rather than sending players into a 403. #}
+  {% set _s_href = ('/maps/schematic/' + s.slug) if _can_edit else (None if s.is_html else '/maps/schematic/' + s.slug + '/view') %}
+  <div class="map-card">
+    <div class="map-img-wrap">
+      {% if s.image_url %}
+      {% if _s_href %}<a href="{{ _s_href }}">{% endif %}
+        <img class="map-img" src="{{ s.image_url|thumb }}" alt="{{ s.name }}" loading="lazy"/>
+      {% if _s_href %}</a>{% endif %}
+      {% elif s.is_html %}
+      {% if _s_href %}<a href="{{ _s_href }}" class="map-placeholder" style="text-decoration:none">{% else %}<div class="map-placeholder">{% endif %}
+        🌐
+      {% if _s_href %}</a>{% else %}</div>{% endif %}
+      {% else %}
+      {# Element-only schematic: server-side SVG preview of the canvas #}
+      {% if _s_href %}<a href="{{ _s_href }}" style="display:block">{% endif %}
+        <img class="map-img" src="/maps/schematic/{{ s.slug }}/preview.svg" alt="{{ s.name }}" loading="lazy"/>
+      {% if _s_href %}</a>{% else %}</div>{% endif %}
+      {% endif %}
+    </div>
+    <div class="map-card-body">
+      <div class="map-name">
+        {% if _s_href %}<a href="{{ _s_href }}" style="color:inherit;text-decoration:none">{{ s.name }}</a>{% else %}{{ s.name }}{% endif %}
+      </div>
+      {% if s.description %}
+      <div class="map-meta">{{ s.description }}</div>
+      {% endif %}
+      <div class="map-meta" style="margin-top:.3rem">
+        {% if s.is_html %}<span class="pill">HTML</span>{% else %}<span class="pill">Leaflet</span>{% endif %}
+      </div>
+      {% if _can_edit %}
+      {% if not s.is_html %}
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
+        <form action="/maps/schematic/{{ s.slug }}/upload" method="post" enctype="multipart/form-data" class="map-upload-form">
+          <label class="map-upload-label" title="Upload background image">
+            📎 {% if s.image_url %}Replace{% else %}Upload{% endif %} background
+            <input type="file" name="file" accept="image/*" onchange="this.form.submit()" style="display:none"/>
+          </label>
+        </form>
+        {% if _is_gm %}
+        <button type="button" class="btn-gallery-pick" style="padding:.25rem .55rem;font-size:.75rem"
+                onclick="ndMapGalleryPick(this)">🖼 Gallery</button>
+        {% endif %}
+      </div>
+      {% endif %}
+      <div style="display:flex;gap:.4rem;margin-top:.4rem">
+        <form action="/maps/schematic/{{ s.slug }}/folder" method="post" style="display:inline">
+          <input type="hidden" name="folder" value=""><input type="hidden" name="back" value="{{ fold.current }}">
+          <button type="button" class="btn-edit-sm" data-folder="{{ s.folder }}"
+                  onclick="var n=prompt('Move to folder (blank = top level, / to nest):', this.dataset.folder); if(n===null) return; this.form.folder.value=n; this.form.submit()">📁 Move</button>
+        </form>
+        <form action="/maps/schematic/{{ s.slug }}/rename" method="post" style="display:inline">
+          <input type="hidden" name="name" value="">
+          <button type="button" class="btn-edit-sm" data-name="{{ s.name }}"
+                  onclick="renameViaPrompt(this, 'schematic')">✏ Rename</button>
+        </form>
+        <form action="/maps/schematic/{{ s.slug }}/delete" method="post" onsubmit="return confirm('Delete {{s.name}}?')" style="display:inline">
+          <button type="submit" class="btn-delete-sm">🗑 Delete</button>
+        </form>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+  {% else %}
+  <p class="empty">No schematics yet. <a href="{{ '/maps/schematic/new'|wq }}">Create one</a>.</p>
+  {% endfor %}
+</div>
+
+{% if _is_gm %}
+{% include "_gallery_picker_modal.html" %}
+{% endif %}
+<script src="/static/js/file-dropzone.js?v={{ asset_v('js/file-dropzone.js') }}"></script>
+<script>
+// Shared by both the map-image and schematic-background "🖼 Gallery"
+// buttons above — each button sits next to its own upload <form>/<label>,
+// so walking up to the shared wrapper div finds the right one regardless
+// of which card triggered the picker. Setting .files via JS doesn't fire
+// a native change event, so (unlike the click-to-browse and drag&drop
+// paths) this submits the form explicitly.
+function ndMapGalleryPick(btn) {
+  const form = btn.parentElement.querySelector('.map-upload-form');
+  const input = form.querySelector('input[type=file]');
+  ndGalleryPickerOpen(async (entry) => {
+    try {
+      const file = await ndGalleryUrlToFile(entry.url);
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      input.files = dt.files;
+      form.submit();
+    } catch (e) {
+      alert('Could not use that image: ' + e.message);
+    }
+  });
+}
+
+// Reads the map/schematic name from a data-name attribute rather than
+// embedding it via |tojson inside this onclick string — tojson wraps its
+// output in literal double quotes, which terminates a double-quoted HTML
+// attribute early (breaks for every name, not just ones with special
+// characters). data-name goes through Jinja's normal HTML autoescaping
+// instead, which is safe in this position.
+function renameViaPrompt(btn, label) {
+  const f = btn.closest('form');
+  const n = prompt('Rename ' + label + ':', btn.dataset.name);
+  if (n && n.trim()) { f.name.value = n.trim(); f.submit(); }
+}
+
+// Drag&drop onto the upload labels, in addition to the existing click-to-
+// browse file input — same event pattern as the schematic editor's proven
+// background-image drop zone (assets/templates/schematic.html), wired here to
+// just populate the existing file input and submit its form.
+document.querySelectorAll('.map-upload-label').forEach(label => {
+  ndRegisterPasteZone(label, files => {   // Ctrl+V of a picture over the label uploads it like a drop
+    const f = files[0];
+    if (!f || !f.type.startsWith('image/')) return;
+    const input = label.querySelector('input[type=file]');
+    const dt = new DataTransfer();
+    dt.items.add(f);
+    input.files = dt.files;
+    input.form.submit();
+  });
+  label.addEventListener('dragenter', e => {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    label.classList.add('drag-over');
+  });
+  label.addEventListener('dragover', e => {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  label.addEventListener('dragleave', () => label.classList.remove('drag-over'));
+  label.addEventListener('drop', e => {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    label.classList.remove('drag-over');
+    const f = e.dataTransfer.files[0];
+    if (!f || !f.type.startsWith('image/')) return;
+    const input = label.querySelector('input[type=file]');
+    input.files = e.dataTransfer.files;
+    input.form.submit();
+  });
+});
+</script>
+{% endblock %}

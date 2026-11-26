@@ -4,7 +4,7 @@
 // this file plus window.__ND_SHEET_ID__/__ND_SHEET_DATA__ into the GM's
 // uploaded template HTML, right before its own </body>). The iframe is
 // sandboxed with sandbox="allow-scripts allow-popups" and deliberately NO
-// allow-same-origin (same reasoning as app/templates/page_viewer.html) —
+// allow-same-origin (same reasoning as assets/templates/page_viewer.html) —
 // this script has no access to the parent app's cookies/session/DOM, and
 // can only talk to the parent page via postMessage. It never assumes the
 // template's own author wrote any of this — it works generically against

@@ -67,7 +67,7 @@ The gateway suites compare the gateway against Python on the same database. Star
 ND_ACCEL_TOKEN=tok .venv/bin/python -m tests.serve --port 8951 &
 ND_ACCEL_TOKEN=tok DB_PATH=$PWD/tests/_data/world.db ND_PBKDF2_ITERATIONS=1000 ND_TEST_HOOKS=1 \
   ND_RUST_ROUTES=login,dice_roll,live,pages,writes,ai,mcp,fans,auth SECRET_KEY=test-secret-key-not-for-production \
-  ND_TEMPLATES_DIR=$PWD/app/templates ND_UPSTREAM=127.0.0.1:8951 ND_GATEWAY_LISTEN=127.0.0.1:8952 ND_STATIC_DIR=$PWD/static \
+  ND_TEMPLATES_DIR=$PWD/assets/templates ND_UPSTREAM=127.0.0.1:8951 ND_GATEWAY_LISTEN=127.0.0.1:8952 ND_STATIC_DIR=$PWD/static \
   ND_ACCEL_ROOT=$PWD/tests/_data rust/target/release/nd-gateway &
 ND_GOLDEN_DIRECT_URL=http://127.0.0.1:8951 ND_TEST_BASE_URL=http://127.0.0.1:8952 \
   .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_gateway_golden.py -k "your_test_name"

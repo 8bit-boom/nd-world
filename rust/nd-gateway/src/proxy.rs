@@ -1,14 +1,9 @@
-//! Everything the gateway does not answer itself goes to the Python server, streamed both ways (uploads, server-sent events, big downloads are
-//! never held in memory). Python can ask the gateway to send a file instead of sending it itself: it answers with `X-Nd-Accel-Path` (an absolute
-//! path below the data folder) after it has done its own checks, and the gateway streams that file, with ranges and validators.
+//! Rust-only compatibility module for route refusal and file acceleration.
 use crate::{files, Config};
 use axum::body::Body;
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode};
-use hyper_util::client::legacy::{connect::HttpConnector, Client};
-use hyper_util::rt::TokioExecutor;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
 const HOP: [&str; 9] = ["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"];
 pub const ACCEL: &str = "x-nd-accel";
@@ -17,7 +12,6 @@ pub const ACCEL_PATH: &str = "x-nd-accel-path";
 #[derive(Clone)]
 pub struct Proxy {
     cfg: Arc<Config>,
-    client: Client<HttpConnector, Body>,
 }
 
 fn starting_page() -> Response<Body> {
@@ -91,71 +85,26 @@ fn missing_row_404(cfg: &Config, path: &str) -> Option<Response<Body>> {
 
 impl Proxy {
     pub fn new(cfg: Arc<Config>) -> Proxy {
-        let mut http = HttpConnector::new();
-        http.set_connect_timeout(Some(Duration::from_secs(5)));
-        http.set_nodelay(true);
-        let client = Client::builder(TokioExecutor::new()).pool_idle_timeout(Duration::from_secs(30)).build(http);
-        Proxy { cfg, client }
+        Proxy { cfg }
     }
 
     pub async fn upstream_up(&self) -> bool {
-        matches!(tokio::time::timeout(Duration::from_secs(1), tokio::net::TcpStream::connect(&self.cfg.upstream)).await, Ok(Ok(_)))
+        false
     }
 
     pub async fn forward(&self, req: Request<Body>, peer: Option<SocketAddr>) -> Response<Body> {
         let (mut parts, body) = req.into_parts();
         let method = parts.method.clone();
         let req_headers = parts.headers.clone();
-
-        let pq = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
         census("PY", method.as_str(), parts.uri.path());
-        if crate::config::python_free() {
-            // every request this image cannot answer is named in the log (method and path only: no query, no body), so a real refusal can be found
-            eprintln!("DECLINE {} {}", method, parts.uri.path());
-            if method == Method::GET {
-                if let Some(r) = missing_row_404(&self.cfg, parts.uri.path()) {
-                    return r;
-                }
-            }
-            return not_in_this_image(&method, parts.uri.path(), &req_headers);
-        }
-        let uri: hyper::Uri = match format!("http://{}{}", self.cfg.upstream, pq).parse() {
-            Ok(u) => u,
-            Err(_) => return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(),
-        };
-        let host = parts.headers.get(header::HOST).cloned();
-        scrub_request(&mut parts.headers, &self.cfg, peer);
-        if let Some(h) = host {
-            parts.headers.insert(header::HOST, h);
-        }
-        if !self.cfg.accel_token.is_empty() {
-            if let Ok(v) = HeaderValue::from_str(&self.cfg.accel_token) {
-                parts.headers.insert(HeaderName::from_static(ACCEL), v);
+        let _ = (&mut parts, body);
+        eprintln!("DECLINE {} {} (Rust-only route unavailable)", method, parts.uri.path());
+        if method == Method::GET {
+            if let Some(r) = missing_row_404(&self.cfg, parts.uri.path()) {
+                return r;
             }
         }
-        let mut out = Request::new(body);
-        *out.method_mut() = method.clone();
-        *out.uri_mut() = uri;
-        *out.headers_mut() = parts.headers;
-
-        let resp = match self.client.request(out).await {
-            Ok(r) => r,
-            Err(_) => return starting_page(),
-        };
-        let (rp, rbody) = resp.into_parts();
-        let mut headers = rp.headers;
-        // a file handed over by Python
-        let accel = headers.remove(HeaderName::from_static(ACCEL_PATH));
-        for h in HOP {
-            headers.remove(h);
-        }
-        if let (Some(path), false) = (accel, self.cfg.accel_token.is_empty()) {
-            return self.send_file(&method, &req_headers, path, headers).await;
-        }
-        let mut r = Response::new(Body::new(rbody));
-        *r.status_mut() = rp.status;
-        *r.headers_mut() = headers;
-        r
+        not_in_this_image(&method, parts.uri.path(), &req_headers)
     }
 
     async fn send_file(&self, method: &Method, req_headers: &HeaderMap, path: HeaderValue, mut headers: HeaderMap) -> Response<Body> {

@@ -4,7 +4,7 @@ This is a reference for an AI (Claude Code or otherwise) that needs to create
 or edit an nd-world **schematic** — the SVG floor-plan/blueprint editor at
 `/maps/schematic/{slug}` — without a human clicking through the UI. It
 documents the actual data format the editor reads and writes
-(`app/templates/schematic.html`), verified directly against that code, not
+(`assets/templates/schematic.html`), verified directly against that code, not
 guessed from the UI.
 
 If you just want to *use* the editor as a human would, you don't need this —

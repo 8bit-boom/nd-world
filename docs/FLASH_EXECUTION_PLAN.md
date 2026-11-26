@@ -178,7 +178,7 @@ Verify: `tests/test_backup_restore.py`.
 ### B8. GM clears a member's lost 2FA  (P2)
 
 Files: `app/main.py` (next to `reset-password` route ~1680),
-`app/templates/world_edit.html` (members table), `tests/test_password_reset.py`.
+`assets/templates/world_edit.html` (members table), `tests/test_password_reset.py`.
 Steps: new GM-only POST `/worlds/{world_id}/members/{user_id}/clear-2fa`
 — verify membership (same check reset-password uses), delete the user's
 `TrustedDevice` rows, set `totp_enabled=False` (+ secret column if the

@@ -5,7 +5,7 @@
 // is raised — Cloudflare's free tier is a fixed 100 MB with no way to raise
 // it (see docs/DEPLOYMENT.md's "Upload size limit" section). ndChunkedUpload
 // works around that exactly the way the Audio Library already does
-// (app/templates/audio_library.html's audioUploadChunked, the original,
+// (assets/templates/audio_library.html's audioUploadChunked, the original,
 // one-off version of this): split anything over the threshold into
 // sub-100MB parts and upload them sequentially, then ask the server to
 // reassemble them — a file at or under the threshold just goes straight to

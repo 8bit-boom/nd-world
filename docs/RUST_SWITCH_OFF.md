@@ -410,7 +410,7 @@ them after each batch; the phase is done when both are empty and the steps below
   declined while it was missing, so the first pages of a fresh instance (and of nearly every test) went to Python. It now creates
   the row the same way (layout.rs `app_settings_row`).
 - **Race and profession catalogs** (`GET /races`, `GET /professions`, catalog.rs): the world's entries by tier and the bundled
-  catalog under app/races/ and app/professions/ (read once, as Python's lru_cache does).
+  catalog under assets/races/ and assets/professions/ (read once, as Python's lru_cache does).
 - **Player-safe Smart Context** (`POST /api/ai/world-context-player`, retrieval.rs `smart_world_context_as`): the same retrieval as
   the GM's, through the player's own visibility at every step (search, top-up, latest notes, priority entities), [gmonly] text and
   :::gm rules blocks stripped, only the characters the player may see; no vault layer for a player (as in Python).

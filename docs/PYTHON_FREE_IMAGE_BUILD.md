@@ -54,7 +54,7 @@ What to expect, stage by stage:
 2. `gateway` stage: `rust:1-slim` + `musl-tools`, then **two** `cargo build --release --locked` passes (dependencies first, then the sources).
    `--locked` means `rust/Cargo.lock` must be committed and current; if it complains, run `cargo update -p <crate>` locally and commit.
 3. `assets` stage: `python:3.13-slim`, installs `requirements.txt`, runs `app.static_thumbs --avif-maps`, `app.map_tiles`, `app.precompress --minify`.
-4. final `debian:stable-slim`: ca-certificates, ffmpeg/ffprobe, the gateway binary, and `static/`, `app/templates/`, `app/maps/` from the assets stage.
+4. final `debian:stable-slim`: ca-certificates, ffmpeg/ffprobe, the gateway binary, and `static/`, `assets/templates/`, `assets/maps/` from the assets stage.
 
 If a stage fails, the usual causes are: a missing system library for the musl build (add it to the `apt-get install` line of the `gateway`
 stage), `requirements.txt` pins that do not install on slim (add the build deps to the `assets` stage), or a template/static path that moved
@@ -134,6 +134,6 @@ If a Dockerfile edit was needed, note it in `Dockerfile.gateway`'s header commen
 | Login works, then logs you out after a restart | no `SECRET_KEY` set (random per start) |
 | `501 ... needs the Python app` on a page you expect | a route not ported yet - note the URL; see `docs/census/python_only.txt` |
 | `400 ... could not be completed` on a form | a write the gateway declined (unusual input); Python would give the exact message |
-| Pictures/maps missing | `static/` or `app/maps` not copied: check the `COPY --from=assets` lines |
+| Pictures/maps missing | `static/` or `assets/maps` not copied: check the `COPY --from=assets` lines |
 | AI features say unreachable | the Studio/Ollama URL is `https://` (no TLS client) or not reachable from the container network |
 | Build: `cargo ... --locked` fails | `Cargo.lock` out of date; regenerate and commit it |

@@ -7,7 +7,7 @@
 //      (an array of {url, name}, from app/gallery.py's all_world_image_urls)
 //      before this script loads — used for the "All Images" leaf below.
 //   2. Include the modal markup once — see
-//      app/templates/_gallery_picker_modal.html.
+//      assets/templates/_gallery_picker_modal.html.
 //   3. Call ndGalleryPickerOpen(onPick) from a trigger button's onclick,
 //      where onPick(entry) receives the picked {url, name}.
 // One shared overlay serves any number of trigger buttons on a page

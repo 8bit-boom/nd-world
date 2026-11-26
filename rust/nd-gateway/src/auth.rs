@@ -20,7 +20,7 @@ use crate::pages::{safe_next_url, Pages, LOCATION_SAFE};
 
 const PBKDF2_ITERATIONS: u32 = 600_000;
 
-/// The PBKDF2 work factor: 600,000, or ND_PBKDF2_ITERATIONS - only for the test servers, which lower it as tests/serve.py lowers
+/// The PBKDF2 work factor: 600,000, or ND_PBKDF2_ITERATIONS for Rust tests.
 /// Python's (the stored hash does not record its own count)
 pub fn iterations_pub() -> u32 {
     iterations()

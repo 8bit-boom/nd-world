@@ -1,4 +1,4 @@
-//! MiniJinja over the app's real templates (`app/templates/`): the same files Python renders, so a template change keeps working on both sides.
+//! MiniJinja over the app's real templates (`assets/templates/`): the same files Python renders, so a template change keeps working on both sides.
 //! Holds the template globals and filters the Rust side has taught MiniJinja so far (see `docs/RUST_PAGES.md` for what is and is not ported).
 use minijinja::{escape_formatter, value::ValueKind, Environment, Error, ErrorKind, State, Value};
 use minijinja::{AutoEscape, Output};
@@ -536,15 +536,12 @@ pub fn environment(templates_dir: &Path, static_dir: &Path) -> Environment<'stat
 }
 
 
-/// `{"build", "mode", "label"}` of the running image (app/templating.py `_build_info`): the commit (ND_BUILD, "dev" without one) and whether this is the
-/// Python-free image ("rust"), the hybrid one ("hybrid", ND_MODE) or the Python app alone ("python")
+/// `{"build", "mode", "label"}` of the Rust-only running image.
 pub fn build_info() -> Value {
     let build = std::env::var("ND_BUILD").unwrap_or_default();
     let build: String = text::py_strip(&build).chars().take(7).collect();
     let build = if build.is_empty() { "dev".to_string() } else { build };
-    let free = matches!(std::env::var("ND_PYTHON_FREE").unwrap_or_default().trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on");
-    let m = std::env::var("ND_MODE").unwrap_or_default().trim().to_lowercase();
-    let mode = if free { "rust" } else if matches!(m.as_str(), "rust" | "hybrid" | "python") { m.as_str() } else { "python" };
-    let label = match mode { "rust" => "Rust (no Python)", "hybrid" => "Hybrid (Rust + Python)", _ => "Python" };
+    let mode = "rust";
+    let label = "Rust";
     Value::from_serialize(serde_json::json!({"build": build, "mode": mode, "label": label}))
 }

@@ -32,7 +32,7 @@ on a COPY of your data (restore `/admin/backup.zip` into an empty folder), then 
   maps, combats or sessions; the bugs lived there.
 - **Exact text guards bite.** A JSON column posted by a browser has no spaces; a number written `1.0` is not the same token as `1`. Compare after
   normalising, never on the raw string.
-- **Audit by what the pages CALL, not by the route list.** Grep `static/js` and `app/templates` for `fetch(` / `action=` and check each address against a
+- **Audit by what the pages CALL, not by the route list.** Grep `static/js` and `assets/templates` for `fetch(` / `action=` and check each address against a
   Python-free gateway. Routes that "exist" by prefix can still miss their GET, POST or DELETE.
 - **Keep the oracle.** The Python app and its tests stay until the Rust side has run a real month. Do not delete Python code in the fork.
 - **Disk and time.** A full gateway build is 3-4 minutes, the suites 15-20; keep 10 GB free (`cargo clean -p nd-gateway` between big changes).

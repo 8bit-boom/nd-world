@@ -1,10 +1,10 @@
-//! `nd-assets <static dir> <app/maps dir>`: the image build's pictures, tile pyramids, minified CSS and compressed twins (src/assets.rs).
+//! `nd-assets <static dir> <assets/maps dir>`: the image build's pictures, tile pyramids, minified CSS and compressed twins (src/assets.rs).
 use std::path::PathBuf;
 
 fn main() {
     let mut args = std::env::args().skip(1);
     let (Some(static_dir), Some(maps)) = (args.next().map(PathBuf::from), args.next().map(PathBuf::from)) else {
-        eprintln!("usage: nd-assets <static dir> <app/maps dir>");
+        eprintln!("usage: nd-assets <static dir> <assets/maps dir>");
         std::process::exit(2);
     };
     nd_gateway::imaging::set_avif_speed(6); // the build pays once: the smaller files of the slower setting

@@ -42,7 +42,7 @@ RUN touch nd-gateway/src/main.rs nd-gateway/src/lib.rs nd-render/src/lib.rs nd-p
 
 # the build-time pictures, tile pyramids, minified CSS and compressed twins of the static files (the JavaScript arrives minified from the stage above), made by the Rust nd-assets (src/assets.rs): no Python
 COPY --from=minify /w/static/ /assets/static/
-COPY app/maps/ /assets/maps/
+COPY assets/maps/ /assets/maps/
 RUN /nd-assets /assets/static /assets/maps
 
 FROM debian:stable-slim
@@ -51,8 +51,8 @@ COPY --from=ffmpeg /ffmpeg /ffprobe /usr/local/bin/
 COPY --from=gateway /nd-gateway /usr/local/bin/nd-gateway
 WORKDIR /app
 COPY --from=gateway /assets/static ./static
-COPY app/templates ./app/templates
-COPY app/maps ./app/maps
+COPY assets/templates ./assets/templates
+COPY assets/maps ./assets/maps
 
 ARG GIT_SHA=""
 ENV ND_BUILD=${GIT_SHA} \
@@ -61,8 +61,8 @@ ENV ND_BUILD=${GIT_SHA} \
     ND_MODE=rust \
     DB_PATH=/data/world.db \
     ND_STATIC_DIR=/app/static \
-    ND_TEMPLATES_DIR=/app/app/templates \
-    ND_BUNDLED_MAPS_DIR=/app/app/maps \
+    ND_TEMPLATES_DIR=/app/assets/templates \
+    ND_BUNDLED_MAPS_DIR=/app/assets/maps \
     ND_GATEWAY_LISTEN=0.0.0.0:8000 \
     ND_RUST_ROUTES=login,dice_roll,live,pages,writes,ai,mcp,fans,auth
 VOLUME ["/data"]

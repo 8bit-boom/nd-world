@@ -1,5 +1,5 @@
 //! `GET /races` and `GET /professions` (app/routers/races.py `races_page`, app/routers/professions.py `professions_page`): the world's
-//! races / professions by tier, and the bundled catalog (app/races/, app/professions/) a GM can add from.
+//! races / professions by tier, and the bundled catalog (assets/races/, assets/professions/) a GM can add from.
 
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};

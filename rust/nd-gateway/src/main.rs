@@ -36,7 +36,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    eprintln!("nd-gateway: {} -> {} (static: {})", cfg.listen, cfg.upstream, cfg.static_dir.display());
+    eprintln!("nd-gateway: {} (static: {}, Rust-only)", cfg.listen, cfg.static_dir.display());
     // boot a fresh database (schema snapshot + seed rows) when the volume has none — in the Python-free
     // image this is the only boot that will ever happen
     nd_gateway::startup::init_db(&cfg);

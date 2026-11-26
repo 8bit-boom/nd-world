@@ -16,7 +16,7 @@ Read this first, then `docs/RUST_SWITCH_OFF.md` (the phase 6 work list and what 
 - **Same database.** Both sides read and write the same SQLite file. The gateway writes rows the way SQLAlchemy would (`orm.rs`:
   `insert` fills the model's Python-side defaults, `update` writes only changed columns and bumps `updated_at`, `touch` signals the
   live view).
-- **Same templates.** Pages render the same Jinja templates from `app/templates` with MiniJinja (`nd-render` crate). Python template
+- **Same templates.** Pages render the same Jinja templates from `assets/templates` with MiniJinja (`nd-render` crate). Python template
   globals/filters are re-implemented in `rust/nd-render/src/lib.rs`. App data tables Python keeps in code (layout sections, kinds,
   presets...) are exported to `rust/nd-render/data/app_data.json` by `scripts/gen_rust_data.py`; **regenerate it** (`python3
   scripts/gen_rust_data.py`) when you add a key, and commit it.
