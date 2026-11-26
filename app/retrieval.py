@@ -11,8 +11,10 @@ which imports nothing from main/audio_jobs/any router, so everyone can
 import it directly and normally instead.
 """
 import asyncio
+import json
 import logging
 import math
+import os
 import re
 from pathlib import Path
 from typing import Optional
@@ -29,6 +31,82 @@ from .rules_render import strip_gm_directives as _strip_gm_directives
 _log = logging.getLogger("nd.retrieval")
 
 _CORE_RULES_PATH = Path(__file__).parent / "core_rules.md"
+
+
+def cartographer_context(query: str, limit_chars: int = 6000) -> str:
+    """Prompt-ready text from nd-cartographer projects stored beside this world.
+
+    This is deliberately read-only and fails closed: bad files, old project
+    layouts and missing folders produce no context instead of taking AI down.
+    """
+    root = Path(os.environ.get("ND_ACCEL_ROOT") or str(Path(os.environ.get("DB_PATH", "/data/world.db")).parent))
+    data = root / "cartographer" / "data"
+    if not data.is_dir():
+        return ""
+    words = [w for w in _query_words(query) if w]
+    wanted = {"name", "title", "text", "label", "note", "summary", "description", "digest", "kind"}
+    projects = []
+
+    def collect_strings(v):
+        found = []
+        if isinstance(v, dict):
+            for k, child in v.items():
+                if k in wanted and isinstance(child, str) and child.strip():
+                    found.append(child.strip())
+                found.extend(collect_strings(child))
+        elif isinstance(v, list):
+            for child in v:
+                found.extend(collect_strings(child))
+        return found
+
+    for doc_dir in sorted(data.iterdir(), key=lambda p: p.name):
+        if not doc_dir.is_dir():
+            continue
+        manifest = doc_dir / "manifest.json"
+        if not manifest.is_file():
+            continue
+        try:
+            meta = json.loads(manifest.read_text(encoding="utf-8", errors="replace"))
+            project_name = meta.get("name") or doc_dir.name
+            snap = doc_dir / "snapshot.json"
+            floors = doc_dir / "floors.json"
+            source = snap if snap.is_file() else floors
+            body = source.read_text(encoding="utf-8", errors="replace") if source.is_file() else ""
+            parsed = json.loads(body) if body else {}
+            strings = collect_strings(parsed)
+            journal = doc_dir / "journal.ndjson"
+            if journal.is_file():
+                for line in journal.read_text(encoding="utf-8", errors="replace").splitlines()[-300:]:
+                    try:
+                        strings.extend(collect_strings(json.loads(line)))
+                    except Exception:
+                        pass
+            unique = list(dict.fromkeys(s for s in strings if s))
+            if not unique:
+                continue
+            haystack = " ".join([project_name] + unique).lower()
+            score = sum(haystack.count(w) for w in words)
+            if not words or score > 0:
+                projects.append((score, project_name, unique))
+        except Exception:
+            continue
+    projects.sort(key=lambda p: (-p[0], p[1].lower()))
+    if not projects:
+        return ""
+    lines = ["Cartographer maps:"]
+    remaining = max(0, limit_chars)
+    for _score, name, strings in projects:
+        block = f"- Map: {name}"
+        for value in strings[:80]:
+            if len(block) + len(value) + 3 > remaining:
+                break
+            block += f"\n  {value}"
+        if len(block) <= remaining:
+            lines.append(block)
+            remaining -= len(block)
+        if remaining <= 0:
+            break
+    return "\n".join(lines)
 
 
 def world_rules_markdown(world) -> str:

@@ -13,6 +13,9 @@
 - [x] One-click play: `POST /api/maps/schematic/{slug}/play-manifest` (per-room NPCs + loot from the studio) and
       `POST /api/maps/schematic/{slug}/play` (build a combat from the party + the rooms' NPCs, link it to the schematic, place PC/NPC/item tokens).
       "▶ Play" button on the schematic editor. Tests: `tests/test_gateway_cartographer.py` (Rust-only).
+- [x] Bidirectional map/AI context: Cartographer Ask can retrieve nd-world lore through `/api/ai/world-context-smart`, and GM AI Chat
+      now adds persisted Cartographer project/floor/label/marker text to the same RAG context. The read is read-only, bounded, GM-only,
+      and works in both Python and the Rust-only gateway; `tests/test_gateway_cartographer.py` covers the gateway surface.
 
 ## Measured starting point (main at 3f217ee)
 - 90% of the app's parameterless GET routes work with no Python (crawl); about 54% of routes are answered only by the gateway, 37% mixed, 9% Python only

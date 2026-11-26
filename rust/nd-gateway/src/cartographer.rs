@@ -56,6 +56,128 @@ pub fn status(cfg: &Config) -> Value {
     })
 }
 
+fn collect_context_strings(v: &Value, found: &mut Vec<String>) {
+    const WANTED: [&str; 9] = [
+        "name",
+        "title",
+        "text",
+        "label",
+        "note",
+        "summary",
+        "description",
+        "digest",
+        "kind",
+    ];
+    match v {
+        Value::Object(o) => {
+            for (k, c) in o {
+                if WANTED.contains(&k.as_str()) {
+                    if let Some(s) = c.as_str().filter(|s| !s.trim().is_empty()) {
+                        found.push(s.trim().to_string());
+                    }
+                }
+                collect_context_strings(c, found);
+            }
+        }
+        Value::Array(a) => {
+            for c in a {
+                collect_context_strings(c, found);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Prompt-ready, read-only context from persisted nd-cartographer projects.
+/// GM/AI only; failures and unknown old layouts return an empty context.
+pub fn world_context(cfg: &Config, query: &str) -> String {
+    let data = base(cfg).join("data");
+    let Ok(entries) = std::fs::read_dir(&data) else {
+        return String::new();
+    };
+    let words = crate::retrieval::query_words(query).unwrap_or_default();
+    let mut projects: Vec<(i64, String, Vec<String>)> = vec![];
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let manifest = dir.join("manifest.json");
+        if !manifest.is_file() {
+            continue;
+        }
+        let Ok(meta) =
+            serde_json::from_slice::<Value>(&std::fs::read(&manifest).unwrap_or_default())
+        else {
+            continue;
+        };
+        let project_name = meta
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| dir.file_name().and_then(|n| n.to_str()).unwrap_or("Map"))
+            .to_string();
+        let snap = dir.join("snapshot.json");
+        let floors = dir.join("floors.json");
+        let source = if snap.is_file() { snap } else { floors };
+        let Ok(raw) = std::fs::read_to_string(source) else {
+            continue;
+        };
+        let Ok(parsed) = serde_json::from_str::<Value>(&raw) else {
+            continue;
+        };
+        let mut strings = vec![];
+        collect_context_strings(&parsed, &mut strings);
+        if let Ok(journal) = std::fs::read_to_string(dir.join("journal.ndjson")) {
+            let lines: Vec<&str> = journal.lines().collect();
+            for line in lines.iter().rev().take(300).copied() {
+                if let Ok(v) = serde_json::from_str::<Value>(line) {
+                    collect_context_strings(&v, &mut strings);
+                }
+            }
+        }
+        let mut unique: Vec<String> = vec![];
+        for s in strings {
+            if !unique.iter().any(|x| x == &s) {
+                unique.push(s);
+            }
+        }
+        if unique.is_empty() {
+            continue;
+        }
+        let hay = format!("{project_name} {}", unique.join(" ")).to_lowercase();
+        let score = words.iter().map(|w| hay.matches(w).count() as i64).sum();
+        if words.is_empty() || score > 0 {
+            projects.push((score, project_name, unique));
+        }
+    }
+    projects.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase()))
+    });
+    if projects.is_empty() {
+        return String::new();
+    }
+    let mut lines = vec!["Cartographer maps:".to_string()];
+    let mut remaining = 6000usize;
+    for (_, name, strings) in projects {
+        let mut block = format!("- Map: {name}");
+        for value in strings.into_iter().take(80) {
+            if block.len() + value.len() + 3 > remaining {
+                break;
+            }
+            block.push_str(&format!("\n  {value}"));
+        }
+        if block.len() <= remaining {
+            lines.push(block.clone());
+            remaining = remaining.saturating_sub(block.len());
+        }
+        if remaining == 0 {
+            break;
+        }
+    }
+    lines.join("\n")
+}
+
 fn reply(code: StatusCode, v: Value) -> Response<Body> {
     Response::builder()
         .status(code)
@@ -97,6 +219,7 @@ pub fn get(
     // The studio is mounted on this same origin; the iframe needs no token (the
     // proxy path is GM-gated by the session).
     p.ctx.insert("cartographer".into(), st);
-    p.ctx.insert("cartographer_embed_url".into(), json!(STUDIO_BASE));
+    p.ctx
+        .insert("cartographer_embed_url".into(), json!(STUDIO_BASE));
     crate::pages::render_with(pages, "cartographer.html", p.ctx, headers)
 }

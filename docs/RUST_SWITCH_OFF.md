@@ -31,6 +31,9 @@ them after each batch; the phase is done when both are empty and the steps below
 
 ### Done so far
 
+- **Cartographer world context**: persisted nd-cartographer project names, floors, room/label/marker text are read-only GM RAG context in
+  `/api/ai/world-context-smart`; Cartographer already retrieves the reverse nd-world lore block with its GM session. Implemented in both
+  Python and the Rust gateway; malformed or missing project data is ignored.
 - **An entity page's Media tab** (entity_media.rs, pages.rs `entity_detail`, gallery.rs `discover`, edits.rs `em_*`, apis.rs `entity_media`, nd-perm
   `is_assistant_safe`): the pictures an entity keeps (entities.media_images_json), its portrait and the ones written in its body and notes, and the audio / video clips
   that belong to it, as Python's `app/entity_media.py` lists them; the gallery counts kept pictures as used; `GET /api/entity/<id>/media`, attach, visibility,

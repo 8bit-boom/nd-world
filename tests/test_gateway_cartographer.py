@@ -66,6 +66,34 @@ def test_studio_is_mounted_natively(client, seed, tmp_path):
         proc.terminate()
 
 
+def test_nd_world_smart_context_reads_cartographer_maps(client, seed, tmp_path):
+    """Persisted Cartographer projects become read-only world context for nd-world AI."""
+    accel = tmp_path / "accel"
+    doc = accel / "cartographer" / "data" / "doc-lost-cathedral"
+    doc.mkdir(parents=True)
+    (doc / "manifest.json").write_text(json.dumps({"name": "The Lost Cathedral"}), encoding="utf-8")
+    (doc / "snapshot.json").write_text(json.dumps({
+        "journal_len": 1,
+        "floors": [{
+            "name": "Crypt",
+            "grid": {"spaces": {"a": {"name": "Vestibule"}}},
+            "labels": [{"text": "The drowned reliquary"}],
+            "markers": [{"label": "Black Stair", "note": "The cathedral relic is hidden below"}],
+        }],
+    }), encoding="utf-8")
+
+    proc, url, gm = _python_free_gateway(seed, extra_env={"ND_ACCEL_ROOT": str(accel)})
+    try:
+        r = gm.post("/api/ai/world-context-smart", json={"query": "drowned reliquary cathedral", "limit": 25, "notes_limit": 5})
+        assert r.status_code == 200, r.text
+        context = r.json()["context"]
+        assert "Cartographer maps:" in context
+        assert "The Lost Cathedral" in context
+        assert "drowned reliquary" in context
+    finally:
+        proc.terminate()
+
+
 def test_combat_template_port_matches_the_creature_lines(client, seed):
     """/api/combat/templates (ported from app/routers/combat.py): "name xN" becomes
     N combatants; the template is GM information."""

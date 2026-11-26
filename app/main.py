@@ -4568,6 +4568,10 @@ def ai_world_context_smart(
         db, world.id, body.query, entity_limit=body.limit, notes_limit=body.notes_limit,
         user=None if (user and user.is_gm) else user,
     )
+    if user and user.is_gm:
+        map_context = _retrieval.cartographer_context(body.query)
+        if map_context:
+            context = f"{map_context}\n\n{context}" if context else map_context
     combined = non_notes + notes
     return {
         "context": context,

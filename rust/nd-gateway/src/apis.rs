@@ -1281,6 +1281,10 @@ fn world_context_smart(cfg: &Config, uri: &Uri, headers: &HeaderMap, raw: &[u8])
         return crate::edits::json_response(&json!({"context": "", "count": 0, "notes": 0, "entities": []}));
     };
     let (context, non_notes, notes) = crate::retrieval::smart_world_context_full(&db, w.get("id")?.as_i64()?, &query, limit, notes_limit)?;
+    let context = {
+        let maps = crate::cartographer::world_context(cfg, &query);
+        if maps.is_empty() { context } else if context.is_empty() { maps } else { format!("{maps}\n\n{context}") }
+    };
     let entities: Vec<Value> = non_notes.iter().chain(notes.iter()).map(|e| json!({"id": e.get("id"), "name": e.get("name"), "kind": e.get("kind")})).collect();
     crate::edits::json_response(&json!({"context": context, "count": non_notes.len(), "notes": notes.len(), "entities": entities}))
 }
