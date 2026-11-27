@@ -13047,6 +13047,22 @@ pub fn schematic_floor_navigation(db: &Connection, sc: &Map<String, Value>) -> O
     (!floors.is_empty()).then_some(floors)
 }
 
+fn floor_slug_of(text: &str) -> String {
+    py_slug(text, 256).filter(|v| !v.is_empty()).unwrap_or_else(|| "floor".into())
+}
+
+#[cfg(test)]
+mod floor_slug_tests {
+    use super::floor_slug_of;
+
+    #[test]
+    fn non_ascii_floor_names_get_a_usable_slug() {
+        assert_eq!(floor_slug_of("Таверна - Подвал"), "floor");
+        assert_eq!(floor_slug_of("Tavern - Cellar"), "tavern-cellar");
+        assert_eq!(floor_slug_of("Таверна - Floor 2"), "floor-2");
+    }
+}
+
 fn sc_add_floor(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     let body = c.json()?;
     let sc = sc_for_manager(c, slug)?;
@@ -13055,8 +13071,8 @@ fn sc_add_floor(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
         return Some(crate::idpages::refusal(404));
     }
     let label = body.get("label").and_then(Value::as_str).unwrap_or("").trim();
-    if label.is_empty() || label.len() > 80 || !label.is_ascii() {
-        return Some(bad400("Floor name must be 1–80 ASCII characters"));
+    if label.is_empty() || label.chars().count() > 80 || label.chars().any(char::is_control) {
+        return Some(bad400("Floor name must be 1–80 characters"));
     }
     let sid = sc.get("id")?.as_i64()?;
     let group = match schematic_floor_group(&c.db, sid) {
@@ -13081,11 +13097,9 @@ fn sc_add_floor(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
         sc.get("name").and_then(Value::as_str).unwrap_or("Map"),
         label
     );
-    let mut base_slug = py_slug(&name, 256)?;
-    if base_slug.is_empty() {
-        return Some(bad400("Floor name must contain a letter or number"));
-    }
-    let mut floor_slug = base_slug.clone();
+    // A name with no ASCII letters or digits (Cyrillic, say) has an empty slug: fall back to "floor".
+    let slug_of = floor_slug_of;
+    let mut floor_slug = slug_of(&name);
     let mut suffix = 2;
     loop {
         let exists: bool = c.db.query_row(
@@ -13096,8 +13110,10 @@ fn sc_add_floor(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
         if !exists {
             break;
         }
-        base_slug = py_slug(&format!("{name}-{suffix}"), 256)?;
-        floor_slug = base_slug.clone();
+        floor_slug = slug_of(&format!("{name}-{suffix}"));
+        if floor_slug == "floor" {
+            floor_slug = format!("floor-{suffix}");
+        }
         suffix += 1;
     }
     let mut fields = vec![
@@ -13138,7 +13154,9 @@ fn sc_floor_portal(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
         return Some(crate::idpages::refusal(404));
     }
     let source_id = source.get("id")?.as_i64()?;
-    let source_group = schematic_floor_group(&c.db, source_id)?;
+    let Some(source_group) = schematic_floor_group(&c.db, source_id) else {
+        return Some(bad400("Add a floor to this map first; portals link floors of one map group"));
+    };
     let destination_slug = body.get("destination_slug")?.as_str()?;
     if destination_slug.is_empty()
         || !destination_slug.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')

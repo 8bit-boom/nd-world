@@ -737,6 +737,9 @@ pub fn update_run(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> 
             let Some(revision) = data["revision"].as_i64().filter(|v| *v >= 0) else {
                 return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid revision"}));
             };
+            if !data_dir(cfg).join(project).join("manifest.json").is_file() {
+                return reply(StatusCode::NOT_FOUND, json!({"error":"Project not found"}));
+            }
             let Some(floors) = data["floors"].as_array().filter(|v| v.len() <= 64) else {
                 return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid floor list"}));
             };
@@ -753,6 +756,15 @@ pub fn update_run(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> 
             if records.is_empty() { return reply(StatusCode::BAD_REQUEST, json!({"error":"No approved updates"})); }
             let id = format!("run_{:032x}", rand::random::<u128>());
             let now = now_secs() as i64;
+            // Old finished runs are dropped; a run still active in the last hour blocks a second one for the project.
+            let _ = db.execute("DELETE FROM cartographer_update_runs WHERE updated_at < ?1", [now - 30 * 86_400]);
+            let busy: i64 = db.query_row(
+                "SELECT COUNT(*) FROM cartographer_update_runs
+                 WHERE world_id = ?1 AND project_id = ?2 AND status IN ('pending','running') AND updated_at >= ?3",
+                rusqlite::params![world, project, now - 3600], |r| r.get(0)).unwrap_or(0);
+            if busy > 0 {
+                return reply(StatusCode::CONFLICT, json!({"error":"An update run for this project is already in progress; finish or cancel it first"}));
+            }
             let floors_json = serde_json::to_string(&Value::Array(records)).unwrap_or_else(|_| "[]".into());
             if db.execute(
                 "INSERT INTO cartographer_update_runs(id, world_id, project_id, revision, status, floors_json, created_at, updated_at)
@@ -796,14 +808,17 @@ pub fn update_run(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> 
                 || !matches!(floor_status, "pending" | "running" | "done" | "failed" | "cancelled") {
                 return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid update run result"}));
             }
-            let row: Option<(i64, String, i64)> = db.query_row(
-                "SELECT revision, floors_json, updated_at FROM cartographer_update_runs WHERE world_id = ?1 AND id = ?2",
+            let row: Option<(i64, String, String)> = db.query_row(
+                "SELECT revision, floors_json, status FROM cartographer_update_runs WHERE world_id = ?1 AND id = ?2",
                 rusqlite::params![world, run_id],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             ).optional().unwrap_or(None);
-            let Some((revision, floors_json, _)) = row else {
+            let Some((revision, floors_json, run_status)) = row else {
                 return reply(StatusCode::NOT_FOUND, json!({"error":"Update run not found"}));
             };
+            if run_status == "cancelled" {
+                return reply(StatusCode::CONFLICT, json!({"error":"This update run was cancelled"}));
+            }
             let Ok(Value::Array(mut floors)) = serde_json::from_str(&floors_json) else {
                 return reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":"Invalid stored update run"}));
             };
@@ -812,7 +827,7 @@ pub fn update_run(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> 
                 if floor["id"].as_str() == Some(floor_id) {
                     found = true;
                     floor["status"] = json!(floor_status);
-                    floor["error"] = data["error"].as_str().map(|message| json!(message)).unwrap_or(Value::Null);
+                    floor["error"] = data["error"].as_str().map(|message| json!(message.chars().take(500).collect::<String>())).unwrap_or(Value::Null);
                 }
             }
             if !found { return reply(StatusCode::BAD_REQUEST, json!({"error":"Floor is not in this update run"})); }
