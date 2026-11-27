@@ -30,7 +30,14 @@ const STUDIO_CANVAS_CSS: &str =
 pub fn patch_app_js_source(js: &str) -> String {
     let old = "  drawStrokePreview();\n  clearTimeout(state.pendingFlush);\n  state.pendingFlush = setTimeout(flushStroke, 120);\n}";
     let live = "  render();\n  clearTimeout(state.pendingFlush);\n}";
-    js.replace(old, live)
+    // The 2D canvas that holds the previews must sit above the WebGL tile canvas; set it here too, so the
+    // previews do not depend on the stylesheet patch (a cached or missed stylesheet hid them).
+    let lift = "\n;(() => { try { const c = document.getElementById('canvas'); if (c) { c.style.position = 'relative'; c.style.zIndex = '1'; } } catch (_) {} })();\n";
+    let mut out = js.replace(old, live);
+    if out != js {
+        out.push_str(lift);
+    }
+    out
 }
 
 pub async fn patch_app_js(resp: Response<Body>) -> Response<Body> {
@@ -63,6 +70,7 @@ mod live_paint_tests {
         let patched = patch_app_js_source(source);
         assert!(patched.contains("  render();\n  clearTimeout(state.pendingFlush);"));
         assert!(!patched.contains("setTimeout(flushStroke"));
+        assert!(patched.contains("style.zIndex = '1'"));
     }
 }
 
