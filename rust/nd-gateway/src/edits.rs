@@ -18039,7 +18039,7 @@ struct PlayableCopy {
 
 fn import_uvtt(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     let up = c.upload.as_ref()?;
-    if up.form.0.iter().any(|(k, _)| !matches!(k.as_str(), "name" | "project" | "floor" | "mode")) || up.form.0.len() > 4 || up.files.len() != 1 || up.files[0].name != "file" || up.files[0].filename.is_empty() {
+    if up.form.0.iter().any(|(k, _)| !matches!(k.as_str(), "name" | "project" | "floor" | "mode" | "revision")) || up.form.0.len() > 5 || up.files.len() != 1 || up.files[0].name != "file" || up.files[0].filename.is_empty() {
         return None;
     }
     let name_field = up.form.get("name").unwrap_or("").to_string();
@@ -18047,6 +18047,7 @@ fn import_uvtt(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     let project = up.form.get("project").unwrap_or("").to_string();
     let floor = up.form.get("floor").unwrap_or("").to_string();
     let mode = up.form.get("mode").unwrap_or("").to_string();
+    let source_rev = up.form.get("revision").and_then(|v| v.parse::<i64>().ok()).filter(|v| *v >= 0);
     let Some(wid) = c.world_id() else { return Some(bad400("No world selected")) };
     if !c.can_edit_section("maps")? {
         return Some(crate::idpages::refusal(403));
@@ -18138,6 +18139,10 @@ fn import_uvtt(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
                     return Some(bad400("The playable floor has different artwork. Refresh its artwork first."));
                 }
                 if mode == "ensure" {
+                    if let Some(rev) = source_rev {
+                        c.db.execute("UPDATE cartographer_playable SET source_rev = ?1 WHERE schematic_id = ?2",
+                            rusqlite::params![rev, copy.id]).ok()?;
+                    }
                     return json_response(&json!({"slug":copy.slug, "url":format!("/maps/schematic/{}",copy.slug), "warnings":[], "existing":true,
                         "width":copy.width, "height":copy.height, "image_url":copy.image}));
                 }
@@ -18153,6 +18158,10 @@ fn import_uvtt(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
                     rusqlite::params![walls_json, lights_json, copy.id, wid]).ok()?;
                 c.db.execute("UPDATE cartographer_playable SET walls_json = ?1, lights_json = ?2 WHERE schematic_id = ?3",
                     rusqlite::params![walls_json, lights_json, copy.id]).ok()?;
+                if let Some(rev) = source_rev {
+                    c.db.execute("UPDATE cartographer_playable SET source_rev = ?1 WHERE schematic_id = ?2",
+                        rusqlite::params![rev, copy.id]).ok()?;
+                }
                 orm::bump_scene(&c.db, copy.id, wid)?;
                 let mut warnings = parsed.warnings.clone();
                 warnings.extend(wwarn);
@@ -18172,6 +18181,10 @@ fn import_uvtt(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
                 rusqlite::params![image_url, copy.id, wid]).ok()?;
             c.db.execute("UPDATE cartographer_playable SET image_url = ?1 WHERE schematic_id = ?2",
                 rusqlite::params![image_url, copy.id]).ok()?;
+            if let Some(rev) = source_rev {
+                c.db.execute("UPDATE cartographer_playable SET source_rev = ?1 WHERE schematic_id = ?2",
+                    rusqlite::params![rev, copy.id]).ok()?;
+            }
             orm::bump_scene(&c.db, copy.id, wid)?;
             return json_response(&json!({"slug":copy.slug, "url":format!("/maps/schematic/{}",copy.slug), "warnings":parsed.warnings, "refreshed":true}));
         }
@@ -18209,8 +18222,8 @@ fn import_uvtt(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
         ("fog_json", s(&nd_render::py_dumps(&Value::Object(fog)))),
     ])?;
     if linked {
-        c.db.execute("INSERT INTO cartographer_playable(project_id, floor_id, world_id, schematic_id, image_url, walls_json, lights_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![project, floor, wid, schematic_id, format!("/uploads/schematics/{unique}.webp"), walls_json, lights_json]).ok()?;
+        c.db.execute("INSERT INTO cartographer_playable(project_id, floor_id, world_id, schematic_id, image_url, walls_json, lights_json, source_rev) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![project, floor, wid, schematic_id, format!("/uploads/schematics/{unique}.webp"), walls_json, lights_json, source_rev.unwrap_or(0)]).ok()?;
     }
     orm::touch(&c.db, wid)?;
     let mut warnings: Vec<String> = parsed.warnings.clone();

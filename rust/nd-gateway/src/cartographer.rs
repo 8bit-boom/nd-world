@@ -671,6 +671,84 @@ fn group_playable_floors(db: &rusqlite::Connection, world: i64, data: &Value) ->
     Ok(json!({"slug":group}))
 }
 
+pub fn playable_preview(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Response<Body> {
+    use rusqlite::OptionalExtension;
+    let Some((db, page)) = gm_ctx(cfg, "POST", uri, headers) else {
+        return reply(StatusCode::FORBIDDEN, json!({"error":"GM access required"}));
+    };
+    let Some(world) = page.world.as_ref().and_then(|w| w.get("id")).and_then(Value::as_i64) else {
+        return reply(StatusCode::FORBIDDEN, json!({"error":"Active world required"}));
+    };
+    let Ok(data) = serde_json::from_slice::<Value>(body) else {
+        return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid request"}));
+    };
+    let Some(project) = data["project"].as_str().filter(|p| p.starts_with("doc_") && p.len() <= 64
+        && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')) else {
+        return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid project"}));
+    };
+    let manifest = match std::fs::read(data_dir(cfg).join(project).join("manifest.json")) {
+        Ok(bytes) => bytes,
+        Err(_) => return reply(StatusCode::NOT_FOUND, json!({"error":"Project not found"})),
+    };
+    let manifest: Value = match serde_json::from_slice(&manifest) {
+        Ok(value) => value,
+        Err(_) => return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid project manifest"})),
+    };
+    if manifest["id"].as_str() != Some(project) {
+        return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid project manifest"}));
+    }
+    let revision = data["revision"].as_i64().filter(|v| *v >= 0).unwrap_or(0);
+    let floors = data["floors"].as_array().cloned().unwrap_or_default();
+    let mut preview = Vec::new();
+    for floor in floors {
+        let Some(floor_id) = floor["id"].as_str().filter(|v| !v.is_empty() && v.len() <= 64) else {
+            continue;
+        };
+        let name = floor["name"].as_str().unwrap_or("Floor");
+        let row: Option<(String, i64, i64, String, String, Option<i64>, Option<String>, Option<String>)> =
+            db.query_row(
+                "SELECT s.slug, s.canvas_width, s.canvas_height, COALESCE(s.walls_json, '[]'), COALESCE(s.lights_json, '[]'),
+                        p.source_rev, p.walls_json, p.lights_json
+                 FROM cartographer_playable p JOIN schematics s ON s.id = p.schematic_id
+                 WHERE p.world_id = ?1 AND s.world_id = ?1 AND p.project_id = ?2 AND p.floor_id = ?3",
+                rusqlite::params![world, project, floor_id],
+                |r| Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, Option<i64>>(5)?,
+                    r.get::<_, Option<String>>(6)?,
+                    r.get::<_, Option<String>>(7)?,
+                )),
+            ).optional().unwrap_or(None);
+        let (has_copy, slug, width, height, wall_conflict, light_conflict, source_rev, project_changed) =
+            match row {
+                Some((slug, width, height, current_walls, current_lights, source_rev, base_walls, base_lights)) => {
+                    let json_eq = |baseline: Option<&str>, current: &str| -> Option<bool> {
+                        let base = serde_json::from_str::<Value>(baseline?).ok()?;
+                        let cur = serde_json::from_str::<Value>(current).ok()?;
+                        Some(base == cur)
+                    };
+                    let wc = json_eq(base_walls.as_deref(), &current_walls).map(|same| !same).unwrap_or(true);
+                    let lc = json_eq(base_lights.as_deref(), &current_lights).map(|same| !same).unwrap_or(true);
+                    let changed = source_rev.map(|saved| saved != revision).unwrap_or(true);
+                    (true, Some(slug), width, height, wc, lc, source_rev, changed)
+                }
+                None => (false, None, 0, 0, false, false, None, true),
+            };
+        preview.push(json!({
+            "id":floor_id, "name":name, "has_copy":has_copy, "slug":slug, "width":width, "height":height,
+            "source_rev":source_rev, "copy_rev":revision, "project_changed":project_changed,
+            "artwork":project_changed, "geometry":project_changed,
+            "wall_conflict":wall_conflict, "light_conflict":light_conflict,
+            "preserved":["tokens","fog","combat","character positions"],
+        }));
+    }
+    reply(StatusCode::OK, json!({"project":project, "revision":revision, "floors":preview}))
+}
+
 pub fn playable_floors(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Response<Body> {
     let Some((db, page)) = gm_ctx(cfg, "POST", uri, headers) else {
         return reply(StatusCode::FORBIDDEN, json!({"error":"GM access required"}));

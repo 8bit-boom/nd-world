@@ -77,6 +77,201 @@
   if (playable) playable.addEventListener('click', () => updatePlayable('create'));
   if (refresh) refresh.addEventListener('click', () => updatePlayable('refresh'));
   if (geometry) geometry.addEventListener('click', () => updatePlayable('geometry'));
+  const updateScene = document.getElementById('carto-update-scene');
+  const updateDialog = document.getElementById('carto-update-dialog');
+  if (updateScene && updateDialog) {
+    const close = document.getElementById('carto-update-close');
+    const body = document.getElementById('carto-update-body');
+    const summary = document.getElementById('carto-update-summary');
+    const apply = document.getElementById('carto-update-apply');
+    let updateState;
+    close.addEventListener('click', () => updateDialog.close());
+    updateScene.addEventListener('click', async () => {
+      const status = document.getElementById('carto-workspace-status');
+      if (document.getElementById('carto-studio-wrap').hidden) {
+        status.hidden = false;
+        status.textContent = 'Switch to Map Maker to choose a project.';
+        return;
+      }
+      const studioDoc = document.getElementById('carto-studio-frame').contentDocument;
+      const picker = studioDoc && studioDoc.getElementById('doc-select');
+      const id = picker && picker.value;
+      const name = picker && picker.selectedOptions[0] && picker.selectedOptions[0].textContent;
+      if (!id) {
+        status.hidden = false;
+        status.textContent = 'Wait for Map Maker to finish loading a project.';
+        return;
+      }
+      updateScene.disabled = true;
+      body.textContent = 'Inspecting linked playable floors…';
+      summary.textContent = '';
+      apply.disabled = true;
+      async function request(url, options) {
+        const response = await fetch(url, options);
+        if (!response.ok) throw new Error((await response.text()) || 'HTTP ' + response.status);
+        return response;
+      }
+      try {
+        const base = '/cartographer/studio/api/docs/' + encodeURIComponent(id);
+        await request(base + '/save', { method: 'POST' });
+        const source = await (await request(base)).json();
+        if (!Array.isArray(source.floors) || !Number.isSafeInteger(source.rev) || source.rev < 0) {
+          throw new Error('The project or revision data is unavailable.');
+        }
+        const previewUrl = new URL('/api/cartographer/playable-preview', window.location.origin);
+        if (params.get('w')) previewUrl.searchParams.set('w', params.get('w'));
+        const preview = await (await request(previewUrl.pathname + previewUrl.search, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ project: id, revision: source.rev, floors: source.floors }),
+        })).json();
+        updateState = { id, name, source, preview };
+        body.replaceChildren();
+        const note = document.createElement('p');
+        note.className = 'carto-note';
+        note.textContent = 'Changes affect only the approved copies. Tokens, fog, combat, and character positions are preserved. Wall or light updates stop if playable-side edits differ.';
+        body.append(note);
+        const table = document.createElement('table');
+        table.className = 'carto-update-table';
+        const thead = document.createElement('thead');
+        const headRow = document.createElement('tr');
+        ['Floor','Playable copy','Artwork','Walls & lights','Apply'].forEach(label => {
+          const th = document.createElement('th');
+          th.textContent = label;
+          headRow.append(th);
+        });
+        thead.append(headRow);
+        table.append(thead);
+        const tbody = document.createElement('tbody');
+        let actionable = 0;
+        preview.floors.forEach(floor => {
+          const tr = document.createElement('tr');
+          const nameCell = document.createElement('td');
+          nameCell.textContent = floor.name;
+          tr.append(nameCell);
+          const copyCell = document.createElement('td');
+          const copyBadge = document.createElement('span');
+          copyBadge.className = 'carto-update-badge ' + (floor.has_copy ? 'ready' : 'conflict');
+          copyBadge.textContent = floor.has_copy ? (floor.slug || 'linked') : 'missing';
+          copyCell.append(copyBadge);
+          tr.append(copyCell);
+          const artworkCell = document.createElement('td');
+          const artworkBadge = document.createElement('span');
+          artworkBadge.className = 'carto-update-badge ' + (floor.project_changed ? 'change' : 'ready');
+          artworkBadge.textContent = floor.project_changed ? 'changed since copy' : 'unchanged';
+          artworkCell.append(artworkBadge);
+          tr.append(artworkCell);
+          const geometryCell = document.createElement('td');
+          if (floor.wall_conflict || floor.light_conflict) {
+            const conflict = document.createElement('span');
+            conflict.className = 'carto-update-badge conflict';
+            conflict.textContent = [floor.wall_conflict ? 'walls' : '', floor.light_conflict ? 'lights' : ''].filter(Boolean).join(' + ') + ' edited in play';
+            geometryCell.append(conflict);
+          } else {
+            const geometryBadge = document.createElement('span');
+            geometryBadge.className = 'carto-update-badge ' + (floor.project_changed ? 'change' : 'ready');
+            geometryBadge.textContent = floor.project_changed ? 'update available' : 'baseline unchanged';
+            geometryCell.append(geometryBadge);
+          }
+          tr.append(geometryCell);
+          const applyCell = document.createElement('td');
+          if (floor.has_copy && floor.project_changed) {
+            actionable++;
+            const artwork = document.createElement('label');
+            const artworkBox = document.createElement('input');
+            artworkBox.type = 'checkbox';
+            artworkBox.checked = true;
+            artworkBox.dataset.role = 'artwork';
+            artworkBox.dataset.floor = floor.id;
+            artwork.append(artworkBox, ' artwork ');
+            applyCell.append(artwork);
+            if (!floor.wall_conflict && !floor.light_conflict) {
+              const geometryBox = document.createElement('input');
+              geometryBox.type = 'checkbox';
+              geometryBox.checked = true;
+              geometryBox.dataset.role = 'geometry';
+              geometryBox.dataset.floor = floor.id;
+              applyCell.append(document.createTextNode(' '));
+              const geometryLabel = document.createElement('label');
+              geometryLabel.append(geometryBox, ' walls/lights');
+              applyCell.append(geometryLabel);
+            }
+          } else {
+            applyCell.textContent = floor.has_copy ? 'no changes' : 'create copy first';
+          }
+          tr.append(applyCell);
+          tbody.append(tr);
+        });
+        table.append(tbody);
+        body.append(table);
+        summary.textContent = actionable ? actionable + ' floor(s) can be updated.' : 'No linked playable changes need applying.';
+        apply.disabled = !actionable;
+        updateDialog.showModal();
+      } catch (error) {
+        status.hidden = false;
+        status.textContent = 'Could not inspect playable scene: ' + error.message;
+      } finally {
+        updateScene.disabled = false;
+      }
+    });
+    apply.addEventListener('click', async () => {
+      if (!updateState) return;
+      apply.disabled = true;
+      updateScene.disabled = true;
+      body.setAttribute('aria-busy', 'true');
+      const status = document.getElementById('carto-workspace-status');
+      const base = '/cartographer/studio/api/docs/' + encodeURIComponent(updateState.id);
+      const importUrl = new URL('/maps/schematic/import-uvtt', window.location.origin);
+      if (params.get('w')) importUrl.searchParams.set('w', params.get('w'));
+      async function request(url, options) {
+        const response = await fetch(url, options);
+        if (!response.ok) throw new Error((await response.text()) || 'HTTP ' + response.status);
+        return response;
+      }
+      const results = [];
+      try {
+        await request(base + '/save', { method: 'POST' });
+        for (const floor of updateState.source.floors) {
+          const artwork = body.querySelector('input[data-role="artwork"][data-floor="' + floor.id + '"]:checked');
+          const geometryChecked = body.querySelector('input[data-role="geometry"][data-floor="' + floor.id + '"]:checked');
+          if (!artwork && !geometryChecked) continue;
+          const exported = await request(base + '/export/uvtt?floor=' + encodeURIComponent(floor.id) + '&ppc=32&audience=player');
+          const modes = artwork ? ['refresh'] : [];
+          if (geometryChecked) modes.push('geometry');
+          for (const mode of modes) {
+            const form = new FormData();
+            form.append('file', await exported.blob(), 'map-maker-floor.dd2vtt');
+            form.append('name', (updateState.name || 'Map') + ' - ' + floor.name);
+            form.append('project', updateState.id);
+            form.append('floor', floor.id);
+            form.append('mode', mode);
+            form.append('revision', String(updateState.source.rev));
+            const imported = await (await request(importUrl.pathname + importUrl.search, { method: 'POST', body: form })).json();
+            results.push({ floor: floor.name, mode, ok: true, warnings: imported.warnings || [] });
+          }
+        }
+        summary.textContent = 'Updated ' + results.length + ' floor action(s).';
+        for (const result of results) {
+          const line = document.createElement('p');
+          line.className = 'carto-note';
+          line.textContent = result.floor + ': ' + (result.mode === 'geometry' ? 'walls/lights' : 'artwork') + ' updated.';
+          body.append(line);
+        }
+        status.hidden = false;
+        status.textContent = 'Playable scene update complete.';
+      } catch (error) {
+        const line = document.createElement('p');
+        line.className = 'carto-note';
+        line.textContent = 'Update stopped safely: ' + error.message;
+        body.append(line);
+        status.hidden = false;
+        status.textContent = 'Playable scene update stopped safely.';
+      } finally {
+        body.removeAttribute('aria-busy');
+        apply.disabled = false;
+        updateScene.disabled = false;
+      }
+    });
+  }
   const playableFloors = document.getElementById('carto-playable-floors');
   if (playableFloors) playableFloors.addEventListener('click', async () => {
     const status = document.getElementById('carto-workspace-status');
@@ -138,6 +333,7 @@
         form.append('project', id);
         form.append('floor', floor.id);
         form.append('mode', 'ensure');
+        form.append('revision', String(source.rev));
         const prepared = await (await request(importUrl.pathname + importUrl.search, { method: 'POST', body: form })).json();
         if (!Number.isInteger(prepared.width) || !Number.isInteger(prepared.height) || typeof prepared.image_url !== 'string') {
           throw new Error('The server did not return the playable floor dimensions.');

@@ -62,6 +62,7 @@ pub(crate) fn ensure_cartographer_playable(db: &rusqlite::Connection) -> Result<
             image_url TEXT NOT NULL,
             walls_json TEXT,
             lights_json TEXT,
+            source_rev INTEGER,
             PRIMARY KEY (project_id, floor_id, world_id)
         );"
     ).map_err(|e| e.to_string())?;
@@ -72,7 +73,7 @@ pub(crate) fn ensure_cartographer_playable(db: &rusqlite::Connection) -> Result<
         rows
     };
     let mut changed = before == 0;
-    for column in ["walls_json", "lights_json"] {
+    for column in ["walls_json", "lights_json", "source_rev"] {
         if !columns.iter().any(|name| name == column) {
             db.execute(&format!("ALTER TABLE cartographer_playable ADD COLUMN {column} TEXT"), []).map_err(|e| e.to_string())?;
             changed = true;

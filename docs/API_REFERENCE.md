@@ -658,6 +658,7 @@ The next confirmed session also shows on the in-world calendar page and in each 
 | GET | `/api/cartographer/map-overlays/{slug}` | GM | Reads an active-world image map's pins and regions for copying into a Map Maker project. |
 | GET | `/api/cartographer/schematic-floors/{slug}` | GM | Reads active-world schematic floors, visible pins, floor links and solid lines and paths for copying into Map Maker. |
 | POST | `/api/cartographer/playable-floors` | GM | Atomically groups prepared Map Maker floor copies in the active world and adds validated character-travel pins without replacing existing elements. |
+| POST | `/api/cartographer/playable-preview` | GM | Inspects a Map Maker project and every linked playable floor, reporting project revision, missing copies, playable-side conflicts, and which artwork or geometry updates are available. |
 | GET, POST | `/api/cartographer/links` | GM | Lists active-world project links or links a newly copied project to an existing map (`project`, `kind`, `slug`). |
 
 ## Schematics

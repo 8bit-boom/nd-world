@@ -70,6 +70,12 @@ async fn playable_refresh_preserves_gameplay_and_refuses_changed_geometry() {
     let (status, _, body) = request(&app, "POST", "/maps/schematic/import-uvtt", cookie, "multipart/form-data; boundary=boundary", import("create")).await;
     assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
     let slug = serde_json::from_slice::<Value>(&body).unwrap()["slug"].as_str().unwrap().to_owned();
+    let preview_body = json!({"project":project,"revision":0,"floors":[{"id":floor,"name":"Ground"}]});
+    let (status, _, body) = request(&app, "POST", "/api/cartographer/playable-preview", cookie, "application/json", serde_json::to_vec(&preview_body).unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let preview: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(preview["floors"][0]["has_copy"], true);
+    assert_eq!(preview["floors"][0]["project_changed"], false);
     let db = rusqlite::Connection::open(&cfg.db_path).unwrap();
     let original_walls: String = db.query_row("SELECT walls_json FROM schematics WHERE slug = ?1", [&slug], |r| r.get(0)).unwrap();
     let mut changed_geometry: Value = serde_json::from_slice(&uvtt).unwrap();

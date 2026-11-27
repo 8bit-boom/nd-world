@@ -390,7 +390,7 @@ test('creates linked playable floors and converts stair coordinates', async () =
   await handler();
   const imports = requests.filter(r => r.url.startsWith('/maps/schematic/import-uvtt'));
   assert.equal(imports.length, 2);
-  assert.deepEqual(imports[0].options.body.parts.slice(-3), [['project', 'doc_one'], ['floor', 'fl_one'], ['mode', 'ensure']]);
+  assert.deepEqual(imports[0].options.body.parts.slice(-4), [['project', 'doc_one'], ['floor', 'fl_one'], ['mode', 'ensure'], ['revision', '5']]);
   const group = JSON.parse(requests.find(r => r.url.startsWith('/api/cartographer/playable-floors')).options.body);
   assert.equal(group.project, 'doc_one');
   assert.deepEqual(group.floors[0].links, [{ id: 'stairs', label: 'Up', destination: 'fl_two', x: 32, y: 64, destination_x: 96, destination_y: 128 }]);
@@ -423,6 +423,49 @@ test('does not link floors if the project changes during preparation', async () 
   await handler();
   assert.match(status.textContent, /project changed/);
   assert.ok(!requests.some(url => url.startsWith('/api/cartographer/playable-floors')));
+});
+
+test('shows a playable-scene update preview before applying', async () => {
+  let handler;
+  const status = { hidden: true, textContent: '' };
+  const previewBody = { replaceChildren() {}, append() {}, setAttribute() {}, removeAttribute() {}, textContent: '' };
+  const dialog = { showModal() {}, close() {} };
+  const apply = { disabled: true, addEventListener() {} };
+  const close = {};
+  const summary = { textContent: '' };
+  const frame = { contentDocument: {
+    getElementById: () => ({ value: 'doc_one', selectedOptions: [{ textContent: 'Tower' }] }),
+  } };
+  const elements = {
+    'carto-update-scene': { addEventListener: (_, fn) => { handler = fn; }, disabled: false },
+    'carto-update-dialog': dialog, 'carto-update-close': { addEventListener() {}, ...close },
+    'carto-update-body': previewBody, 'carto-update-summary': summary, 'carto-update-apply': apply,
+    'carto-workspace-status': status, 'carto-studio-frame': frame, 'carto-studio-wrap': {},
+  };
+  function makeElement(tag) {
+    const el = { tagName: tag, type: '', checked: false, dataset: {}, className: '', textContent: '', children: [],
+      append(...items) { this.children.push(...items); }, appendChild(item) { this.children.push(item); },
+      replaceChildren() { this.children = []; }, setAttribute() {}, removeAttribute() {}, querySelector() { return null; } };
+    return el;
+  }
+  const fetch = async (url, options) => {
+    if (url.endsWith('/save')) return { ok: true };
+    if (url.endsWith('/docs/doc_one')) return { ok: true, json: async () => ({ rev: 3, floors: [{ id: 'fl_one', name: 'Ground', markers: [] }] }) };
+    if (url.includes('/playable-preview')) return { ok: true, json: async () => ({
+      floors: [{ id: 'fl_one', name: 'Ground', has_copy: true, slug: 'tower-ground', project_changed: true,
+        wall_conflict: false, light_conflict: false }],
+    }) };
+    return { ok: true };
+  };
+  vm.runInNewContext(script, {
+    document: { getElementById: id => elements[id] || null, createElement: makeElement, createTextNode: text => ({ textContent: text }) },
+    window: { location: { search: '', origin: 'http://example.test' } },
+    URLSearchParams, URL, fetch, FormData,
+  });
+  await handler();
+  assert.equal(dialog.showModal, dialog.showModal);
+  assert.equal(apply.disabled, false);
+  assert.match(summary.textContent, /1 floor/);
 });
 
 test('does not copy a hidden studio floor while viewing an existing map', async () => {

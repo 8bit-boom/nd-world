@@ -50,6 +50,11 @@ them. Existing playable copies must have matching artwork; refresh an out-of-dat
 copy first. This groups the copies, not the original maps. If preparation fails,
 copies already made remain in Maps; inspect them before retrying. Later edits to
 stairs, walls or lights do not automatically update the playable floors.
+**Update playable scene** inspects all linked floors at once and shows an
+actionable preview. It offers approved artwork and wall/light updates, flags
+play-side wall or light conflicts instead of overwriting them, and preserves
+tokens, fog, combat and character positions. No update is applied until the GM
+approves the preview.
 
 ## Maps — image-based, with markers and regions
 

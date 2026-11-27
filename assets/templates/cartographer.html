@@ -15,6 +15,17 @@
 .carto-frame { width: 100%; height: calc(100vh - 180px); border: none; display: block; min-height: 500px; }
 .carto-note { color: var(--text-dim); font-size: .85rem; line-height: 1.7; }
 .carto-note code { background: var(--bg3); border: 1px solid var(--border); padding: .1rem .4rem; border-radius: 2px; font-size: .85rem; color: var(--neon3); }
+.carto-update-dialog { width: min(760px, calc(100vw - 2rem)); border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); padding: 0; }
+.carto-update-dialog::backdrop { background: rgba(0,0,0,.72); }
+.carto-update-head,.carto-update-actions { display:flex; align-items:center; justify-content:space-between; gap:.6rem; padding:.8rem 1rem; border-bottom:1px solid var(--border); }
+.carto-update-actions { border-top:1px solid var(--border); border-bottom:0; }
+.carto-update-body { max-height:60vh; overflow:auto; padding:.8rem 1rem; }
+.carto-update-table { width:100%; border-collapse:collapse; font-size:.82rem; }
+.carto-update-table th,.carto-update-table td { text-align:left; padding:.45rem .35rem; border-bottom:1px solid var(--border); vertical-align:top; }
+.carto-update-badge { display:inline-block; padding:.08rem .35rem; border-radius:999px; border:1px solid var(--border); color:var(--text-dim); }
+.carto-update-badge.change { border-color:#ffc857; color:#ffc857; }
+.carto-update-badge.conflict { border-color:#ff6b6b; color:#ff8a8a; }
+.carto-update-badge.ready { border-color:#4caf50; color:#81c784; }
 </style>
 
 <div class="carto-wrap">
@@ -32,6 +43,7 @@
     <button type="button" class="carto-btn" id="carto-playable-refresh">Refresh playable copy artwork</button>
     <button type="button" class="carto-btn" id="carto-playable-geometry">Refresh playable walls and lights</button>
     <button type="button" class="carto-btn" id="carto-playable-floors">Create linked playable floors</button>
+    <button type="button" class="carto-btn" id="carto-update-scene">Update playable scene</button>
     <a class="carto-btn" id="carto-playable-link" hidden>Open playable copy</a>
   </div>
   {% if existing_maps %}
@@ -50,6 +62,19 @@
   </div>
   <p id="carto-copy-hint" class="carto-note" role="status" hidden></p>
   {% endif %}
+  <dialog class="carto-update-dialog" id="carto-update-dialog">
+    <div class="carto-update-head">
+      <strong>Update playable scene</strong>
+      <button type="button" class="carto-btn" id="carto-update-close" aria-label="Close">Close</button>
+    </div>
+    <div class="carto-update-body" id="carto-update-body">
+      <p class="carto-note">Save and inspect this project for playable changes.</p>
+    </div>
+    <div class="carto-update-actions">
+      <span id="carto-update-summary" class="carto-note"></span>
+      <button type="button" class="carto-btn" id="carto-update-apply" disabled>Apply approved updates</button>
+    </div>
+  </dialog>
   <div class="carto-frame-wrap carto-studio-wrap" id="carto-studio-wrap">
     <iframe class="carto-frame" id="carto-studio-frame" src="{{ cartographer_embed_url }}" title="nd-cartographer map studio" allow="clipboard-read; clipboard-write" loading="lazy"></iframe>
   </div>
@@ -66,5 +91,6 @@
   <p class="carto-note"><strong>Existing maps and schematics open in their original editors.</strong> Copy to Map Maker creates a separate project with the background, image-map pins and regions, or schematic floors, walls, lights, visible pins, visible tokens, floor links and solid lines and pencil paths. Lines and paths become approximate paint strokes: their width, ends and stacking can differ. Visible token names become informational Map Maker markers, not playable combat tokens. Hidden elements, dashed lines, entity links, fog, combat, and other gameplay data stay in the original unless a separate playable copy is linked. Character travel still uses the original map unless a linked playable floor group is created. Changes to copies are independent. Republishing a Map Maker project can replace a schematic's manually edited elements, including tokens.</p>
   <p class="carto-note">Create playable copy makes a new schematic from the current floor's player-filtered picture, walls and lights. Inspect the picture before showing it to players. Tokens and floor travel can be added in its editor. Artwork refresh replaces only that copy's picture; walls and lights refresh is separate and only succeeds while neither has been changed in the playable copy. Both refuse a changed background, size or grid. Tokens, fog and other gameplay data stay unchanged.</p>
   <p class="carto-note">Create linked playable floors prepares copies of every floor and connects its Map Maker stairs for character travel. Existing playable copies must have matching artwork. If linking fails, any copies already created remain in Maps; inspect them before retrying.</p>
+  <p class="carto-note"><strong>Update playable scene</strong> inspects all linked floors, previews available artwork and geometry updates, and refuses to overwrite playable-side wall or light edits. Tokens, fog, combat and character positions remain intact.</p>
 </div>
 {% endblock %}
