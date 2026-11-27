@@ -43,7 +43,59 @@ fn run_schema(db: &rusqlite::Connection) -> Option<()> {
     }
     let _ = ensure_scene_rev(db);
     ensure_schematic_floors(db).ok()?;
+    ensure_cartographer_links(db).ok()?;
+    ensure_cartographer_playable(db).ok()?;
     Some(())
+}
+
+pub(crate) fn ensure_cartographer_playable(db: &rusqlite::Connection) -> Result<bool, String> {
+    let before: i64 = db.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'cartographer_playable'",
+        [], |r| r.get(0),
+    ).map_err(|e| e.to_string())?;
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS cartographer_playable (
+            project_id TEXT NOT NULL,
+            floor_id TEXT NOT NULL,
+            world_id INTEGER NOT NULL,
+            schematic_id INTEGER NOT NULL UNIQUE,
+            image_url TEXT NOT NULL,
+            walls_json TEXT,
+            lights_json TEXT,
+            PRIMARY KEY (project_id, floor_id, world_id)
+        );"
+    ).map_err(|e| e.to_string())?;
+    let columns = {
+        let mut st = db.prepare("PRAGMA table_info(cartographer_playable)").map_err(|e| e.to_string())?;
+        let rows = st.query_map([], |r| r.get::<_, String>(1)).map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+        rows
+    };
+    let mut changed = before == 0;
+    for column in ["walls_json", "lights_json"] {
+        if !columns.iter().any(|name| name == column) {
+            db.execute(&format!("ALTER TABLE cartographer_playable ADD COLUMN {column} TEXT"), []).map_err(|e| e.to_string())?;
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
+pub(crate) fn ensure_cartographer_links(db: &rusqlite::Connection) -> Result<bool, String> {
+    let before: i64 = db.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'cartographer_links'",
+        [], |r| r.get(0),
+    ).map_err(|e| e.to_string())?;
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS cartographer_links (
+            project_id TEXT PRIMARY KEY NOT NULL,
+            world_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            slug TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_cartographer_links_map ON cartographer_links(world_id, kind, slug);",
+    ).map_err(|e| e.to_string())?;
+    Ok(before == 0)
 }
 
 pub(crate) fn ensure_scene_rev(db: &rusqlite::Connection) -> Result<bool, String> {
@@ -310,6 +362,16 @@ pub(crate) fn heal_schema(db: &rusqlite::Connection) -> Result<Vec<String>, Stri
         Ok(false) => {}
         Err(e) => return Err(e),
     }
+    match ensure_cartographer_links(db) {
+        Ok(true) => done.push("created table cartographer_links".into()),
+        Ok(false) => {}
+        Err(e) => return Err(e),
+    }
+    match ensure_cartographer_playable(db) {
+        Ok(true) => done.push("created table cartographer_playable".into()),
+        Ok(false) => {}
+        Err(e) => return Err(e),
+    }
     Ok(done)
 }
 
@@ -558,6 +620,20 @@ fn prune_snapshots(dir: &std::path::Path, keep: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn playable_geometry_baselines_migrate_without_changing_existing_links() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE cartographer_playable (
+            project_id TEXT, floor_id TEXT, world_id INTEGER, schematic_id INTEGER, image_url TEXT
+        ); INSERT INTO cartographer_playable VALUES ('doc_a', 'floor', 1, 7, '/uploads/a.webp');").unwrap();
+        assert!(ensure_cartographer_playable(&db).unwrap());
+        assert!(!ensure_cartographer_playable(&db).unwrap());
+        let row: (String, Option<String>, Option<String>) = db.query_row(
+            "SELECT image_url, walls_json, lights_json FROM cartographer_playable WHERE schematic_id = 7",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!(row, ("/uploads/a.webp".into(), None, None));
+    }
 
     #[test]
     fn heal_adds_what_is_missing_and_leaves_the_rest() {

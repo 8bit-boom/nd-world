@@ -11,10 +11,10 @@
 .carto-status { font-size: .82rem; color: var(--text-dim); display: flex; align-items: center; gap: .5rem; }
 .carto-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; background: #4caf50; }
 .carto-frame-wrap { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.carto-frame-wrap[hidden] { display: none; }
 .carto-frame { width: 100%; height: calc(100vh - 180px); border: none; display: block; min-height: 500px; }
 .carto-note { color: var(--text-dim); font-size: .85rem; line-height: 1.7; }
 .carto-note code { background: var(--bg3); border: 1px solid var(--border); padding: .1rem .4rem; border-radius: 2px; font-size: .85rem; color: var(--neon3); }
-@media (max-width: 768px) { .carto-frame-wrap { display: none; } }
 </style>
 
 <div class="carto-wrap">
@@ -25,9 +25,46 @@
       <a href="{{ cartographer_embed_url }}" target="_blank" rel="noopener" class="carto-btn">↗ Open in new tab</a>
     </div>
   </div>
-  <div class="carto-frame-wrap">
-    <iframe class="carto-frame" src="{{ cartographer_embed_url }}" title="nd-cartographer map studio" allow="clipboard-read; clipboard-write" loading="lazy"></iframe>
+  {% if existing_maps_error %}<p role="alert" class="carto-note">{{ existing_maps_error }}</p>{% endif %}
+  {% if cartographer_links_error %}<p role="alert" class="carto-note">{{ cartographer_links_error }}</p>{% endif %}
+  <div class="carto-actions">
+    <button type="button" class="carto-btn" id="carto-playable-copy">Create playable copy of current floor</button>
+    <button type="button" class="carto-btn" id="carto-playable-refresh">Refresh playable copy artwork</button>
+    <button type="button" class="carto-btn" id="carto-playable-geometry">Refresh playable walls and lights</button>
+    <button type="button" class="carto-btn" id="carto-playable-floors">Create linked playable floors</button>
+    <a class="carto-btn" id="carto-playable-link" hidden>Open playable copy</a>
   </div>
-  <p class="carto-note">Paint battle maps, generate dungeons and whole worlds, and publish them straight into this world as playable schematics. The studio is built into nd-world — no separate install; your maps are kept in <code>{{ cartographer.dir }}/data</code>. Once a map is published, open it under <a href="{{ '/maps'|wq }}">Maps</a> and press <strong>▶ Play</strong> to turn it into a live tactical scene with your party, the room's NPCs and its treasure.</p>
+  {% if existing_maps %}
+  <div class="carto-actions">
+    <button type="button" class="carto-btn" id="carto-show-studio" aria-pressed="true">Map Maker</button>
+    <label for="carto-existing-select">Existing map</label>
+    <select id="carto-existing-select">
+      <option value="">Choose a map…</option>
+      {% for map in existing_maps %}
+      <option data-kind="{{ map.kind }}" data-slug="{{ map.slug }}" data-name="{{ map.name }}" data-image="{{ map.image_url or '' }}" data-image-unsupported="{{ 'yes' if map.image_unsupported else 'no' }}" data-width="{{ map.width }}" data-height="{{ map.height }}" data-grid-cell="{{ map.grid_cell }}" data-html="{{ 'yes' if map.is_html else 'no' }}" value="{{ (('/maps/schematic/' if map.kind == 'schematic' else '/maps/') ~ map.slug ~ '?embed=1')|wq }}">{{ map.name }} ({{ 'schematic' if map.kind == 'schematic' else 'map' }})</option>
+      {% endfor %}
+    </select>
+    <button type="button" class="carto-btn" id="carto-open-existing" disabled>Open here</button>
+    <button type="button" class="carto-btn" id="carto-copy-background" title="Copy supported map data into a separate project" disabled>Copy to Map Maker</button>
+    <a class="carto-btn" id="carto-existing-tab" target="_blank" rel="noopener" hidden>↗ Open selected in new tab</a>
+  </div>
+  <p id="carto-copy-hint" class="carto-note" role="status" hidden></p>
+  {% endif %}
+  <div class="carto-frame-wrap carto-studio-wrap" id="carto-studio-wrap">
+    <iframe class="carto-frame" id="carto-studio-frame" src="{{ cartographer_embed_url }}" title="nd-cartographer map studio" allow="clipboard-read; clipboard-write" loading="lazy"></iframe>
+  </div>
+  {% if existing_maps %}
+  <div class="carto-frame-wrap" id="carto-existing-wrap" hidden>
+    <iframe class="carto-frame" id="carto-existing-frame" title="Existing map editor" loading="lazy"></iframe>
+  </div>
+  {% endif %}
+  <p id="carto-workspace-status" class="carto-note" role="status" hidden></p>
+  <script type="application/json" id="carto-links">{{ cartographer_links|tojson }}</script>
+  <script src="/static/js/cartographer-workspace.js?v={{ asset_v('js/cartographer-workspace.js') }}" defer></script>
+  <p class="carto-note">Paint battle maps and generate dungeons and worlds. The studio is built into nd-world — no separate install; projects are kept in <code>{{ cartographer.dir }}/data</code>.</p>
+  <p class="carto-note"><strong>Back up this project folder separately:</strong> Full Backup includes playable schematics and their links, but does not include Map Maker project files.</p>
+  <p class="carto-note"><strong>Existing maps and schematics open in their original editors.</strong> Copy to Map Maker creates a separate project with the background, image-map pins and regions, or schematic floors, walls, lights, visible pins, visible tokens, floor links and solid lines and pencil paths. Lines and paths become approximate paint strokes: their width, ends and stacking can differ. Visible token names become informational Map Maker markers, not playable combat tokens. Hidden elements, dashed lines, entity links, fog, combat, and other gameplay data stay in the original unless a separate playable copy is linked. Character travel still uses the original map unless a linked playable floor group is created. Changes to copies are independent. Republishing a Map Maker project can replace a schematic's manually edited elements, including tokens.</p>
+  <p class="carto-note">Create playable copy makes a new schematic from the current floor's player-filtered picture, walls and lights. Inspect the picture before showing it to players. Tokens and floor travel can be added in its editor. Artwork refresh replaces only that copy's picture; walls and lights refresh is separate and only succeeds while neither has been changed in the playable copy. Both refuse a changed background, size or grid. Tokens, fog and other gameplay data stay unchanged.</p>
+  <p class="carto-note">Create linked playable floors prepares copies of every floor and connects its Map Maker stairs for character travel. Existing playable copies must have matching artwork. If linking fails, any copies already created remain in Maps; inspect them before retrying.</p>
 </div>
 {% endblock %}

@@ -599,9 +599,34 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
                     .body(Body::from("{\"detail\":\"GM access required\"}"))
                     .unwrap();
             }
+            let mut req = req;
+            let studio_css = req.method() == axum::http::Method::GET
+                && req.uri().path() == format!("{}/app.css", cartographer::STUDIO_BASE);
+            let deleted_project = if req.method() == axum::http::Method::DELETE {
+                req.uri().path().strip_prefix("/cartographer/studio/api/docs/")
+                    .filter(|id| !id.is_empty() && !id.contains('/')).map(str::to_owned)
+            } else { None };
+            if studio_css {
+                req.headers_mut().remove(axum::http::header::IF_NONE_MATCH);
+                req.headers_mut().remove(axum::http::header::IF_MODIFIED_SINCE);
+            }
             use tower::ServiceExt;
             return match app.studio.clone().oneshot(req).await {
-                Ok(resp) => resp,
+                Ok(resp) if studio_css => cartographer::fix_studio_css(resp).await,
+                Ok(resp) => {
+                    if resp.status().is_success() {
+                        if let Some(project) = deleted_project {
+                            let cfg = app.cfg.clone();
+                            let result = tokio::task::spawn_blocking(move || cartographer::remove_project_links(&cfg, &project)).await;
+                            if !matches!(result, Ok(Ok(()))) {
+                                eprintln!("nd-gateway: project was deleted, but its Map Maker links could not be removed: {result:?}");
+                                return Response::builder().status(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+                                    .body(Body::from("Project deleted, but its map links could not be removed; check the server log")).unwrap();
+                            }
+                        }
+                    }
+                    resp
+                },
                 Err(infallible) => match infallible {},
             };
         }
@@ -611,6 +636,45 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || cartographer::get(&pages_, &cfg, &uri, &headers, is_page)).await {
                 return resp;
             }
+        }
+        if req.method() == axum::http::Method::GET && path.starts_with("/api/cartographer/map-overlays/") {
+            let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
+            return match tokio::task::spawn_blocking(move || cartographer::import_map_overlays(&cfg, &uri, &headers)).await {
+                Ok(resp) => resp,
+                Err(_) => Response::builder().status(axum::http::StatusCode::INTERNAL_SERVER_ERROR).body(Body::from("Could not load map overlays")).unwrap(),
+            };
+        }
+        if req.method() == axum::http::Method::GET && path.starts_with("/api/cartographer/schematic-floors/") {
+            let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
+            return match tokio::task::spawn_blocking(move || cartographer::import_schematic_floors(&cfg, &uri, &headers)).await {
+                Ok(resp) => resp,
+                Err(_) => Response::builder().status(axum::http::StatusCode::INTERNAL_SERVER_ERROR).body(Body::from("Could not load schematic floors")).unwrap(),
+            };
+        }
+        if req.method() == axum::http::Method::POST && path == "/api/cartographer/playable-floors" {
+            let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
+            let body = match axum::body::to_bytes(req.into_body(), 1024 * 1024).await {
+                Ok(bytes) => bytes,
+                Err(_) => return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap(),
+            };
+            return match tokio::task::spawn_blocking(move || cartographer::playable_floors(&cfg, &uri, &headers, &body)).await {
+                Ok(resp) => resp,
+                Err(_) => Response::builder().status(axum::http::StatusCode::INTERNAL_SERVER_ERROR).body(Body::from("Could not link playable floors")).unwrap(),
+            };
+        }
+        if matches!(*req.method(), axum::http::Method::GET | axum::http::Method::POST) && path == "/api/cartographer/links" {
+            let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
+            let post = req.method() == axum::http::Method::POST;
+            let body = if post {
+                match axum::body::to_bytes(req.into_body(), 4096).await {
+                    Ok(bytes) => Some(bytes),
+                    Err(_) => return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap(),
+                }
+            } else { None };
+            return match tokio::task::spawn_blocking(move || cartographer::links(&cfg, &uri, &headers, body.as_deref())).await {
+                Ok(resp) => resp,
+                Err(_) => Response::builder().status(axum::http::StatusCode::INTERNAL_SERVER_ERROR).body(Body::from("Could not manage project links")).unwrap(),
+            };
         }
     }
     if req.method() == axum::http::Method::GET && req.uri().path() == "/export/foundry.json" && app.cfg.rust_routes.iter().any(|r| r == "pages") {

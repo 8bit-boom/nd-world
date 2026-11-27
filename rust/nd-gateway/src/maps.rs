@@ -103,11 +103,17 @@ pub fn maps_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) ->
             "height": data.get("height").cloned().unwrap_or(json!(0)),
             "markers": markers,
             "image_url": map_image(cfg, &slug)?,
+            "workspace_url": crate::cartographer::workspace_url("map", &slug),
             "folder": crate::map_folders::norm(data.get("folder").map_or(String::new(), |v| py_str(v)).as_str()),
         }));
     }
     let mut st = db.prepare_cached("SELECT * FROM schematics WHERE world_id = ?1 ORDER BY name, id").ok()?;
-    let schematics = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    let mut schematics = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    for schematic in &mut schematics {
+        let url = schematic.get("slug").and_then(Value::as_str)
+            .and_then(|slug| crate::cartographer::workspace_url("schematic", slug));
+        schematic.insert("workspace_url".into(), json!(url));
+    }
     let sfold = |s: &Map<String, Value>| crate::map_folders::norm(s.get("folder").and_then(|v| v.as_str()).unwrap_or(""));
     let mfold = |m: &Value| m["folder"].as_str().unwrap_or("").to_string();
     let all_folders: Vec<String> = maps.iter().map(mfold).chain(schematics.iter().map(sfold)).collect();
@@ -223,4 +229,71 @@ pub fn map_viewer(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -
     c.insert("world_parties_json".into(), json!(nd_render::py_dumps(&Value::Array(payload))));
     c.insert("party_pins_json".into(), json!(nd_render::py_dumps(&Value::Array(pins))));
     render_with(pages, "map_viewer.html", p.ctx, headers)
+}
+
+#[cfg(test)]
+mod tests {
+    use minijinja::{context, AutoEscape, Environment, Value};
+    use serde_json::json;
+
+    fn render_maps(is_gm: bool, can_edit: bool, maps: serde_json::Value, schematics: serde_json::Value) -> String {
+        let mut env = Environment::new();
+        env.set_auto_escape_callback(|_| AutoEscape::None);
+        env.add_template("base.html", "{% block content %}{% endblock %}").unwrap();
+        env.add_template("_views.html", "{% macro pl_bar(section) %}{% endmacro %}{% macro pl_attrs(section, request) %}data-view=\"grid\"{% endmacro %}").unwrap();
+        env.add_template("_gallery_picker_modal.html", "").unwrap();
+        env.add_template("maps.html", include_str!("../../../assets/templates/maps.html")).unwrap();
+        env.add_function("can_edit", move |_: Value| can_edit);
+        env.add_function("asset_v", |_: String| "test");
+        for filter in ["wq", "urlencode", "thumb"] {
+            env.add_filter(filter, |s: String| s);
+        }
+        env.get_template("maps.html").unwrap().render(context! {
+            request => json!({"state": {"user": {"is_gm": is_gm}}}),
+            world => json!({"slug": "test-world"}),
+            fold => json!({"current": "", "crumbs": [], "subfolders": [], "all": []}),
+            maps => maps,
+            schematics => schematics,
+        }).unwrap()
+    }
+
+    #[test]
+    fn maps_and_schematics_share_one_collection_without_changing_access() {
+        let maps = json!([{"slug":"town", "name":"Town", "width":100, "height":100, "markers":0, "image_url":null, "folder":"", "workspace_url":"/cartographer?kind=map&slug=town"}]);
+        let schematics = json!([
+            {"slug":"dungeon", "name":"Dungeon", "is_html":false, "image_url":null, "folder":"", "workspace_url":"/cartographer?kind=schematic&slug=dungeon"},
+            {"slug":"old-html", "name":"Old HTML", "is_html":true, "image_url":null, "folder":"", "workspace_url":"/cartographer?kind=schematic&slug=old-html"}
+        ]);
+        for (gm, editor) in [(true, true), (false, true), (false, false)] {
+            let html = render_maps(gm, editor, maps.clone(), schematics.clone());
+            assert_eq!(html.matches("class=\"maps-grid\"").count(), 1);
+            assert!(html.contains("Town") && html.contains("Dungeon") && html.contains("Old HTML"));
+            assert!(!html.contains("No maps found."));
+            assert_eq!(html.contains("href=\"/cartographer\""), gm);
+            assert_eq!(html.contains("map-projects.js"), gm);
+            assert_eq!(html.contains("+ New Schematic"), editor);
+            if gm {
+                assert!(html.contains("href=\"/cartographer?kind=map&slug=town\""));
+                assert!(html.contains("href=\"/cartographer?kind=schematic&slug=dungeon\""));
+                assert!(html.contains("href=\"/cartographer?kind=schematic&slug=old-html\""));
+            } else if editor {
+                assert!(html.contains("href=\"/maps/town\""));
+                assert!(html.contains("href=\"/maps/schematic/dungeon\""));
+                assert!(html.contains("href=\"/maps/schematic/old-html\""));
+            } else {
+                assert!(html.contains("href=\"/maps/town\""));
+                assert!(html.contains("href=\"/maps/schematic/dungeon/view\""));
+                assert!(!html.contains("href=\"/maps/schematic/old-html\""));
+            }
+        }
+    }
+
+    #[test]
+    fn collection_only_shows_empty_message_when_both_kinds_are_empty() {
+        let map = json!([{"slug":"town", "name":"Town", "width":100, "height":100, "markers":0, "image_url":null, "folder":""}]);
+        let schematic = json!([{"slug":"dungeon", "name":"Dungeon", "is_html":false, "image_url":null, "folder":""}]);
+        assert!(render_maps(true, true, json!([]), json!([])).contains("No maps found."));
+        assert!(!render_maps(true, true, map, json!([])).contains("No maps found."));
+        assert!(!render_maps(true, true, json!([]), schematic).contains("No maps found."));
+    }
 }

@@ -3,7 +3,53 @@
 *Applies to: GM (creating/editing) and Players (viewing, and — on
 schematics — moving their own token, buying, picking up items).*
 
-nd-world has two distinct map tools for different jobs.
+Maps and schematics appear together in the Maps collection, with the same
+folder and layout controls. A GM opening a map from that page enters the Map
+Maker workspace; its Existing map picker can open either kind there. Switching
+back to Map Maker keeps its drawing studio open. Existing maps use their
+original editors and data; they are not automatically imported into the drawing studio.
+**Copy to Map Maker** creates a separate project with the background image, if
+any, as a paintable underlay (HTML schematics cannot be copied). Image-map pins and regions
+are copied too, including custom pin notes and schematic links; schematic floor
+groups, walls, lights, visible pins, visible token markers and floor links are copied. Solid lines and
+pencil paths become paint strokes; width, ends and stacking can differ. Floor links navigate
+the editor; character travel still uses the original. Hidden elements, dashed lines, entity
+links, other schematic elements, tokens, fog and other gameplay data remain in the original;
+changes to either copy are independent. Opening the copied project selects its
+original in the workspace so its editor can be reopened quickly. Deleting the
+original or the project removes that link, not the other copy.
+For GMs, the top-level collection also lists Map Maker projects, which are
+shared across worlds. Publishing a project again can replace manually edited
+elements and tokens in its published schematic. Full Backup does not include
+the Map Maker project folder (`<data>/cartographer/data`); back it up separately.
+
+To play a Map Maker floor, finish editing and choose **Create playable copy
+of current floor**. This creates a new schematic using the player-filtered
+picture, walls and lights; it never replaces an existing map. Inspect the
+picture before sharing it: painted details and visible markers are baked into
+it. Secret doors become ordinary walls in the copy. Add tokens, fog, combat
+and floor travel in its schematic editor. **Refresh playable copy artwork**
+replaces only the linked copy's picture: walls, lights, tokens, fog and other
+gameplay data remain unchanged, and Map Maker wall and light edits are not
+applied. It refuses to refresh if the copy's background, size or grid has
+changed, or if the new export has different dimensions. A floor has at most one
+linked playable copy per world. Deleting the project or schematic removes that
+link, not the other item.
+
+**Refresh playable walls and lights** separately replaces those with the
+player-filtered Map Maker geometry, only if the playable copy's walls and lights
+still match their last imported state and its artwork matches the project.
+If either was changed during play, it refuses rather than overwriting the
+changes. Update them by hand instead. Copies made before this safeguard have no
+recorded baseline and cannot use this action. Tokens, fog and other gameplay
+data remain unchanged.
+
+For a multi-floor project, **Create linked playable floors** prepares a copy of
+each floor and adds the Map Maker stairs as character-travel links between
+them. Existing playable copies must have matching artwork; refresh an out-of-date
+copy first. This groups the copies, not the original maps. If preparation fails,
+copies already made remain in Maps; inspect them before retrying. Later edits to
+stairs, walls or lights do not automatically update the playable floors.
 
 ## Maps — image-based, with markers and regions
 

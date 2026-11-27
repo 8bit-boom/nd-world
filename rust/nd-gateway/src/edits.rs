@@ -10491,6 +10491,8 @@ fn map_folder_rename(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
 
 fn map_delete(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     let (jf, _) = own_map(c, slug)?;
+    c.db.execute("DELETE FROM cartographer_links WHERE world_id = ?1 AND kind = 'map' AND slug = ?2",
+        rusqlite::params![c.world_id()?, slug]).ok()?;
     c.db.execute("DELETE FROM map_overlays WHERE id = (SELECT id FROM map_overlays WHERE slug = ?1 ORDER BY id LIMIT 1)", [slug]).ok()?;
     c.removals.push(jf);
     let dir = c.cfg.db_path.parent()?.join("uploads").join("maps");
@@ -13895,6 +13897,9 @@ fn sc_delete(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
         }
     }
     c.db.execute("DELETE FROM schematic_floors WHERE schematic_id = ?1", [schematic_id]).ok()?;
+    c.db.execute("DELETE FROM cartographer_links WHERE world_id = ?1 AND kind = 'schematic' AND slug = ?2",
+        rusqlite::params![sc.get("world_id")?.as_i64()?, slug]).ok()?;
+    c.db.execute("DELETE FROM cartographer_playable WHERE schematic_id = ?1", [schematic_id]).ok()?;
     c.db.execute("DELETE FROM main.schematics WHERE id = ?1", [schematic_id]).ok()?;
     redirect("/maps")
 }
@@ -18016,16 +18021,54 @@ fn prop_clean_name(v: Option<&Value>, fallback: &str) -> String {
 
 /// `POST /maps/schematic/import-uvtt` (app/main.py `schematic_import_uvtt`): a new schematic from a Universal VTT file - the picture as its background, the grid set
 /// to the file's squares, walls / outlines / doors as wall data, lights and the ambient brightness as lights and darkness. -> {slug, url, warnings, stats}
+struct PlayableCopy {
+    id: i64,
+    slug: String,
+    image: String,
+    width: i64,
+    height: i64,
+    grid: String,
+    expected_image: String,
+    grid_type: String,
+    is_html: i64,
+    walls: String,
+    lights: String,
+    baseline_walls: Option<String>,
+    baseline_lights: Option<String>,
+}
+
 fn import_uvtt(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     let up = c.upload.as_ref()?;
-    if up.form.0.iter().any(|(k, _)| k != "name") || up.form.0.len() > 1 || up.files.len() != 1 || up.files[0].name != "file" || up.files[0].filename.is_empty() {
+    if up.form.0.iter().any(|(k, _)| !matches!(k.as_str(), "name" | "project" | "floor" | "mode")) || up.form.0.len() > 4 || up.files.len() != 1 || up.files[0].name != "file" || up.files[0].filename.is_empty() {
         return None;
     }
     let name_field = up.form.get("name").unwrap_or("").to_string();
     let filename = up.files[0].filename.clone();
+    let project = up.form.get("project").unwrap_or("").to_string();
+    let floor = up.form.get("floor").unwrap_or("").to_string();
+    let mode = up.form.get("mode").unwrap_or("").to_string();
     let Some(wid) = c.world_id() else { return Some(bad400("No world selected")) };
     if !c.can_edit_section("maps")? {
         return Some(crate::idpages::refusal(403));
+    }
+    let linked = !project.is_empty() || !floor.is_empty() || !mode.is_empty();
+    if linked {
+        if !c.p.is_gm {
+            return Some(crate::idpages::refusal(403));
+        }
+        let valid_id = |id: &str| !id.is_empty() && id.len() <= 64
+            && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+        if !project.starts_with("doc_") || !valid_id(&project) || !valid_id(&floor)
+            || !matches!(mode.as_str(), "create" | "ensure" | "refresh" | "geometry")
+        {
+            return Some(bad400("Invalid Map Maker project or floor"));
+        }
+        let manifest = std::fs::read(crate::cartographer::base(c.cfg).join("data").join(&project).join("manifest.json")).ok();
+        if manifest.as_deref().and_then(|b| serde_json::from_slice::<Value>(b).ok())
+            .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_owned)).as_deref() != Some(&project)
+        {
+            return Some(bad400("Map Maker project not found"));
+        }
     }
     let raw = { let up = c.upload.as_ref()?; up.read_part(&up.files[0], 80 * 1024 * 1024 + 1)? };
     let parsed = match crate::uvtt::parse_uvtt(&raw) {
@@ -18035,6 +18078,104 @@ fn import_uvtt(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     };
     let had_alpha = parsed.image.color().has_alpha();
     let webp = crate::uvtt::encode_webp(&parsed.image, had_alpha)?;
+    let mut dims = Map::new();
+    dims.insert("canvas_width".into(), json!(parsed.width));
+    dims.insert("canvas_height".into(), json!(parsed.height));
+    let (walls, wwarn) = clean_walls(&parsed.walls, &dims)?;
+    let (lights, lwarn) = clean_lights(&parsed.lights, &dims)?;
+    let walls_json = nd_render::py_dumps(&Value::Array(walls.clone()));
+    let lights_json = nd_render::py_dumps(&Value::Array(lights));
+    if linked {
+        let resolution: Value = match serde_json::from_slice::<Value>(&raw).ok().and_then(|v| v.get("resolution").cloned()) {
+            Some(r) => r,
+            None => return Some(bad400("Invalid Map Maker export")),
+        };
+        if !crate::cartographer::compatible_playable_export(&resolution, parsed.width, parsed.height, parsed.cell) {
+            return Some(bad400("Map Maker export has an incompatible origin or grid"));
+        }
+        let existing: Option<PlayableCopy> = {
+            use rusqlite::OptionalExtension;
+            c.db.query_row(
+                "SELECT s.id, s.slug, COALESCE(s.image_url, ''), s.canvas_width, s.canvas_height, s.grid_config_json,
+                        p.image_url, s.grid_type, COALESCE(s.is_html, 0), COALESCE(s.walls_json, '[]'),
+                        COALESCE(s.lights_json, '[]'), p.walls_json, p.lights_json
+                 FROM cartographer_playable p JOIN schematics s ON s.id = p.schematic_id
+                 WHERE p.world_id = ?1 AND s.world_id = ?1 AND p.project_id = ?2 AND p.floor_id = ?3",
+                rusqlite::params![wid, project, floor],
+                |r| Ok(PlayableCopy {
+                    id:r.get(0)?, slug:r.get(1)?, image:r.get(2)?, width:r.get(3)?, height:r.get(4)?,
+                    grid:r.get(5)?, expected_image:r.get(6)?, grid_type:r.get(7)?, is_html:r.get(8)?,
+                    walls:r.get(9)?, lights:r.get(10)?, baseline_walls:r.get(11)?, baseline_lights:r.get(12)?,
+                })
+            ).optional().ok()?
+        };
+        if mode == "create" {
+            if let Some(PlayableCopy { slug, .. }) = &existing {
+                return json_response(&json!({"slug":slug, "url":format!("/maps/schematic/{slug}"), "warnings":[], "existing":true}));
+            }
+        }
+        if matches!(mode.as_str(), "refresh" | "geometry") || (mode == "ensure" && existing.is_some()) {
+            let Some(copy) = existing else {
+                return Some(bad400("This floor has no playable copy."));
+            };
+            let grid: Value = match serde_json::from_str(&copy.grid) {
+                Ok(grid) => grid,
+                Err(_) => return Some(bad400("The playable map's grid is invalid; its artwork cannot be safely refreshed.")),
+            };
+            if !crate::cartographer::compatible_playable_map(&copy.image, &copy.expected_image, (copy.width, copy.height),
+                (parsed.width, parsed.height), &copy.grid_type, copy.is_html, &grid) {
+                return Some(bad400("The playable map's background, dimensions or grid changed; its artwork cannot be safely refreshed."));
+            }
+            if matches!(mode.as_str(), "ensure" | "geometry") {
+                let filename = copy.image.strip_prefix("/uploads/schematics/").filter(|name| {
+                    !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+                });
+                let Some(filename) = filename else { return Some(bad400("The playable map's background cannot be checked.")) };
+                let path = uploads_root(c)?.join("schematics").join(filename);
+                let same = std::fs::metadata(&path).ok().filter(|m| m.len() == webp.len() as u64)
+                    .and_then(|_| std::fs::read(path).ok()).map_or(false, |bytes| bytes == webp);
+                if !same {
+                    return Some(bad400("The playable floor has different artwork. Refresh its artwork first."));
+                }
+                if mode == "ensure" {
+                    return json_response(&json!({"slug":copy.slug, "url":format!("/maps/schematic/{}",copy.slug), "warnings":[], "existing":true,
+                        "width":copy.width, "height":copy.height, "image_url":copy.image}));
+                }
+                let same_json = |a: Option<&str>, b: &str| {
+                    a.and_then(|s| serde_json::from_str::<Value>(s).ok())
+                        .zip(serde_json::from_str::<Value>(b).ok()).map_or(false, |(x, y)| x == y)
+                };
+                if !same_json(copy.baseline_walls.as_deref(), &copy.walls)
+                    || !same_json(copy.baseline_lights.as_deref(), &copy.lights) {
+                    return Some(bad400("The playable floor's walls or lights changed since import. Update them manually; no geometry was replaced."));
+                }
+                c.db.execute("UPDATE schematics SET walls_json = ?1, lights_json = ?2 WHERE id = ?3 AND world_id = ?4",
+                    rusqlite::params![walls_json, lights_json, copy.id, wid]).ok()?;
+                c.db.execute("UPDATE cartographer_playable SET walls_json = ?1, lights_json = ?2 WHERE schematic_id = ?3",
+                    rusqlite::params![walls_json, lights_json, copy.id]).ok()?;
+                orm::bump_scene(&c.db, copy.id, wid)?;
+                let mut warnings = parsed.warnings.clone();
+                warnings.extend(wwarn);
+                warnings.extend(lwarn);
+                return json_response(&json!({"slug":copy.slug, "url":format!("/maps/schematic/{}",copy.slug), "warnings":warnings, "geometry_refreshed":true}));
+            }
+            let dir = uploads_root(c)?.join("schematics");
+            std::fs::create_dir_all(&dir).ok()?;
+            let filename = format!("cartographer-{:016x}.webp", rand::random::<u64>());
+            let dest = dir.join(&filename);
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&dest).ok()?;
+            c.created.push(dest);
+            file.write_all(&webp).ok()?;
+            let image_url = format!("/uploads/schematics/{filename}");
+            c.db.execute("UPDATE schematics SET image_url = ?1 WHERE id = ?2 AND world_id = ?3",
+                rusqlite::params![image_url, copy.id, wid]).ok()?;
+            c.db.execute("UPDATE cartographer_playable SET image_url = ?1 WHERE schematic_id = ?2",
+                rusqlite::params![image_url, copy.id]).ok()?;
+            orm::bump_scene(&c.db, copy.id, wid)?;
+            return json_response(&json!({"slug":copy.slug, "url":format!("/maps/schematic/{}",copy.slug), "warnings":parsed.warnings, "refreshed":true}));
+        }
+    }
     // title: the name, else the file's stem with _ and - as spaces; white space folded, 120 characters at most
     let base_title = if !name_field.is_empty() { name_field } else { let (stem, _) = py_path_parts(&filename)?; stem.replace('_', " ").replace('-', " ") };
     let title: String = nd_render::text::py_split_join(&base_title).chars().take(120).collect();
@@ -18056,29 +18197,34 @@ fn import_uvtt(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     let dest = dir.join(format!("{unique}.webp"));
     c.created.push(dest.clone());
     std::fs::write(&dest, &webp).ok()?;
-    let mut dims = Map::new();
-    dims.insert("canvas_width".into(), json!(parsed.width));
-    dims.insert("canvas_height".into(), json!(parsed.height));
-    let (walls, wwarn) = clean_walls(&parsed.walls, &dims)?;
-    let (lights, lwarn) = clean_lights(&parsed.lights, &dims)?;
     let mut fog_in = Map::new();
     fog_in.insert("darkness".into(), json!(parsed.darkness));
     let fog = clean_fog(&fog_in)?;
     let grid = json!({"cell_size": parsed.cell, "offset_x": 0, "offset_y": 0, "unit_per_cell": 5, "unit_label": "ft"});
-    orm::insert(&c.db, "schematics", &[
+    let schematic_id = orm::insert(&c.db, "schematics", &[
         ("world_id", Sql::Integer(wid)), ("name", s(&title)), ("slug", s(&unique)), ("is_html", Sql::Integer(0)),
         ("canvas_width", Sql::Integer(parsed.width)), ("canvas_height", Sql::Integer(parsed.height)), ("canvas_bg", s("dark")), ("elements_json", s("[]")),
         ("image_url", s(&format!("/uploads/schematics/{unique}.webp"))), ("grid_type", s("square")), ("grid_config_json", s(&nd_render::py_dumps(&grid))),
-        ("walls_json", s(&nd_render::py_dumps(&Value::Array(walls.clone())))), ("lights_json", s(&nd_render::py_dumps(&Value::Array(lights)))),
+        ("walls_json", s(&walls_json)), ("lights_json", s(&lights_json)),
         ("fog_json", s(&nd_render::py_dumps(&Value::Object(fog)))),
     ])?;
+    if linked {
+        c.db.execute("INSERT INTO cartographer_playable(project_id, floor_id, world_id, schematic_id, image_url, walls_json, lights_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![project, floor, wid, schematic_id, format!("/uploads/schematics/{unique}.webp"), walls_json, lights_json]).ok()?;
+    }
     orm::touch(&c.db, wid)?;
     let mut warnings: Vec<String> = parsed.warnings.clone();
     warnings.extend(wwarn);
     warnings.extend(lwarn);
     let mut stats = parsed.stats.clone();
     stats.insert("wall_lines".into(), json!(walls.len()));
-    json_response(&json!({"slug": unique, "url": format!("/maps/schematic/{unique}"), "warnings": warnings, "stats": stats}))
+    let mut result = json!({"slug": unique, "url": format!("/maps/schematic/{unique}"), "warnings": warnings, "stats": stats});
+    if mode == "ensure" {
+        result["width"] = json!(parsed.width);
+        result["height"] = json!(parsed.height);
+        result["image_url"] = json!(format!("/uploads/schematics/{unique}.webp"));
+    }
+    json_response(&result)
 }
 
 /// `POST /api/maps/props/upload` (app/routers/map_props.py `props_upload`): several pictures at once, each processed on its own - the answer lists what
