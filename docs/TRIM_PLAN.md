@@ -11,27 +11,11 @@ The repository source and test suite have now been converted to Rust-only assets
 - `truenas-compose.yml`'s `world` service uses the gateway image; `docker-compose.yml` builds the one `Dockerfile`.
 - README / CLAUDE.md describe one image.
 
-## What blocks deleting `app/` (measured 2026-11-15)
+## Stages 2-3 - freeze the oracle, move assets, delete Python (done, 2026-11-26, commit 8821548a)
 
-- `app/` is not only Python: the gateway image copies `assets/templates` (the Jinja templates it renders), `assets/maps` (bundled maps) and reads data under `assets/game_data`,
-  `assets/core_rules.md`, `assets/races`, `assets/professions`. These move out first.
-- 360 of 403 test files import `app.*`: 257 `app.database`, 253 `app.models` (the tests seed the database through SQLAlchemy), 59 `app.ai`, 22 `app.main`. 145 files need only
-  `database` / `models` / `auth`; 258 use other Python modules (they test Python code and go with it).
-- The eight `tests/test_gateway_*.py` files (the largest is ~10k lines) get their value from comparing the gateway with Python's answer. Deleting Python first would delete that value.
-- `scripts/gen_rust_data.py` generates `rust/nd-render/data/*` (app data, openapi, rules) by importing the Python app.
-
-## Stage 2 - freeze the oracle
-
-Record Python's answer for every request the parity tests make (status, headers that matter, body) into `tests/golden/*.json`, then make each comparison "gateway == recorded". The
-recording tool exists from phase 0 (`docs/RUST_GATEWAY.md`, golden-response tool). Done when the suite passes with Python not running.
-
-## Stage 3 - move assets, replace the seeder, delete Python
-
-1. Move `assets/templates`, `assets/maps`, `assets/game_data`, `assets/core_rules.md`, `assets/races`, `assets/professions` to top-level `assets/` (update `ND_TEMPLATES_DIR` etc., the Dockerfile and the tests' paths).
-2. Seeding: keep `tests/support/` with the minimal SQLAlchemy models + schema the fixtures need (test tooling only), or seed through the gateway's own routes; decide when stage 2 shows the size.
-3. Delete `app/` code, `requirements.txt`, `import_*.py`, the in-process Python tests, the pytest CI job's Python app start; `gen_rust_data.py` becomes "data is the source" (the generated files are
-   committed and edited directly).
-4. Update CLAUDE.md (drop "Python is the oracle"), the docs index.
+Python was removed rather than frozen: `app/*.py`, `requirements.txt`, `import_*.py`, `scripts/gen_rust_data.py`, `scripts/golden.py` and the Python parity tests are gone, and the
+templates, maps, game data, races and professions live under `assets/`. `rust/nd-render/data/*` is now the source (edited directly). Checks are Rust only: `cargo test` and
+`rust/nd-gateway/tests/`. The gateway-vs-Python parity value of the old `tests/test_gateway_*.py` files is not recorded anywhere; new routes need their own Rust tests (CLAUDE.md rule 4).
 
 ## Stage 4 - Rust cleanup (not chosen; revisit later)
 
