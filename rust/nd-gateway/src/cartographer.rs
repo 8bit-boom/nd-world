@@ -24,6 +24,48 @@ pub const VERSION: &str = "0.4.0";
 const STUDIO_CANVAS_CSS: &str =
     "\n#stage > canvas#gl { z-index: 0; }\n#stage > canvas#canvas { position: relative; z-index: 1; }\n";
 
+/// The studio draws a stroke preview once per move but flushes (and clears) it after a 120 ms
+/// pause, so a held brush loses the painted area. Draw the whole overlay on every move and
+/// flush only on release.
+pub fn patch_app_js_source(js: &str) -> String {
+    let old = "  drawStrokePreview();\n  clearTimeout(state.pendingFlush);\n  state.pendingFlush = setTimeout(flushStroke, 120);\n}";
+    let live = "  render();\n  clearTimeout(state.pendingFlush);\n}";
+    js.replace(old, live)
+}
+
+pub async fn patch_app_js(resp: Response<Body>) -> Response<Body> {
+    if resp.status() != StatusCode::OK {
+        return resp;
+    }
+    let (mut parts, body) = resp.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, 8 * 1024 * 1024).await else {
+        return Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR)
+            .body(Body::from("Could not load Map Maker script")).unwrap();
+    };
+    let patched = match std::str::from_utf8(&bytes) {
+        Ok(js) => patch_app_js_source(js).into_bytes(),
+        Err(_) => bytes.to_vec(),
+    };
+    parts.headers.remove(header::ETAG);
+    parts.headers.remove(header::CONTENT_LENGTH);
+    parts.headers.remove(header::LAST_MODIFIED);
+    parts.headers.insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"));
+    Response::from_parts(parts, Body::from(patched))
+}
+
+#[cfg(test)]
+mod live_paint_tests {
+    use super::patch_app_js_source;
+
+    #[test]
+    fn held_brush_redraws_and_flushes_only_on_release() {
+        let source = "function queuePaint(cellX, cellY) {\n  drawStrokePreview();\n  clearTimeout(state.pendingFlush);\n  state.pendingFlush = setTimeout(flushStroke, 120);\n}";
+        let patched = patch_app_js_source(source);
+        assert!(patched.contains("  render();\n  clearTimeout(state.pendingFlush);"));
+        assert!(!patched.contains("setTimeout(flushStroke"));
+    }
+}
+
 pub async fn fix_studio_css(response: Response<Body>) -> Response<Body> {
     if response.status() != StatusCode::OK {
         return response;

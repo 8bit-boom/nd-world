@@ -606,13 +606,16 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
                 req.uri().path().strip_prefix("/cartographer/studio/api/docs/")
                     .filter(|id| !id.is_empty() && !id.contains('/')).map(str::to_owned)
             } else { None };
-            if studio_css {
+            let is_app_js = req.method() == axum::http::Method::GET
+                && req.uri().path() == format!("{}/app.js", cartographer::STUDIO_BASE);
+            if studio_css || is_app_js {
                 req.headers_mut().remove(axum::http::header::IF_NONE_MATCH);
                 req.headers_mut().remove(axum::http::header::IF_MODIFIED_SINCE);
             }
             use tower::ServiceExt;
             return match app.studio.clone().oneshot(req).await {
                 Ok(resp) if studio_css => cartographer::fix_studio_css(resp).await,
+                Ok(resp) if is_app_js => cartographer::patch_app_js(resp).await,
                 Ok(resp) => {
                     if resp.status().is_success() {
                         if let Some(project) = deleted_project {
