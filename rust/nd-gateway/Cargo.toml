@@ -8,7 +8,7 @@ description = "nd-world gateway: serves static files and uploads, passes everyth
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 # The map studio, compiled in and mounted under /cartographer/studio (crate::cartographer).
 # The bridge feature (default) keeps the AI helpers, which reuse the GM session.
-ndcart-server = { git = "https://github.com/8bit-boom/nd-cartographer", tag = "v0.4.0" }
+ndcart-server = { git = "https://github.com/8bit-boom/nd-cartographer", rev = "33bd61e079ab05187e109382b38e85ccbfefd4d8" }
 tower = { version = "0.5", features = ["util"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "fs", "io-util", "time", "process"] }
 tokio-util = { version = "0.7", features = ["io"] }
