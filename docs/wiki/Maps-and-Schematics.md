@@ -58,6 +58,11 @@ tokens, fog, combat and character positions. No update is applied until the GM
 approves the preview.
 Update runs are saved per floor; interrupted runs can be inspected and retried
 from their failed or pending floor instead of restarting every floor.
+The workspace has three stages: **Build** for painting or copying maps,
+**Prepare** for creating, linking and updating playable copies, and **Run** for
+opening the live view or starting the encounter. Published Map Maker encounters
+carry creatures and loot into a live combat; schematic item and merchant tokens
+retain item, quantity and inventory metadata in the playable scene.
 
 ## Maps — image-based, with markers and regions
 

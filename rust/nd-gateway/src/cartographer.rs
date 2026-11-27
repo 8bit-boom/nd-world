@@ -244,7 +244,7 @@ mod tests {
                (1,1,'tower',1,'Ground'), (2,1,'tower',2,'Upper'), (3,2,'tower',3,'Foreign');"
         ).unwrap();
         assert_eq!(schematic_floor_data(&db, 1, "ground").unwrap(), json!({"floors":[
-            {"slug":"ground","label":"Ground","portals":[{"x":10,"y":20,"label":"Stairs","destination_slug":"upper","destination_x":30,"destination_y":40}],"pins":[{"x":4,"y":5,"label":"Gate","color":"#abcdef"}],"paths":[{"type":"path","points":null,"pts":[[0,0],[1,1]],"x1":null,"y1":null,"x2":null,"y2":null,"stroke":"#123456","strokeW":2,"opacity":null}],"tokens":[{"id":"token-1","x":8,"y":9,"label":"Scout","color":"#55ccff","pc_id":null,"entity_id":null,"combatant_id":null}],"fog":{},"combat_session_id":null,"background":"light"},
+            {"slug":"ground","label":"Ground","portals":[{"x":10,"y":20,"label":"Stairs","destination_slug":"upper","destination_x":30,"destination_y":40}],"pins":[{"x":4,"y":5,"label":"Gate","color":"#abcdef"}],"paths":[{"type":"path","points":null,"pts":[[0,0],[1,1]],"x1":null,"y1":null,"x2":null,"y2":null,"stroke":"#123456","strokeW":2,"opacity":null}],"tokens":[{"id":"token-1","x":8,"y":9,"label":"Scout","color":"#55ccff","pc_id":null,"entity_id":null,"combatant_id":null,"source":"manual","inventory":[],"qty":1,"visible":true}],"fog":{},"combat_session_id":null,"background":"light"},
             {"slug":"upper","label":"Upper","portals":[],"pins":[],"paths":[],"tokens":[],"fog":{},"combat_session_id":null,"background":"blueprint"}
         ]}));
         assert_eq!(schematic_floor_data(&db, 1, "foreign"), Err("Schematic not found"));
@@ -550,7 +550,11 @@ fn schematic_floor_data(db: &rusqlite::Connection, world_id: i64, slug: &str) ->
             "id":e.get("id"), "x":e.get("x"), "y":e.get("y"),
             "label":e.get("name").or_else(|| e.get("label")).unwrap_or(&json!("Token")),
             "color":e.get("stroke").or_else(|| e.get("color")).unwrap_or(&json!("#00f0ff")),
-            "pc_id":e.get("pc_id"), "entity_id":e.get("entity_id"), "combatant_id":e.get("combatant_id")
+            "pc_id":e.get("pc_id"), "entity_id":e.get("entity_id"), "combatant_id":e.get("combatant_id"),
+            "source":e.get("source").unwrap_or(&json!("manual")),
+            "inventory":e.get("inventory").unwrap_or(&json!([])),
+            "qty":e.get("qty").unwrap_or(&json!(1)),
+            "visible":e.get("visible_to_players").unwrap_or(&json!(true))
         })).collect();
         let fog: Value = db.query_row(
             "SELECT fog_json FROM schematics WHERE world_id = ?1 AND slug = ?2",

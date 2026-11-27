@@ -210,7 +210,9 @@ test('copies grouped floors and preserves their destination coordinates', async 
   } });
   assert.deepEqual(operations[0].ops.find(op => op.stroke?.id === 'path-2').stroke.points, [{ x: 0, y: 1 }, { x: 2, y: 3 }]);
   assert.deepEqual(operations[0].ops.find(op => op.item?.id === 'token-0'), { t: 'put_overlay', item: {
-    kind: 'marker', id: 'token-0', x: 2, y: 3, label: 'Scout', note: 'Imported from the existing schematic; gameplay movement stays in the original editor.',
+    kind: 'marker', id: 'token-0', x: 2, y: 3, label: 'Scout', note: 'NDWORLD-RICH-TOKEN:' + JSON.stringify({
+      id: 'token-1', x: 64, y: 96, name: 'Scout', source: 'manual', pc_id: 42,
+    }),
     color: '#55ccff',
   } });
   assert.deepEqual(operations[0].ops.at(-2), { t: 'put_overlay', item: {
@@ -423,6 +425,13 @@ test('does not link floors if the project changes during preparation', async () 
   await handler();
   assert.match(status.textContent, /project changed/);
   assert.ok(!requests.some(url => url.startsWith('/api/cartographer/playable-floors')));
+});
+
+test('includes rich merchant and item token metadata in playable imports', () => {
+  assert.equal(typeof script, 'string');
+  assert.match(script, /NDWORLD-RICH-TOKEN:/);
+  assert.match(script, /merchant/);
+  assert.match(script, /qty/);
 });
 
 test('shows a playable-scene update preview before applying', async () => {

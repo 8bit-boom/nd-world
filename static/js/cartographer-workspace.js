@@ -1,6 +1,70 @@
 (function () {
   const params = new URLSearchParams(window.location.search);
   const project = params.get('project');
+  function setWorkflowStage(stage) {
+    const stages = ['build', 'prepare', 'run'];
+    stages.forEach(name => {
+      const button = document.getElementById('carto-stage-' + name);
+      if (button) button.classList.toggle('active', name === stage);
+    });
+    const prepare = document.getElementById('carto-prepare-stage');
+    const buildExisting = document.getElementById('carto-build-existing');
+    const studio = document.getElementById('carto-studio-wrap');
+    const existing = document.getElementById('carto-existing-wrap');
+    const run = document.getElementById('carto-run-stage');
+    if (prepare) prepare.hidden = stage !== 'prepare';
+    if (buildExisting) buildExisting.hidden = stage !== 'build';
+    if (stage === 'prepare' || stage === 'run') {
+      if (studio) studio.hidden = true;
+      if (existing) existing.hidden = true;
+    }
+    if (run) run.hidden = stage !== 'run';
+  }
+  ['build', 'prepare', 'run'].forEach(stage => {
+    const button = document.getElementById('carto-stage-' + stage);
+    if (button) button.addEventListener('click', () => setWorkflowStage(stage));
+  });
+  setWorkflowStage(project ? 'build' : 'build');
+  function setRunTarget(slug) {
+    window.cartoRunSlug = slug;
+    const open = document.getElementById('carto-run-open');
+    if (open) {
+      open.href = '/maps/schematic/' + encodeURIComponent(slug) + '/view';
+      open.hidden = false;
+    }
+  }
+  const runPlay = document.getElementById('carto-run-play');
+  if (runPlay) runPlay.addEventListener('click', async () => {
+    const slug = window.cartoRunSlug;
+    if (!slug) {
+      const status = document.getElementById('carto-workspace-status');
+      status.hidden = false;
+      status.textContent = 'Prepare a playable copy first.';
+      return;
+    }
+    const popup = window.open('', '_blank');
+    const status = document.getElementById('carto-workspace-status');
+    runPlay.disabled = true;
+    try {
+      const response = await fetch('/api/maps/schematic/' + encodeURIComponent(slug) + '/play', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Could not start the playable scene.');
+      if (popup) {
+        popup.location.href = data.tracker || data.player_view || '/maps/schematic/' + slug + '/view';
+      }
+      status.hidden = false;
+      status.textContent = 'Playable scene started.';
+      setWorkflowStage('run');
+    } catch (error) {
+      if (popup) popup.close();
+      status.hidden = false;
+      status.textContent = 'Could not start the playable scene: ' + error.message;
+    } finally {
+      runPlay.disabled = false;
+    }
+  });
   const playable = document.getElementById('carto-playable-copy');
   const refresh = document.getElementById('carto-playable-refresh');
   const geometry = document.getElementById('carto-playable-geometry');
@@ -44,6 +108,7 @@
     }
     try {
       await request(base + '/save', { method: 'POST' });
+      let richElements = [];
       const exported = await request(base + '/export/uvtt?floor=' + encodeURIComponent(floor) + '&ppc=32&audience=player');
       const data = await exported.blob();
       const form = new FormData();
@@ -52,6 +117,7 @@
       form.append('project', id);
       form.append('floor', floor);
       form.append('mode', mode);
+      if ((mode === 'create' || mode === 'ensure') && richElements.length) form.append('elements', JSON.stringify(richElements));
       const importUrl = new URL('/maps/schematic/import-uvtt', window.location.origin);
       if (params.get('w')) importUrl.searchParams.set('w', params.get('w'));
       const imported = await (await request(importUrl.pathname + importUrl.search, { method: 'POST', body: form })).json();
@@ -64,6 +130,7 @@
       if (params.get('w')) destination.searchParams.set('w', params.get('w'));
       link.href = destination.pathname + destination.search;
       link.hidden = false;
+      setRunTarget(imported.slug);
       status.textContent = (mode === 'create' ? (imported.existing ? 'This floor already has a playable copy.' : 'Playable copy created.') : mode === 'geometry' ? 'Playable walls and lights refreshed.' : 'Playable artwork refreshed.') + (imported.warnings?.length ? ' ' + imported.warnings.join(' ') : '');
     } catch (error) {
       status.textContent = 'Could not ' + (mode === 'create' ? 'create playable copy: ' : mode === 'geometry' ? 'refresh walls and lights: ' : 'refresh playable artwork: ') + error.message + ' Check Maps before retrying if the connection was interrupted.';
@@ -386,6 +453,12 @@
       if (ids.size !== source.floors.length || source.floors.some(floor => !floor.id || !floor.name || !Array.isArray(floor.markers))) throw new Error('The project floor data is invalid.');
       const floors = source.floors.map(floor => ({
         id: floor.id, name: floor.name,
+        encounters: Array.isArray(floor.encounters) ? floor.encounters.map(encounter => ({
+          space: encounter.space,
+          name: floor.grid && floor.grid.spaces ? (floor.grid.spaces[encounter.space]?.name || encounter.space) : encounter.space,
+          creatures: Array.isArray(encounter.creatures) ? encounter.creatures : [],
+          loot: Array.isArray(encounter.loot) ? encounter.loot : [],
+        })) : [],
         links: floor.markers.filter(marker => marker.links_to).map(marker => {
           const dest = marker.links_to;
           if (!ids.has(dest.floor) || dest.floor === floor.id) throw new Error('A floor link has an invalid destination.');
@@ -408,6 +481,12 @@
         form.append('floor', floor.id);
         form.append('mode', 'ensure');
         form.append('revision', String(source.rev));
+        const studioFloor = source.floors.find(item => item.id === floor.id);
+        const richElements = (studioFloor?.markers || []).filter(marker => typeof marker.note === 'string' && marker.note.startsWith('NDWORLD-RICH-TOKEN:'))
+          .map(marker => {
+            try { return JSON.parse(marker.note.slice('NDWORLD-RICH-TOKEN:'.length)); } catch (_) { return null; }
+          }).filter(Boolean);
+        if (richElements.length) form.append('elements', JSON.stringify(richElements));
         const prepared = await (await request(importUrl.pathname + importUrl.search, { method: 'POST', body: form })).json();
         if (!Number.isInteger(prepared.width) || !Number.isInteger(prepared.height) || typeof prepared.image_url !== 'string') {
           throw new Error('The server did not return the playable floor dimensions.');
@@ -415,6 +494,13 @@
         floor.width = prepared.width;
         floor.height = prepared.height;
         floor.image_url = prepared.image_url;
+        floor.slug = prepared.slug;
+        if (floor.encounters.length) {
+          await request('/api/maps/schematic/' + encodeURIComponent(prepared.slug) + '/play-manifest', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ rooms: floor.encounters }),
+          });
+        }
         if (Array.isArray(prepared.warnings)) warnings.push(...prepared.warnings.map(message => floor.name + ': ' + message));
       }
       const current = await (await request(base)).json();
@@ -434,6 +520,7 @@
       if (params.get('w')) destination.searchParams.set('w', params.get('w'));
       link.href = destination.pathname + destination.search;
       link.hidden = false;
+      setRunTarget(grouped.slug);
       status.textContent = 'Playable floors linked. Inspect them before sharing.' + (warnings.length ? ' ' + warnings.join(' ') : '');
     } catch (error) {
       status.textContent = 'Could not link playable floors: ' + error.message + ' Copies already created remain in Maps; check them before retrying.';
@@ -754,8 +841,12 @@
           if (!token || typeof token.x !== 'number' || typeof token.y !== 'number' ||
               !Number.isFinite(token.x) || !Number.isFinite(token.y)) throw new Error('A schematic token has invalid coordinates.');
           const label = typeof token.label === 'string' && token.label.trim() ? token.label.trim().slice(0, 120) : 'Token';
+          const rich = { id: token.id || ('token-' + i), x: token.x, y: token.y, name: label,
+            source: ['pc','entity','item','merchant','manual'].includes(token.source) ? token.source : 'manual',
+            pc_id: token.pc_id, entity_id: token.entity_id, qty: token.qty, inventory: token.inventory, visible: token.visible };
           ops.push({ t: 'put_overlay', item: { kind: 'marker', id: 'token-' + i,
-            x: token.x / cell, y: token.y / cell, label, note: 'Imported from the existing schematic; gameplay movement stays in the original editor.',
+            x: token.x / cell, y: token.y / cell, label,
+            note: 'NDWORLD-RICH-TOKEN:' + JSON.stringify(rich),
             color: overlayColor(token.color, '#00f0ff') } });
         });
     });

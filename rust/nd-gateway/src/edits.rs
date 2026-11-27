@@ -18039,7 +18039,7 @@ struct PlayableCopy {
 
 fn import_uvtt(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     let up = c.upload.as_ref()?;
-    if up.form.0.iter().any(|(k, _)| !matches!(k.as_str(), "name" | "project" | "floor" | "mode" | "revision")) || up.form.0.len() > 5 || up.files.len() != 1 || up.files[0].name != "file" || up.files[0].filename.is_empty() {
+    if up.form.0.iter().any(|(k, _)| !matches!(k.as_str(), "name" | "project" | "floor" | "mode" | "revision" | "elements")) || up.form.0.len() > 6 || up.files.len() != 1 || up.files[0].name != "file" || up.files[0].filename.is_empty() {
         return None;
     }
     let name_field = up.form.get("name").unwrap_or("").to_string();
@@ -18189,6 +18189,62 @@ fn import_uvtt(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
             return json_response(&json!({"slug":copy.slug, "url":format!("/maps/schematic/{}",copy.slug), "warnings":parsed.warnings, "refreshed":true}));
         }
     }
+    let elements_raw = up.form.get("elements").unwrap_or("").to_string();
+    let rich_elements: Vec<Value> = if elements_raw.is_empty() { Vec::new() } else {
+        serde_json::from_str::<Value>(&elements_raw).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default()
+    }
+        .into_iter()
+        .filter_map(|item| {
+            let o = item.as_object()?;
+            let x = o.get("x").and_then(|v| v.as_f64()).filter(|n| n.is_finite())?;
+            let y = o.get("y").and_then(|v| v.as_f64()).filter(|n| n.is_finite())?;
+            let source = o.get("source").and_then(|v| v.as_str()).unwrap_or("manual");
+            if !matches!(source, "pc" | "entity" | "item" | "merchant" | "manual") { return None; }
+            let name = o.get("name").and_then(|v| v.as_str()).unwrap_or("Token");
+            let name: String = nd_render::text::py_split_join(name).chars().take(120).collect();
+            let id = o.get("id").and_then(|v| v.as_str()).unwrap_or("")
+                .chars().filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-')).take(40).collect::<String>();
+            let id = if id.is_empty() { format!("{:08x}", rand::random::<u32>()) } else { id };
+            let mut token = Map::new();
+            token.insert("id".into(), json!(id));
+            token.insert("type".into(), json!("token"));
+            token.insert("x".into(), json!(x.max(0.0).min(parsed.width as f64)));
+            token.insert("y".into(), json!(y.max(0.0).min(parsed.height as f64)));
+            token.insert("r".into(), json!(if source == "item" { 16 } else { 20 }));
+            token.insert("layer".into(), json!("Tracks"));
+            token.insert("source".into(), json!(source));
+            token.insert("name".into(), json!(if name.is_empty() { "Token".to_string() } else { name }));
+            token.insert("color".into(), json!(match source { "pc" => "#4488ff", "entity" => "#e63946", "item" => "#f4a261", "merchant" => "#22aa66", _ => "#888888" }));
+            token.insert("visible_to_players".into(), json!(o.get("visible").and_then(|v| v.as_bool()).unwrap_or(source != "manual")));
+            if let Some(pc_id) = o.get("pc_id").and_then(|v| v.as_i64()).filter(|v| *v > 0) { token.insert("pc_id".into(), json!(pc_id)); }
+            if let Some(entity_id) = o.get("entity_id").and_then(|v| v.as_i64()).filter(|v| *v > 0) { token.insert("entity_id".into(), json!(entity_id)); }
+            if source == "item" {
+                let qty = o.get("qty").and_then(|v| v.as_i64()).unwrap_or(1).clamp(1, 999);
+                token.insert("qty".into(), json!(qty));
+                token.insert("quantity".into(), json!(qty));
+            }
+            if source == "merchant" {
+                let inventory = o.get("inventory").and_then(|v| v.as_array()).cloned().unwrap_or_default()
+                    .into_iter().filter_map(|row| {
+                        let r = row.as_object()?;
+                        let name = r.get("name").and_then(|v| v.as_str())?.trim();
+                        if name.is_empty() { return None; }
+                        let mut stock = Map::new();
+                        stock.insert("id".into(), json!(r.get("id").and_then(|v| v.as_str()).unwrap_or("").chars().take(40).collect::<String>()));
+                        stock.insert("name".into(), json!(name));
+                        stock.insert("entity_id".into(), r.get("entity_id").cloned().unwrap_or(Value::Null));
+                        stock.insert("price".into(), r.get("price").cloned().unwrap_or(json!(0)));
+                        stock.insert("currency_abbr".into(), r.get("currency_abbr").cloned().unwrap_or(json!("CR")));
+                        let qty = r.get("qty").and_then(|v| v.as_i64()).unwrap_or(-1);
+                        stock.insert("qty".into(), json!(qty));
+                        Some(Value::Object(stock))
+                    }).take(100).collect::<Vec<_>>();
+                token.insert("inventory".into(), json!(inventory));
+                token.insert("locked".into(), json!(false));
+            }
+            Some(Value::Object(token))
+        })
+        .collect();
     // title: the name, else the file's stem with _ and - as spaces; white space folded, 120 characters at most
     let base_title = if !name_field.is_empty() { name_field } else { let (stem, _) = py_path_parts(&filename)?; stem.replace('_', " ").replace('-', " ") };
     let title: String = nd_render::text::py_split_join(&base_title).chars().take(120).collect();
@@ -18216,7 +18272,7 @@ fn import_uvtt(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     let grid = json!({"cell_size": parsed.cell, "offset_x": 0, "offset_y": 0, "unit_per_cell": 5, "unit_label": "ft"});
     let schematic_id = orm::insert(&c.db, "schematics", &[
         ("world_id", Sql::Integer(wid)), ("name", s(&title)), ("slug", s(&unique)), ("is_html", Sql::Integer(0)),
-        ("canvas_width", Sql::Integer(parsed.width)), ("canvas_height", Sql::Integer(parsed.height)), ("canvas_bg", s("dark")), ("elements_json", s("[]")),
+        ("canvas_width", Sql::Integer(parsed.width)), ("canvas_height", Sql::Integer(parsed.height)), ("canvas_bg", s("dark")), ("elements_json", s(&nd_render::py_dumps(&Value::Array(rich_elements.clone())))),
         ("image_url", s(&format!("/uploads/schematics/{unique}.webp"))), ("grid_type", s("square")), ("grid_config_json", s(&nd_render::py_dumps(&grid))),
         ("walls_json", s(&walls_json)), ("lights_json", s(&lights_json)),
         ("fog_json", s(&nd_render::py_dumps(&Value::Object(fog)))),
