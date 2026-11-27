@@ -673,6 +673,17 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
                 Err(_) => Response::builder().status(axum::http::StatusCode::INTERNAL_SERVER_ERROR).body(Body::from("Could not inspect playable scene")).unwrap(),
             };
         }
+        if req.method() == axum::http::Method::POST && path == "/api/cartographer/update-run" {
+            let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
+            let body = match axum::body::to_bytes(req.into_body(), 1024 * 1024).await {
+                Ok(bytes) => bytes,
+                Err(_) => return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap(),
+            };
+            return match tokio::task::spawn_blocking(move || cartographer::update_run(&cfg, &uri, &headers, &body)).await {
+                Ok(resp) => resp,
+                Err(_) => Response::builder().status(axum::http::StatusCode::INTERNAL_SERVER_ERROR).body(Body::from("Could not manage playable update run")).unwrap(),
+            };
+        }
         if matches!(*req.method(), axum::http::Method::GET | axum::http::Method::POST) && path == "/api/cartographer/links" {
             let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
             let post = req.method() == axum::http::Method::POST;

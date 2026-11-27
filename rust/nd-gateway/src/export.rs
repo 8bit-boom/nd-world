@@ -297,7 +297,7 @@ pub fn admin_backup(pages: &crate::pages::Pages, cfg: &Config, uri: &Uri, header
     let mut tables = Map::new();
     for t in ["worlds", "entities", "users", "world_memberships", "invite_codes", "player_characters", "combat_sessions",
               "quests", "parties", "game_sessions", "schematics", "schematic_floors", "map_overlays", "invest_boards", "private_notes",
-              "entity_notes", "entity_templates"] {
+              "entity_notes", "entity_templates", "cartographer_links", "cartographer_playable"] {
         tables.insert(t.into(), json!(count(t)?));
     }
     manifest.insert("tables".into(), Value::Object(tables));
@@ -311,6 +311,7 @@ pub fn admin_backup(pages: &crate::pages::Pages, cfg: &Config, uri: &Uri, header
     }
     let uploads = cfg.db_path.parent()?.join("uploads");
     let maps_dir = crate::maps::maps_dir(cfg)?;
+    let cartographer_dir = cfg.accel_root.join("cartographer");
     let manifest_text = nd_render::py_dumps_indent_as(&Value::Object(manifest), 2, true);
     // The zip is STREAMED while it is built (a thread writes it into a bounded channel): the download starts at once and memory stays
     // small, however many gigabytes of uploads there are. Building it whole first made a big instance's backup time out before its first byte.
@@ -318,7 +319,7 @@ pub fn admin_backup(pages: &crate::pages::Pages, cfg: &Config, uri: &Uri, header
     let snap_t = snap.clone();
     std::thread::spawn(move || {
         let mut w = ChanWriter { tx: tx.clone(), buf: Vec::with_capacity(CHUNK) };
-        let res = write_backup_zip(&mut w, &snap_t, &manifest_text, &uploads, &maps_dir).and_then(|_| w.flush());
+        let res = write_backup_zip(&mut w, &snap_t, &manifest_text, &uploads, &maps_dir, &cartographer_dir).and_then(|_| w.flush());
         let _ = std::fs::remove_file(&snap_t);
         if let Err(e) = res {
             let _ = tx.blocking_send(Err(e)); // cuts the download off, so a broken backup never looks complete
@@ -373,7 +374,7 @@ fn stored_kind(name: &str) -> bool {
 }
 
 /// The backup zip: world.db (the VACUUM INTO snapshot), manifest.json, every uploaded file, every map json - the entry names Python's had
-fn write_backup_zip(w: &mut ChanWriter, snap: &std::path::Path, manifest: &str, uploads: &std::path::Path, maps_dir: &std::path::Path) -> std::io::Result<()> {
+fn write_backup_zip(w: &mut ChanWriter, snap: &std::path::Path, manifest: &str, uploads: &std::path::Path, maps_dir: &std::path::Path, cartographer_dir: &std::path::Path) -> std::io::Result<()> {
     use zip9::write::SimpleFileOptions;
     let ioe = |e: zip9::result::ZipError| std::io::Error::other(e.to_string());
     let mut zf = zip9::ZipWriter::new_stream(w);
@@ -385,7 +386,7 @@ fn write_backup_zip(w: &mut ChanWriter, snap: &std::path::Path, manifest: &str, 
     std::io::copy(&mut std::fs::File::open(snap)?, &mut zf)?;
     zf.start_file("manifest.json", opts("manifest.json", 0)).map_err(ioe)?;
     zf.write_all(manifest.as_bytes())?;
-    for (root, prefix) in [(uploads, "uploads"), (maps_dir, "maps")] {
+    for (root, prefix) in [(uploads, "uploads"), (maps_dir, "maps"), (cartographer_dir, "cartographer")] {
         if !root.exists() {
             continue;
         }
@@ -409,6 +410,42 @@ fn write_backup_zip(w: &mut ChanWriter, snap: &std::path::Path, manifest: &str, 
     }
     zf.finish().map_err(ioe)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod backup_tests {
+    use super::*;
+
+    #[test]
+    fn full_backup_includes_cartographer_project_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let snap = dir.path().join("world.db");
+        let uploads = dir.path().join("uploads");
+        let maps = dir.path().join("maps");
+        let cartographer = dir.path().join("cartographer");
+        std::fs::write(&snap, b"database").unwrap();
+        std::fs::create_dir_all(uploads.join("schematics")).unwrap();
+        std::fs::create_dir_all(maps.join("world")).unwrap();
+        std::fs::create_dir_all(cartographer.join("doc_test")).unwrap();
+        std::fs::write(cartographer.join("doc_test/manifest.json"), r#"{"id":"doc_test"}"#).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(64);
+        let mut writer = ChanWriter { tx, buf: Vec::with_capacity(CHUNK) };
+        write_backup_zip(&mut writer, &snap, r#"{"app":"nd-world"}"#, &uploads, &maps, &cartographer).unwrap();
+        writer.flush().unwrap();
+        drop(writer);
+        let mut archive = Vec::new();
+        while let Ok(piece) = rx.try_recv() {
+            archive.extend_from_slice(&piece.unwrap());
+        }
+        let mut zip = zip9::ZipArchive::new(std::io::Cursor::new(archive)).unwrap();
+        let mut found = false;
+        for i in 0..zip.len() {
+            if zip.by_index(i).unwrap().name().ok().as_deref() == Some("cartographer/doc_test/manifest.json") {
+                found = true;
+            }
+        }
+        assert!(found);
+    }
 }
 
 /// `GET /export/rules-and-notes.md` (app/main.py `export_rules_and_notes`): the world's rules plus every note entity and

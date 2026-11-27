@@ -671,6 +671,146 @@ fn group_playable_floors(db: &rusqlite::Connection, world: i64, data: &Value) ->
     Ok(json!({"slug":group}))
 }
 
+pub fn update_run(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Response<Body> {
+    use rusqlite::OptionalExtension;
+    let Some((db, page)) = gm_ctx(cfg, "POST", uri, headers) else {
+        return reply(StatusCode::FORBIDDEN, json!({"error":"GM access required"}));
+    };
+    let Some(world) = page.world.as_ref().and_then(|w| w.get("id")).and_then(Value::as_i64) else {
+        return reply(StatusCode::FORBIDDEN, json!({"error":"Active world required"}));
+    };
+    let Ok(data) = serde_json::from_slice::<Value>(body) else {
+        return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid request"}));
+    };
+    let action = data["action"].as_str().unwrap_or("");
+    match action {
+        "start" => {
+            let project = data["project"].as_str().filter(|p| p.starts_with("doc_") && p.len() <= 64
+                && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'));
+            let Some(project) = project else { return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid project"})); };
+            let Some(revision) = data["revision"].as_i64().filter(|v| *v >= 0) else {
+                return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid revision"}));
+            };
+            let Some(floors) = data["floors"].as_array().filter(|v| v.len() <= 64) else {
+                return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid floor list"}));
+            };
+            let mut records = Vec::new();
+            for floor in floors {
+                let id = floor["id"].as_str().filter(|v| !v.is_empty() && v.len() <= 64);
+                let name = floor["name"].as_str().unwrap_or("Floor").trim();
+                let modes = floor["modes"].as_array().cloned().unwrap_or_default();
+                let modes: Vec<&str> = modes.iter().filter_map(|v| v.as_str()).filter(|m| matches!(*m, "artwork" | "geometry")).collect();
+                let Some(id) = id else { return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid floor"})); };
+                if modes.is_empty() { continue; }
+                records.push(json!({"id":id,"name":name,"modes":modes,"status":"pending","error":null}));
+            }
+            if records.is_empty() { return reply(StatusCode::BAD_REQUEST, json!({"error":"No approved updates"})); }
+            let id = format!("run_{:032x}", rand::random::<u128>());
+            let now = now_secs() as i64;
+            let floors_json = serde_json::to_string(&Value::Array(records)).unwrap_or_else(|_| "[]".into());
+            if db.execute(
+                "INSERT INTO cartographer_update_runs(id, world_id, project_id, revision, status, floors_json, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7)",
+                rusqlite::params![id, world, project, revision, floors_json, now, now],
+            ).is_err() {
+                return reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":"Could not start update run"}));
+            }
+            reply(StatusCode::OK, json!({"id":id,"status":"pending","floors":serde_json::from_str::<Value>(&floors_json).unwrap_or(json!([]))}))
+        }
+        "status" => {
+            let project = data["project"].as_str().unwrap_or("");
+            let run_id = data["id"].as_str().unwrap_or("");
+            let row: Option<(String, i64, String, String, String, i64, i64)> = if run_id.is_empty() {
+                db.query_row(
+                    "SELECT id, revision, status, floors_json, project_id, created_at, updated_at
+                     FROM cartographer_update_runs WHERE world_id = ?1 AND project_id = ?2
+                     ORDER BY updated_at DESC LIMIT 1",
+                    rusqlite::params![world, project],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+                ).optional().unwrap_or(None)
+            } else {
+                db.query_row(
+                    "SELECT id, revision, status, floors_json, project_id, created_at, updated_at
+                     FROM cartographer_update_runs WHERE world_id = ?1 AND id = ?2",
+                    rusqlite::params![world, run_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+                ).optional().unwrap_or(None)
+            };
+            let Some((id, revision, status, floors_json, project, created, updated)) = row else {
+                return reply(StatusCode::NOT_FOUND, json!({"error":"Update run not found"}));
+            };
+            let floors: Value = serde_json::from_str(&floors_json).unwrap_or(json!([]));
+            reply(StatusCode::OK, json!({"id":id,"project":project,"revision":revision,"status":status,"floors":floors,"created_at":created,"updated_at":updated}))
+        }
+        "mark" => {
+            let run_id = data["id"].as_str().unwrap_or("");
+            let floor_id = data["floor"].as_str().unwrap_or("");
+            let floor_status = data["status"].as_str().unwrap_or("");
+            if run_id.is_empty() || floor_id.is_empty()
+                || !matches!(floor_status, "pending" | "running" | "done" | "failed" | "cancelled") {
+                return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid update run result"}));
+            }
+            let row: Option<(i64, String, i64)> = db.query_row(
+                "SELECT revision, floors_json, updated_at FROM cartographer_update_runs WHERE world_id = ?1 AND id = ?2",
+                rusqlite::params![world, run_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            ).optional().unwrap_or(None);
+            let Some((revision, floors_json, _)) = row else {
+                return reply(StatusCode::NOT_FOUND, json!({"error":"Update run not found"}));
+            };
+            let Ok(Value::Array(mut floors)) = serde_json::from_str(&floors_json) else {
+                return reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":"Invalid stored update run"}));
+            };
+            let mut found = false;
+            for floor in &mut floors {
+                if floor["id"].as_str() == Some(floor_id) {
+                    found = true;
+                    floor["status"] = json!(floor_status);
+                    floor["error"] = data["error"].as_str().map(|message| json!(message)).unwrap_or(Value::Null);
+                }
+            }
+            if !found { return reply(StatusCode::BAD_REQUEST, json!({"error":"Floor is not in this update run"})); }
+            let mut overall = "pending";
+            if floors.iter().all(|f| f["status"].as_str() == Some("done")) { overall = "done"; }
+            else if floors.iter().any(|f| f["status"].as_str() == Some("failed")) { overall = "partial"; }
+            else if floors.iter().any(|f| f["status"].as_str() == Some("running")) { overall = "running"; }
+            else if floors.iter().all(|f| matches!(f["status"].as_str(), Some("cancelled" | "done" | "failed"))) { overall = "partial"; }
+            let now = now_secs() as i64;
+            let floors_json = serde_json::to_string(&Value::Array(floors)).unwrap_or_else(|_| "[]".into());
+            if db.execute(
+                "UPDATE cartographer_update_runs SET status = ?1, floors_json = ?2, updated_at = ?3 WHERE world_id = ?4 AND id = ?5",
+                rusqlite::params![overall, floors_json, now, world, run_id],
+            ).is_err() { return reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":"Could not save update result"})); }
+            reply(StatusCode::OK, json!({"id":run_id,"revision":revision,"status":overall,"floors":serde_json::from_str::<Value>(&floors_json).unwrap_or(json!([]))}))
+        }
+        "cancel" => {
+            let run_id = data["id"].as_str().unwrap_or("");
+            let row: Option<String> = db.query_row(
+                "SELECT floors_json FROM cartographer_update_runs WHERE world_id = ?1 AND id = ?2",
+                rusqlite::params![world, run_id],
+                |r| r.get(0),
+            ).optional().unwrap_or(None);
+            let Some(floors_json) = row else { return reply(StatusCode::NOT_FOUND, json!({"error":"Update run not found"})); };
+            let Ok(Value::Array(mut floors)) = serde_json::from_str(&floors_json) else {
+                return reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":"Invalid stored update run"}));
+            };
+            for floor in &mut floors {
+                if matches!(floor["status"].as_str(), Some("pending" | "running")) {
+                    floor["status"] = json!("cancelled");
+                }
+            }
+            let now = now_secs() as i64;
+            let floors_json = serde_json::to_string(&Value::Array(floors)).unwrap_or_else(|_| "[]".into());
+            let _ = db.execute(
+                "UPDATE cartographer_update_runs SET status = 'cancelled', floors_json = ?1, updated_at = ?2 WHERE world_id = ?3 AND id = ?4",
+                rusqlite::params![floors_json, now, world, run_id],
+            );
+            reply(StatusCode::OK, json!({"id":run_id,"status":"cancelled","floors":serde_json::from_str::<Value>(&floors_json).unwrap_or(json!([]))}))
+        }
+        _ => reply(StatusCode::BAD_REQUEST, json!({"error":"Unknown update run action"})),
+    }
+}
+
 pub fn playable_preview(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Response<Body> {
     use rusqlite::OptionalExtension;
     let Some((db, page)) = gm_ctx(cfg, "POST", uri, headers) else {

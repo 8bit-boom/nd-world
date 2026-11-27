@@ -199,7 +199,7 @@ pub fn apply_staged(cfg: &Config) {
     for ext in ["-wal", "-shm"] {
         let _ = std::fs::remove_file(format!("{}{ext}", db_path.display()));
     }
-    for sub in ["uploads", "maps"] {
+    for sub in ["uploads", "maps", "cartographer"] {
         merge_dir(&staging.join(sub), &dir.join(sub));
     }
     let _ = std::fs::remove_dir_all(&staging);
@@ -216,6 +216,26 @@ fn merge_dir(from: &Path, to: &Path) {
             let _ = std::fs::create_dir_all(to);
             let _ = std::fs::copy(&src, &dst);
         }
+    }
+
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn staged_restore_merges_cartographer_projects() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("restore/cartographer/doc_test");
+        let to = dir.path().join("live/cartographer/doc_test");
+        std::fs::create_dir_all(&from).unwrap();
+        std::fs::write(from.join("manifest.json"), r#"{"id":"doc_test"}"#).unwrap();
+        merge_dir(&dir.path().join("restore/cartographer"), &dir.path().join("live/cartographer"));
+        assert_eq!(
+            std::fs::read_to_string(to.join("manifest.json")).unwrap(),
+            r#"{"id":"doc_test"}"#,
+        );
     }
 }
 

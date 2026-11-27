@@ -21,7 +21,8 @@ original or the project removes that link, not the other copy.
 For GMs, the top-level collection also lists Map Maker projects, which are
 shared across worlds. Publishing a project again can replace manually edited
 elements and tokens in its published schematic. Full Backup does not include
-the Map Maker project folder (`<data>/cartographer/data`); back it up separately.
+the Map Maker project folder (`<data>/cartographer/data`) is now included in
+Full Backup and restored with database project associations.
 
 To play a Map Maker floor, finish editing and choose **Create playable copy
 of current floor**. This creates a new schematic using the player-filtered
@@ -55,6 +56,8 @@ actionable preview. It offers approved artwork and wall/light updates, flags
 play-side wall or light conflicts instead of overwriting them, and preserves
 tokens, fog, combat and character positions. No update is applied until the GM
 approves the preview.
+Update runs are saved per floor; interrupted runs can be inspected and retried
+from their failed or pending floor instead of restarting every floor.
 
 ## Maps — image-based, with markers and regions
 

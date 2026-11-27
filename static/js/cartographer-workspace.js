@@ -124,12 +124,29 @@
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ project: id, revision: source.rev, floors: source.floors }),
         })).json();
-        updateState = { id, name, source, preview };
+        let latestRun = null;
+        try {
+          const runUrl = new URL('/api/cartographer/update-run', window.location.origin);
+          if (params.get('w')) runUrl.searchParams.set('w', params.get('w'));
+          latestRun = await (await request(runUrl.pathname + runUrl.search, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'status', project: id }),
+          })).json();
+          if (!latestRun.id || latestRun.status === 'done') latestRun = null;
+        } catch (_) {}
+        updateState = { id, name, source, preview, latestRun };
         body.replaceChildren();
         const note = document.createElement('p');
         note.className = 'carto-note';
         note.textContent = 'Changes affect only the approved copies. Tokens, fog, combat, and character positions are preserved. Wall or light updates stop if playable-side edits differ.';
         body.append(note);
+        if (latestRun) {
+          const retry = document.createElement('p');
+          retry.className = 'carto-note';
+          const unfinished = Array.isArray(latestRun.floors) ? latestRun.floors.filter(f => f.status !== 'done').length : 0;
+          retry.textContent = 'Resumable update ' + latestRun.id + ': ' + unfinished + ' floor(s) unfinished.';
+          body.append(retry);
+        }
         const table = document.createElement('table');
         table.className = 'carto-update-table';
         const thead = document.createElement('thead');
@@ -230,26 +247,83 @@
       const results = [];
       try {
         await request(base + '/save', { method: 'POST' });
+        const approved = updateState.source.floors.map(floor => {
+          const artwork = body.querySelector('input[data-role="artwork"][data-floor="' + floor.id + '"]:checked');
+          const geometryChecked = body.querySelector('input[data-role="geometry"][data-floor="' + floor.id + '"]:checked');
+          const modes = [];
+          if (artwork) modes.push('artwork');
+          if (geometryChecked) modes.push('geometry');
+          return modes.length ? { id: floor.id, name: floor.name, modes } : null;
+        }).filter(Boolean);
+        const runUrl = new URL('/api/cartographer/update-run', window.location.origin);
+        if (params.get('w')) runUrl.searchParams.set('w', params.get('w'));
+        let run;
+        const resumable = updateState.latestRun && Array.isArray(updateState.latestRun.floors);
+        if (resumable) {
+          run = updateState.latestRun;
+          for (const floor of run.floors) {
+            if (floor.status === 'failed' || floor.status === 'cancelled') {
+              await request(runUrl.pathname + runUrl.search, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'mark', id: run.id, floor: floor.id, status: 'pending', error: null }),
+              });
+            }
+          }
+        } else {
+          run = await (await request(runUrl.pathname + runUrl.search, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'start', project: updateState.id, revision: updateState.source.rev, floors: approved }),
+          })).json();
+        }
+        let failed = 0;
         for (const floor of updateState.source.floors) {
+          const prior = resumable && Array.isArray(run.floors)
+            ? run.floors.find(record => record.id === floor.id)
+            : null;
+          if (prior && prior.status === 'done') continue;
           const artwork = body.querySelector('input[data-role="artwork"][data-floor="' + floor.id + '"]:checked');
           const geometryChecked = body.querySelector('input[data-role="geometry"][data-floor="' + floor.id + '"]:checked');
           if (!artwork && !geometryChecked) continue;
-          const exported = await request(base + '/export/uvtt?floor=' + encodeURIComponent(floor.id) + '&ppc=32&audience=player');
+          await request(runUrl.pathname + runUrl.search, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'mark', id: run.id, floor: floor.id, status: 'running' }),
+          });
           const modes = artwork ? ['refresh'] : [];
           if (geometryChecked) modes.push('geometry');
+          let floorFailed = false;
           for (const mode of modes) {
-            const form = new FormData();
-            form.append('file', await exported.blob(), 'map-maker-floor.dd2vtt');
-            form.append('name', (updateState.name || 'Map') + ' - ' + floor.name);
-            form.append('project', updateState.id);
-            form.append('floor', floor.id);
-            form.append('mode', mode);
-            form.append('revision', String(updateState.source.rev));
-            const imported = await (await request(importUrl.pathname + importUrl.search, { method: 'POST', body: form })).json();
-            results.push({ floor: floor.name, mode, ok: true, warnings: imported.warnings || [] });
+            try {
+              const exported = await request(base + '/export/uvtt?floor=' + encodeURIComponent(floor.id) + '&ppc=32&audience=player');
+              const form = new FormData();
+              form.append('file', await exported.blob(), 'map-maker-floor.dd2vtt');
+              form.append('name', (updateState.name || 'Map') + ' - ' + floor.name);
+              form.append('project', updateState.id);
+              form.append('floor', floor.id);
+              form.append('mode', mode);
+              form.append('revision', String(updateState.source.rev));
+              const imported = await (await request(importUrl.pathname + importUrl.search, { method: 'POST', body: form })).json();
+              results.push({ floor: floor.name, mode, ok: true, warnings: imported.warnings || [] });
+            } catch (error) {
+              failed++;
+              floorFailed = true;
+              await request(runUrl.pathname + runUrl.search, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'mark', id: run.id, floor: floor.id, status: 'failed', error: error.message }),
+              });
+              const line = document.createElement('p');
+              line.className = 'carto-note';
+              line.textContent = floor.name + ' ' + (mode === 'geometry' ? 'walls/lights' : 'artwork') + ' failed: ' + error.message;
+              body.append(line);
+            }
+          }
+          if (!floorFailed) {
+            await request(runUrl.pathname + runUrl.search, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'mark', id: run.id, floor: floor.id, status: 'done' }),
+            });
           }
         }
-        summary.textContent = 'Updated ' + results.length + ' floor action(s).';
+        summary.textContent = 'Run ' + run.id + ': ' + results.length + ' action(s) updated, ' + failed + ' failed.';
         for (const result of results) {
           const line = document.createElement('p');
           line.className = 'carto-note';
@@ -257,7 +331,7 @@
           body.append(line);
         }
         status.hidden = false;
-        status.textContent = 'Playable scene update complete.';
+        status.textContent = failed ? 'Playable scene update partially completed; retry the failed floor.' : 'Playable scene update complete.';
       } catch (error) {
         const line = document.createElement('p');
         line.className = 'carto-note';

@@ -45,6 +45,7 @@ fn run_schema(db: &rusqlite::Connection) -> Option<()> {
     ensure_schematic_floors(db).ok()?;
     ensure_cartographer_links(db).ok()?;
     ensure_cartographer_playable(db).ok()?;
+    ensure_cartographer_update_runs(db).ok()?;
     Some(())
 }
 
@@ -75,11 +76,34 @@ pub(crate) fn ensure_cartographer_playable(db: &rusqlite::Connection) -> Result<
     let mut changed = before == 0;
     for column in ["walls_json", "lights_json", "source_rev"] {
         if !columns.iter().any(|name| name == column) {
-            db.execute(&format!("ALTER TABLE cartographer_playable ADD COLUMN {column} TEXT"), []).map_err(|e| e.to_string())?;
+            let kind = if column == "source_rev" { "INTEGER" } else { "TEXT" };
+            db.execute(&format!("ALTER TABLE cartographer_playable ADD COLUMN {column} {kind}"), []).map_err(|e| e.to_string())?;
             changed = true;
         }
     }
     Ok(changed)
+}
+
+pub(crate) fn ensure_cartographer_update_runs(db: &rusqlite::Connection) -> Result<bool, String> {
+    let before: i64 = db.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'cartographer_update_runs'",
+        [], |r| r.get(0),
+    ).map_err(|e| e.to_string())?;
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS cartographer_update_runs (
+            id TEXT PRIMARY KEY NOT NULL,
+            world_id INTEGER NOT NULL,
+            project_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            floors_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_cartographer_update_runs_project
+            ON cartographer_update_runs(world_id, project_id, updated_at);"
+    ).map_err(|e| e.to_string())?;
+    Ok(before == 0)
 }
 
 pub(crate) fn ensure_cartographer_links(db: &rusqlite::Connection) -> Result<bool, String> {
@@ -373,6 +397,11 @@ pub(crate) fn heal_schema(db: &rusqlite::Connection) -> Result<Vec<String>, Stri
         Ok(false) => {}
         Err(e) => return Err(e),
     }
+    match ensure_cartographer_update_runs(db) {
+        Ok(true) => done.push("created table cartographer_update_runs".into()),
+        Ok(false) => {}
+        Err(e) => return Err(e),
+    }
     Ok(done)
 }
 
@@ -621,6 +650,18 @@ fn prune_snapshots(dir: &std::path::Path, keep: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn playable_update_runs_are_created_idempotently() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        assert!(ensure_cartographer_update_runs(&db).unwrap());
+        assert!(!ensure_cartographer_update_runs(&db).unwrap());
+        let count: i64 = db.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='cartographer_update_runs'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 1);
+    }
 
     #[test]
     fn playable_geometry_baselines_migrate_without_changing_existing_links() {
