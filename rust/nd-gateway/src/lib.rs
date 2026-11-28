@@ -19,6 +19,7 @@ pub mod catalog;
 pub mod config;
 pub mod strict;
 pub mod rooms;
+pub mod map_physics;
 pub mod sheets;
 pub mod retrieval;
 pub mod ai;

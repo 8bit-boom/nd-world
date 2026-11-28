@@ -1759,6 +1759,8 @@ pub fn schematic_views(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderM
         out.insert("canvas".into(), json!({"w": dim("canvas_width", 2000), "h": dim("canvas_height", 1500), "bg": bg(&sc)}));
         out.insert("grid_type".into(), json!(sc.get("grid_type").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("none")));
         out.insert("grid_config".into(), grid);
+        out.insert("scene_rev".into(), scene.scene_rev);
+        out.insert("physics".into(), scene.physics);
         out.extend(scene.fog_part);
         return crate::edits::json_response(&Value::Object(out));
     }
@@ -1785,7 +1787,9 @@ pub fn schematic_views(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderM
         out.insert("own_pc_currency".into(), scene.own_pc_currency);
         out.insert("combat_active_combatant_id".into(), scene.active_combatant_id);
         out.insert("combat_round".into(), scene.combat_round);
-        // Python's /view.json payload does not include revision fields.
+        out.insert("scene_rev".into(), scene.scene_rev);
+        out.insert("combat_rev".into(), scene.combat_rev);
+        out.insert("physics".into(), scene.physics);
         out.extend(scene.fog_part);
         return crate::edits::json_response(&Value::Object(out));
     }
@@ -1800,6 +1804,9 @@ pub fn schematic_views(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderM
     c.insert("own_pc_currency_json".into(), json!(nd_render::py_dumps(&scene.own_pc_currency)));
     c.insert("combat_active_combatant_id".into(), scene.active_combatant_id);
     c.insert("combat_round".into(), scene.combat_round);
+    c.insert("scene_rev".into(), scene.scene_rev);
+    c.insert("combat_rev".into(), scene.combat_rev);
+    c.insert("physics_json".into(), json!(nd_render::py_dumps(&scene.physics)));
     c.insert("fog_json".into(), json!(nd_render::py_dumps(&Value::Object(scene.fog_part))));
     c.insert("bg_image_url".into(), json!(scene.image_url));
     c.insert("schematic".into(), Value::Object(sc));

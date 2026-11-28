@@ -157,6 +157,7 @@
         <rect id="grid-layer" width="100%" height="100%" fill="url(#major-grid)" display="none" pointer-events="none"/>
         <g id="el-layer"></g>
         <g id="battle-grid-layer" pointer-events="none"></g>
+        <g id="physics-layer" pointer-events="none"></g>
         <g id="prev-layer" pointer-events="none"></g>
         <rect id="hit" width="100%" height="100%" fill="transparent"/>
         <g id="sel-layer"   pointer-events="none"></g>
@@ -222,6 +223,34 @@
         <button type="button" class="props-mini" id="rooms-grid-offer" style="display:none">Use a square grid (50 px squares)</button>
         <div style="font-size:.68rem;opacity:.6;line-height:1.35">Floors and walls are generated from what you paint and appear as ordinary map elements (their ids start with rm-): edit the drawing here, not the generated pieces. Ctrl+Z undoes while this tool is active.</div>
         <div id="rooms-msg" role="status" style="font-size:.72rem;color:#ffb066;min-height:1em"></div>
+      </div>
+      <div class="panel-hdr panel-hdr-toggle" onclick="togglePhysicsPanel()">
+        Physics <span id="physics-toggle">▸</span>
+      </div>
+      <div id="physics-body">
+        <div class="props-row" style="margin-top:0">
+          <label title="Automatic ticks run only when a door or break changes topology"><input type="checkbox" id="physics-enabled"/> Enabled</label>
+          <label title="Draw integer room states on this map"><input type="checkbox" id="physics-visible"/> Show layer</label>
+        </div>
+        <div class="props-row">
+          <button type="button" class="props-mini" id="physics-tick">Tick</button>
+          <label>Steps <input type="number" id="physics-steps" min="1" max="16" value="1" style="width:3.5rem"/></label>
+          <button type="button" class="props-mini" id="physics-reset">Reset</button>
+        </div>
+        <div class="props-row">
+          <select id="physics-room" title="Room to edit" style="max-width:150px"></select>
+        </div>
+        <div class="props-row" style="flex-wrap:wrap">
+          <label>Water <input type="number" id="physics-water" min="0" max="100" value="0" style="width:3.5rem"/></label>
+          <label>Fire <input type="number" id="physics-fire" min="0" max="100" value="0" style="width:3.5rem"/></label>
+          <label>Gas <input type="number" id="physics-gas" min="0" max="100" value="0" style="width:3.5rem"/></label>
+          <label>Heat <input type="number" id="physics-heat" min="0" max="100" value="0" style="width:3.5rem"/></label>
+          <label>Pressure <input type="number" id="physics-pressure" min="0" max="100" value="0" style="width:4.5rem"/></label>
+        </div>
+        <div class="props-row">
+          <button type="button" class="props-mini" id="physics-set-room">Set room</button>
+        </div>
+        <div id="physics-status" role="status" style="font-size:.72rem;color:#ffb066;min-height:1em"></div>
       </div>
       <div class="panel-hdr panel-hdr-toggle" onclick="toggleWallsPanel()">
         Walls &amp; fog <span id="walls-toggle">▸</span>
@@ -649,6 +678,8 @@
 .prop-item:hover .prop-x, .prop-item:focus-within .prop-x { display:block; }
 #rooms-body { display:none; padding:.4rem .5rem; border-bottom:1px solid rgba(255,255,255,.07); }
 #rooms-body.open { display:block; }
+#physics-body { display:none; padding:.4rem .5rem; border-bottom:1px solid rgba(255,255,255,.07); }
+#physics-body.open { display:block; }
 .props-mini.on { border-color:var(--neon); background:rgba(0,240,255,.12); }
 #walls-body { display:none; padding:.4rem .5rem; border-bottom:1px solid rgba(255,255,255,.07); }
 #walls-body.open { display:block; }
@@ -702,6 +733,7 @@
 </style>
 
 <script src="/static/js/schematic-render.js?v={{ asset_v('js/schematic-render.js') }}"></script>
+<script src="/static/js/schematic-physics.js?v={{ asset_v('js/schematic-physics.js') }}"></script>
 
 <!-- ✨ AI Build dialog -->
 <div id="ai-build-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:400;align-items:center;justify-content:center">
@@ -2273,6 +2305,11 @@ function toggleRoomsPanel() {
   body.classList.toggle('open');
   tog.textContent = body.classList.contains('open') ? '▾' : '▸';
 }
+function togglePhysicsPanel() {
+  const body = document.getElementById('physics-body'), tog = document.getElementById('physics-toggle');
+  body.classList.toggle('open');
+  tog.textContent = body.classList.contains('open') ? '▾' : '▸';
+}
 function toggleWallsPanel() {
   const body = document.getElementById('walls-body'), tog = document.getElementById('walls-toggle');
   body.classList.toggle('open');
@@ -2886,5 +2923,8 @@ ndWalls.init({
   getCanvas: () => ({ w: CW, h: CH }),
   getRects: () => elements.filter(e => e.type === 'rect' && !e.hidden),
 });
+if (window.ndSchematicPhysics) {
+  ndSchematicPhysics.initGM({ slug: SLUG, svg });
+}
 </script>
 {% endblock %}

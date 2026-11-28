@@ -25,12 +25,14 @@
   <image id="bg-image" display="none" x="0" y="0" width="{{ schematic.canvas_width or 2000 }}" height="{{ schematic.canvas_height or 1500 }}" preserveAspectRatio="none" pointer-events="none"/>
   <g id="el-layer"></g>
   <g id="battle-grid-layer" pointer-events="none"></g>
+  <g id="physics-layer" pointer-events="none"></g>
   <g id="token-layer"></g>
 </svg>
 <div id="tv-note"></div>
 <div id="tv-off">reconnecting…</div>
 
 <script src="/static/js/schematic-render.js?v={{ asset_v('js/schematic-render.js') }}"></script>
+<script src="/static/js/schematic-physics.js?v={{ asset_v('js/schematic-physics.js') }}"></script>
 <script src="/static/js/map-viewport.js?v={{ asset_v('js/map-viewport.js') }}"></script>
 <script src="/static/js/map-geom.js?v={{ asset_v('js/map-geom.js') }}"></script>
 <script src="/static/js/map-vision.js?v={{ asset_v('js/map-vision.js') }}"></script>
@@ -54,6 +56,7 @@
   var elLayer = document.getElementById('el-layer'), tokenLayer = document.getElementById('token-layer');
   var note = document.getElementById('tv-note');
   var elements = [];
+  var physicsState = null;
 
   // ── drawing ────────────────────────────────────────────────────────────────
   // fog of war: the party's characters see, everything else shows only inside their view (static/js/map-fog-glue.js)
@@ -71,6 +74,7 @@
       if (el.type === 'token') { g.dataset.id = el.id; tokenLayer.appendChild(g); } else elLayer.appendChild(g);
     });
     fog.apply();
+    if (window.ndSchematicPhysics) window.ndSchematicPhysics.applyOverlay(svg, physicsState, { player: true });
   }
   function applyData(d) {
     window.CW = d.canvas.w; window.CH = d.canvas.h; window.gridType = d.grid_type; window.gridConfig = d.grid_config || {};
@@ -80,6 +84,7 @@
     if (d.image_url) { img.setAttribute('href', d.image_url); img.setAttribute('width', d.canvas.w); img.setAttribute('height', d.canvas.h); img.setAttribute('display', 'inline'); }
     else img.setAttribute('display', 'none');
     elements = d.elements || [];
+    physicsState = d.physics || null;
     fog.setState({ fog: d.fog, walls: d.walls, lights: d.lights, explored: d.explored });
     redraw(); render();
   }

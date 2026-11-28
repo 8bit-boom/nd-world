@@ -544,7 +544,9 @@ const SLUG_ROUTES: &[(&str, &str, SlugHandler)] = &[("/api/maps/schematic/", "/m
     ("/api/maps/schematic/", "/buy-item", sc_buy),
     ("/api/maps/schematic/", "/play-manifest", sc_play_manifest), ("/api/maps/schematic/", "/play", sc_play),
     ("/maps/schematic/", "/add-floor", sc_add_floor), ("/maps/schematic/", "/portal", sc_floor_portal),
-    ("/maps/schematic/", "/door", sc_door), ("/maps/schematic/", "/break", sc_break), ("/maps/schematic/", "/fog", sc_fog),
+    ("/maps/schematic/", "/door", sc_door), ("/maps/schematic/", "/break", sc_break), ("/maps/schematic/", "/physics", sc_physics),
+    ("/maps/schematic/", "/physics/set", sc_physics), ("/maps/schematic/", "/physics/tick", sc_physics), ("/maps/schematic/", "/physics/reset", sc_physics),
+    ("/maps/schematic/", "/fog", sc_fog),
     ("/maps/schematic/", "/rooms", sc_rooms), ("/maps/schematic/", "/rooms/detect", sc_rooms_detect), ("/maps/schematic/", "/lights", sc_lights), ("/maps/schematic/", "/walls", sc_walls),
     ("/maps/schematic/", "/elements", sc_elements), ("/maps/schematic/", "/rename", sc_rename), ("/maps/schematic/", "/delete", sc_delete),
     ("/maps/schematic/", "/grid", sc_grid), ("/maps/schematic/", "/link-combat", sc_link_combat), ("/maps/schematic/", "/unlink-combat", sc_unlink_combat),
@@ -637,6 +639,12 @@ fn view_route(method: &Method, path: &str) -> Option<(SlugHandler, String)> {
             let slug_ok = |s: &str| !s.is_empty() && !s.contains('/');
             if let Some(sl) = rest.strip_suffix("/walls.json").filter(|s| slug_ok(s)) {
                 return Some((sc_walls_get as SlugHandler, sl.to_string()));
+            }
+            if let Some(sl) = rest.strip_suffix("/physics.json").filter(|s| slug_ok(s)) {
+                return Some((sc_physics_get as SlugHandler, sl.to_string()));
+            }
+            if let Some(sl) = rest.strip_suffix("/physics").filter(|s| slug_ok(s)) {
+                return Some((sc_physics_get as SlugHandler, sl.to_string()));
             }
             if let Some(sl) = rest.strip_suffix("/rooms.json").filter(|s| slug_ok(s)) {
                 return Some((sc_rooms_get as SlugHandler, sl.to_string()));
@@ -14357,6 +14365,189 @@ fn sc_fog(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     json_response(&v)
 }
 
+fn sc_physics_graph(sc: &Map<String, Value>, walls_override: Option<&Value>) -> Option<crate::map_physics::PhysicsGraph> {
+    let rooms = sc_load(sc, "rooms_json", false)?;
+    let walls = match walls_override {
+        Some(walls) => walls.clone(),
+        None => sc_load(sc, "walls_json", true)?,
+    };
+    Some(crate::map_physics::derive_graph(&rooms, &walls))
+}
+
+fn sc_physics_state(sc: &Map<String, Value>) -> crate::map_physics::PhysicsState {
+    let raw = sc.get("physics_json").and_then(Value::as_str);
+    crate::map_physics::PhysicsState::safe_normalize_json(raw)
+}
+
+/// One automatic, bounded physics tick after a topology-changing door/window/container action.
+/// It is called only while the stored state is enabled; its revision and tick still
+/// participate in stale-write checks for later GM requests.
+fn sc_auto_physics_tick(c: &mut Ctx, sc: &Map<String, Value>, walls_override: Option<&Value>) -> Option<()> {
+    let mut state = sc_physics_state(sc);
+    let graph = sc_physics_graph(sc, walls_override)?;
+    state.synchronize_rooms(&graph);
+    if state.enabled {
+        crate::map_physics::tick(&mut state, &graph, 1).ok()?;
+        let json = nd_render::py_dumps(&state.to_value());
+        orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("physics_json", s(&json))])?;
+    }
+    Some(())
+}
+
+fn physics_room_id(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => {
+            let s = s.trim();
+            (!s.is_empty()).then(|| s.to_string())
+        }
+        Value::Number(n) if n.is_i64() => n.as_i64().map(|n| n.to_string()),
+        Value::Number(n) if n.is_u64() => n.as_u64().map(|n| n.to_string()),
+        _ => None,
+    }
+}
+
+fn sc_physics_stale(body: &Map<String, Value>, current: i64) -> Option<Result<(), Response<Body>>> {
+    let requested = body.get("revision").or_else(|| body.get("rev")).or_else(|| body.get("base_revision"))?;
+    let requested = match requested {
+        Value::Number(n) if n.is_i64() => n.as_i64()?.max(0),
+        _ => return Some(Err(bad400("revision must be a whole number"))),
+    };
+    if requested != current {
+        return Some(Err(crate::ai_more::detail(StatusCode::CONFLICT, "Stale physics revision")));
+    }
+    Some(Ok(()))
+}
+
+/// `GET /maps/schematic/<slug>/physics.json` (and `/physics`) — GM / Assistant only.
+fn sc_physics_get(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let sc = match sc_gate(c, slug)? { Ok(sc) => sc, Err(r) => return Some(r) };
+    let graph = sc_physics_graph(&sc, None)?;
+    let mut state = sc_physics_state(&sc);
+    state.synchronize_rooms(&graph);
+    json_response(&crate::map_physics::to_value(&state, &graph))
+}
+
+/// `POST /maps/schematic/<slug>/physics` with action set/tick/reset.
+fn sc_physics(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let sc = match sc_gate(c, slug)? { Ok(sc) => sc, Err(r) => return Some(r) };
+    let body = if c.body.iter().all(|b| b.is_ascii_whitespace()) {
+        Value::Object(Map::new())
+    } else {
+        match sc_body(c)? { Ok(body) => body, Err(r) => return Some(r) }
+    };
+    let Value::Object(body) = body else { return Some(bad400("JSON object required")) };
+
+    let action = body.get("action").or_else(|| body.get("op")).or_else(|| body.get("mode"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            if c.uri.path().ends_with("/physics/set") {
+                "set".to_string()
+            } else if c.uri.path().ends_with("/physics/tick") {
+                "tick".to_string()
+            } else if c.uri.path().ends_with("/physics/reset") {
+                "reset".to_string()
+            } else if body.get("reset") == Some(&Value::Bool(true)) {
+                "reset".to_string()
+            } else if body.contains_key("enabled") || body.contains_key("rooms") || body.contains_key("states")
+                || body.contains_key("room_states") || body.contains_key("room_id") || body.contains_key("room")
+            {
+                "set".to_string()
+            } else {
+                "tick".to_string()
+            }
+        });
+    if !matches!(action.as_str(), "set" | "tick" | "reset") {
+        return Some(bad400("action must be set, tick or reset"));
+    }
+
+    let graph = sc_physics_graph(&sc, None)?;
+    let mut state = sc_physics_state(&sc);
+    state.synchronize_rooms(&graph);
+    if let Some(stale) = sc_physics_stale(&body, state.revision) {
+        if let Err(response) = stale {
+            return Some(response);
+        }
+    }
+
+    if action == "set" {
+        if let Some(enabled) = body.get("enabled") {
+            let Some(enabled) = enabled.as_bool() else { return Some(bad400("enabled must be true or false")) };
+            state.enabled = enabled;
+        }
+        let room_patch = body.get("rooms")
+            .or_else(|| body.get("states"))
+            .or_else(|| body.get("room_states"));
+        if let Some(patch) = room_patch {
+            let known: std::collections::BTreeSet<String> = graph.nodes.iter().map(|node| node.id.clone()).collect();
+            if let Err(message) = state.apply_rooms(patch, &known) {
+                return Some(bad400(&message));
+            }
+        }
+        if let Some(room_id) = body.get("room_id").and_then(physics_room_id) {
+            if !graph.nodes.iter().any(|node| node.id == room_id) {
+                return Some(bad400(&format!("Unknown physics room id: {room_id}")));
+            }
+            let mut patch = Map::new();
+            for key in ["water", "fire", "gas", "heat", "pressure"] {
+                if let Some(value) = body.get(key) {
+                    patch.insert(key.to_string(), value.clone());
+                }
+            }
+            let mut room = state.rooms.get(&room_id).cloned().unwrap_or_default();
+            if let Err(message) = room.apply_patch(&patch) {
+                return Some(bad400(&message));
+            }
+            state.rooms.insert(room_id, room);
+        }
+        if let Some(Value::Object(room) ) = body.get("room") {
+            let room_id = room.get("id").or_else(|| room.get("room_id")).and_then(physics_room_id);
+            if let Some(room_id) = room_id {
+                if !graph.nodes.iter().any(|node| node.id == room_id) {
+                    return Some(bad400(&format!("Unknown physics room id: {room_id}")));
+                }
+                let mut patch = room.clone();
+                patch.remove("id");
+                patch.remove("room_id");
+                let mut state_room = state.rooms.get(&room_id).cloned().unwrap_or_default();
+                if let Err(message) = state_room.apply_patch(&patch) {
+                    return Some(bad400(&message));
+                }
+                state.rooms.insert(room_id, state_room);
+            }
+        }
+        state.synchronize_rooms(&graph);
+        state.bump_revision();
+    } else if action == "tick" {
+        let steps = body.get("steps").cloned().unwrap_or(json!(1));
+        let steps = match crate::map_physics::normalize_steps(&steps) {
+            Ok(steps) => steps,
+            Err(message) => return Some(bad400(&message)),
+        };
+        if let Err(message) = crate::map_physics::tick(&mut state, &graph, steps) {
+            return Some(bad400(&message));
+        }
+    } else {
+        if let Some(enabled) = body.get("enabled") {
+            let Some(enabled) = enabled.as_bool() else { return Some(bad400("enabled must be true or false")) };
+            state.enabled = enabled;
+        }
+        state.reset(&graph);
+    }
+
+    let stored = nd_render::py_dumps(&state.to_value());
+    orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("physics_json", s(&stored))])?;
+    let wid = sc.get("world_id")?.as_i64()?;
+    orm::touch(&c.db, wid)?;
+    orm::bump_scene(&c.db, sc.get("id")?.as_i64()?, wid)?;
+    let mut answer = crate::map_physics::to_value(&state, &graph).as_object()?.clone();
+    answer.insert("ok".into(), json!(true));
+    answer.insert("action".into(), json!(action));
+    json_response(&Value::Object(answer))
+}
+
 fn sc_door(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     let sc = match sc_gate(c, slug)? { Ok(sc) => sc, Err(r) => return Some(r) };
     let body = match sc_body(c)? { Ok(b) => b, Err(r) => return Some(r) };
@@ -14374,12 +14565,16 @@ fn sc_door(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
                 (_, Some("broken")) => "broken".into(),
                 _ => "open".into(),
             });
+            let old_state = w.get("state").and_then(|v| v.as_str()).unwrap_or("closed").to_string();
             if state == "broken" && w.get("breakable") != Some(&Value::Bool(true)) {
                 w.insert("breakable".into(), json!(true));
             }
             w.insert("state".into(), json!(state));
             orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("walls_json", s(&nd_render::py_dumps(&Value::Array(walls.clone()))))])?;
-            orm::touch(&c.db, sc.get("world_id")?.as_i64()?)?;
+            if old_state != state {
+                sc_auto_physics_tick(c, &sc, Some(&Value::Array(walls.clone())));
+                orm::bump_scene(&c.db, sc.get("id")?.as_i64()?, sc.get("world_id")?.as_i64()?);
+            }
             return json_response(&json!({"wall_id": wid, "state": state}));
         }
     }
@@ -14407,9 +14602,15 @@ fn sc_break(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
                 if !matches!(wall_kind, "door" | "window" | "secret") {
                     return Some(bad400("Only doors and windows can be broken"));
                 }
+                let old_state = w.get("state").and_then(|v| v.as_str()).unwrap_or("closed").to_string();
                 w.insert("state".into(), json!("broken"));
                 w.insert("breakable".into(), json!(true));
                 found = true;
+                if old_state != "broken" {
+                    // The caller below bumps scene once; the physics helper updates
+                    // physics_json in the same transaction when it is enabled.
+                    sc_auto_physics_tick(c, &sc, Some(&Value::Array(walls.clone())));
+                }
                 break;
             }
         }
@@ -14438,9 +14639,14 @@ fn sc_break(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
             if !container {
                 return Some(bad400("Only breakable containers can be broken"));
             }
+            let was_broken = el.get("broken").and_then(|v| v.as_bool()) == Some(true)
+                || el.get("state").and_then(|v| v.as_str()) == Some("broken");
             el.insert("broken".into(), json!(true));
             el.insert("breakable".into(), json!(true));
             el.insert("hp".into(), json!(0));
+            if !was_broken {
+                sc_auto_physics_tick(c, &sc, None);
+            }
             found = true;
             break;
         }
@@ -16670,6 +16876,7 @@ pub struct PlayerScene {
     pub combat_round: Value,
     pub scene_rev: Value,
     pub combat_rev: Value,
+    pub physics: Value,
 }
 
 /// `player_scene` + `_schematic_player_payload`; None for strict secrecy (what the party has seen is computed and recorded: Python's)
@@ -16753,12 +16960,27 @@ pub fn player_scene(db: &Connection, sc: &Map<String, Value>, viewer: Option<(i6
     let mut image_url = sc.get("image_url").and_then(|v| v.as_str()).map(str::to_string);
     let mut visible = visible;
     let mut explored = None;
+    let rooms = sc_load(sc, "rooms_json", false).unwrap_or(json!({}));
+    let walls_for_physics = sc_load(sc, "walls_json", true).unwrap_or(json!([]));
+    let physics_graph = crate::map_physics::derive_graph(&rooms, &walls_for_physics);
+    let mut physics_state = crate::map_physics::PhysicsState::safe_normalize_json(
+        sc.get("physics_json").and_then(Value::as_str)
+    );
+    physics_state.synchronize_rooms(&physics_graph);
+    let mut physics_allowed = None::<std::collections::BTreeSet<String>>;
     if strict {
         // strict secrecy (app/map_strict.py): only what the party has seen; the view records newly explored squares
         let (view, record) = crate::strict::compute(sc, &elements, &fog)?;
         if let Some(rec) = record {
             let _ = db.execute("UPDATE main.schematics SET explored_json = ?1 WHERE id = ?2", rusqlite::params![rec, sc.get("id")?.as_i64()?]);
         }
+        let mut allowed = std::collections::BTreeSet::new();
+        for node in &physics_graph.nodes {
+            if view.touches(node.x, node.y, node.x + node.w, node.y + node.h, false) {
+                allowed.insert(node.id.clone());
+            }
+        }
+        physics_allowed = Some(allowed);
         visible = crate::strict::filter_elements(visible, &view);
         walls = crate::strict::filter_walls(walls, &view)?;
         lights = crate::strict::filter_lights(lights, &view);
@@ -16768,6 +16990,11 @@ pub fn player_scene(db: &Connection, sc: &Map<String, Value>, viewer: Option<(i6
         }
         explored = Some(runs);
     }
+    let physics = crate::map_physics::player_overlay(
+        &physics_state,
+        &physics_graph,
+        physics_allowed.as_ref(),
+    );
     let mut fog_part = Map::new();
     fog_part.insert("fog".into(), Value::Object(fog));
     fog_part.insert("walls".into(), Value::Array(walls));
@@ -16809,7 +17036,7 @@ pub fn player_scene(db: &Connection, sc: &Map<String, Value>, viewer: Option<(i6
     }
     let scene_rev = sc.get("scene_rev").cloned().unwrap_or(json!(0));
     Some(PlayerScene { visible, image_url, fog_part, own_pc_id, own_pc_ids, own_pc_currency,
-        active_combatant_id, combat_round, scene_rev, combat_rev })
+        active_combatant_id, combat_round, scene_rev, combat_rev, physics })
 }
 
 pub fn safe_image(url: &str) -> String {
@@ -18950,6 +19177,17 @@ fn em_complete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 #[cfg(test)]
 mod schematic_floor_tests {
     use super::*;
+
+    #[test]
+    fn physics_stale_revision_is_a_conflict() {
+        let body = serde_json::from_value::<Map<String, Value>>(json!({
+            "action": "tick",
+            "revision": 2
+        })).unwrap();
+        let result = sc_physics_stale(&body, 3).unwrap();
+        let response = result.unwrap_err();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
 
     #[test]
     fn broken_and_breakable_walls_keep_their_state() {

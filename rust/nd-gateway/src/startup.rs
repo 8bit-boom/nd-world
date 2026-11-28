@@ -42,6 +42,7 @@ fn run_schema(db: &rusqlite::Connection) -> Option<()> {
         }
     }
     let _ = ensure_scene_rev(db);
+    let _ = ensure_schematic_physics(db);
     ensure_schematic_floors(db).ok()?;
     ensure_cartographer_links(db).ok()?;
     ensure_cartographer_object_bindings(db).ok()?;
@@ -338,6 +339,29 @@ pub(crate) fn ensure_scene_rev(db: &rusqlite::Connection) -> Result<bool, String
     Ok(true)
 }
 
+pub(crate) fn ensure_schematic_physics(db: &rusqlite::Connection) -> Result<bool, String> {
+    let exists: bool = db.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schematics'",
+        [],
+        |r| r.get::<_, i64>(0).map(|n| n > 0),
+    )
+    .unwrap_or(false);
+    if !exists {
+        return Ok(false);
+    }
+    let mut st = db.prepare("PRAGMA table_info(schematics)").map_err(|e| e.to_string())?;
+    let found = st.query_map([], |r| r.get::<_, String>(1))
+        .ok()
+        .map(|rows| rows.flatten().any(|column| column == "physics_json"))
+        .unwrap_or(false);
+    if found {
+        return Ok(false);
+    }
+    db.execute_batch("ALTER TABLE schematics ADD COLUMN physics_json TEXT")
+        .map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 pub(crate) fn ensure_schematic_floors(db: &rusqlite::Connection) -> Result<bool, String> {
     let before: i64 = db
         .query_row(
@@ -573,6 +597,11 @@ pub(crate) fn heal_schema(db: &rusqlite::Connection) -> Result<Vec<String>, Stri
     // after the statements, so a database made from the snapshot (which has no `scene_rev` in `schematics`) gets the column in this pass and a second pass has nothing to do
     match ensure_scene_rev(db) {
         Ok(true) => done.push("added column schematics.scene_rev".into()),
+        Ok(false) => {}
+        Err(e) => return Err(e),
+    }
+    match ensure_schematic_physics(db) {
+        Ok(true) => done.push("added column schematics.physics_json".into()),
         Ok(false) => {}
         Err(e) => return Err(e),
     }
@@ -989,5 +1018,19 @@ mod tests {
             columns,
             ["schematic_id", "world_id", "group_id", "floor_order", "label"]
         );
+    }
+
+    #[test]
+    fn schematic_physics_column_migrates_idempotently() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE schematics (id INTEGER PRIMARY KEY);").unwrap();
+        assert!(ensure_schematic_physics(&db).unwrap());
+        assert!(!ensure_schematic_physics(&db).unwrap());
+        let found: i64 = db.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('schematics') WHERE name='physics_json'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(found, 1);
     }
 }

@@ -27,6 +27,7 @@
       {% endif %}
       <g id="el-layer"></g>
       <g id="battle-grid-layer" pointer-events="none"></g>
+      <g id="physics-layer" pointer-events="none"></g>
       <g id="party-layer"></g>
       <g id="token-layer"></g>
     </svg>
@@ -64,6 +65,7 @@
 </style>
 
 <script src="/static/js/schematic-render.js?v={{ asset_v('js/schematic-render.js') }}"></script>
+<script src="/static/js/schematic-physics.js?v={{ asset_v('js/schematic-physics.js') }}"></script>
 <script src="/static/js/map-viewport.js?v={{ asset_v('js/map-viewport.js') }}"></script>
 <script src="/static/js/map-geom.js?v={{ asset_v('js/map-geom.js') }}"></script>
 <script src="/static/js/map-vision.js?v={{ asset_v('js/map-vision.js') }}"></script>
@@ -84,6 +86,7 @@ const OWN_PC_IDS = {{ own_pc_ids | default([]) | tojson }};   // every character
 let ownPcCurrency = JSON.parse({{ own_pc_currency_json | default('[]') | tojson }});
 let activeCombatantId = {{ combat_active_combatant_id | default(none) | tojson }};
 let combatRound = {{ combat_round | default(none) | tojson }};
+let physicsState = JSON.parse({{ physics_json | default('{}') | tojson }});
 const layerState = {};
 const FOG_STATE = JSON.parse({{ fog_json | default('{"fog":{"enabled":false,"range":0,"epoch":0,"darkness":0,"personal":2},"walls":[],"lights":[]}') | tojson }});   // {fog, walls, lights}: walls only while fog or darkness is on
 let liveWalls = FOG_STATE.walls || [];
@@ -180,6 +183,7 @@ function redraw() {
     document.getElementById('sv-round-num').textContent = combatRound;
   }
   fog.apply();
+  if (window.ndSchematicPhysics) ndSchematicPhysics.applyOverlay(svg, physicsState, { player: true });
 }
 
 // ── Popup scaffold (shared by item pickup and merchant shop) ─────────────────
@@ -396,6 +400,7 @@ async function poll() {
     ownPcCurrency = data.own_pc_currency || [];
     activeCombatantId = data.combat_active_combatant_id;
     combatRound = data.combat_round;
+    if (data.physics) physicsState = data.physics;
     const bgImg = document.getElementById('bg-image');
     if (bgImg && data.image_url && bgImg.getAttribute('href') !== data.image_url) bgImg.setAttribute('href', data.image_url);   // strict maps: a new masked copy as the party explores
     liveWalls = data.walls || liveWalls;

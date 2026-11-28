@@ -39,6 +39,11 @@ list is dominated by invalid/test-only probes and the explicit exceptions above,
       Existing `/move-token` compatibility, `/elements`, combat tracker saves and pull/push routes feed the same Rust implementation.
       Stale combat tracker saves now return Python's 409 shape with the current full combat state in Rust-only mode.
       Rust-only coverage: `tests/test_gateway_cartographer.py::test_linked_scene_runtime_saves_and_switches_without_python`.
+- [x] Simplified schematic-map physics (Rust-only): `map_physics.rs` normalizes a v1 integer room state
+      (`water/fire/gas/heat/pressure`), derives passable room graph edges from room and wall state, and bounds manual
+      ticks to 1–16 simultaneous steps.  GM/Assistant set/tick/reset routes and stale-revision 409 responses live under
+      `/maps/schematic/{slug}/physics`; door and break actions tick enabled maps and bump the scene.  Player/TV view
+      payloads carry strictly filtered overlays and the GM/player/TV SVGs share `schematic-physics.js`.
 
 ## Measured starting point (main at 3f217ee)
 - 90% of the app's parameterless GET routes work with no Python (crawl); about 54% of routes are answered only by the gateway, 37% mixed, 9% Python only
