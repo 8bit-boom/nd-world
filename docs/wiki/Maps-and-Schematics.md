@@ -24,6 +24,29 @@ elements and tokens in its published schematic. Full Backup includes the Map
 Maker project folder (`<data>/cartographer/data`) and restores project files
 together with database project associations.
 
+## Validation and interoperability
+
+Map Maker's Rust-only Docker image is smoke-tested for login, health, the
+Map Maker page and Build → Prepare → Run → Build stage transitions in a real
+browser. The workspace suite also covers single-floor and linked-floor
+publication, rich marker metadata, update revision/hashes and the binding
+inspector.
+
+The interchange contract is explicit:
+
+- UVTT: supported for square-grid artwork, walls and lights. Secret doors become
+  ordinary walls and GM-only entity/note metadata is not portable.
+- Foundry v11/v12: basic scene export is a compatibility target. Foundry v14
+  regions, templates and native nd-world bindings require live-target testing
+  before they are called lossless.
+- Native nd-world: bindings, publications, scene instances, discoveries,
+  regions, interactables and encounters stay in nd-world's semantic tables.
+- Keyed prep/PDF: supported for server-rendered preparation data; physical
+  print layout varies by printer and device.
+
+The GM-only `GET /api/cartographer/interop-status` endpoint reports this matrix
+and is the source for clients that need to show export limits.
+
 To play a Map Maker floor, finish editing and choose **Create playable copy
 of current floor**. This creates a new schematic using the player-filtered
 picture, walls and lights; it never replaces an existing map. Inspect the
