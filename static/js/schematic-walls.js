@@ -236,8 +236,21 @@
       row.appendChild(name);
       if (w.kind === 'door' || w.kind === 'secret') {
         row.appendChild(btn(w.state === 'open' ? '🔓 Close' : '🚪 Open', 'Open or close this door for everyone, live', function () {
-          post('/door', { wall_id: w.id }).then(function (r) { w.state = r.state; render(); list(); }).catch(function (e) { msg(e.message); });
+          var unlock = w.locked === true && w.state !== 'open';
+          post('/door', unlock ? { wall_id: w.id, state: 'open', unlock: true } : { wall_id: w.id }).then(function (r) {
+            w.state = r.state;
+            if (unlock) w.locked = false;
+            render(); list();
+          }).catch(function (e) { msg(e.message); });
         }));
+        var locked = document.createElement('label');
+        locked.style.cssText = 'display:inline-flex;align-items:center;gap:.2rem';
+        var lockBox = document.createElement('input');
+        lockBox.type = 'checkbox';
+        lockBox.checked = w.locked === true;
+        lockBox.onchange = function () { w.locked = lockBox.checked; if (!lockBox.checked) w.state = w.state === 'broken' ? 'broken' : 'closed'; save(); };
+        locked.append(lockBox, ' locked');
+        row.appendChild(locked);
       }
       if (w.kind === 'door' || w.kind === 'window' || w.kind === 'secret') {
         var breakable = document.createElement('label');

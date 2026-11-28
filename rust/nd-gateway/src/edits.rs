@@ -13436,6 +13436,9 @@ pub(crate) fn clean_walls(data: &[Value], sc: &Map<String, Value>) -> Option<(Ve
             };
             item.insert("state".into(), json!(state));
         }
+        if w.get("locked") == Some(&Value::Bool(true)) {
+            item.insert("locked".into(), json!(true));
+        }
         if w.get("breakable") == Some(&Value::Bool(true)) {
             item.insert("breakable".into(), json!(true));
         }
@@ -14407,7 +14410,10 @@ fn physics_room_id(v: &Value) -> Option<String> {
 }
 
 fn sc_physics_stale(body: &Map<String, Value>, current: i64) -> Option<Result<(), Response<Body>>> {
-    let requested = body.get("revision").or_else(|| body.get("rev")).or_else(|| body.get("base_revision"))?;
+    let requested = match body.get("revision").or_else(|| body.get("rev")).or_else(|| body.get("base_revision")) {
+        Some(requested) => requested,
+        None => return Some(Err(bad400("revision is required"))),
+    };
     let requested = match requested {
         Value::Number(n) if n.is_i64() => n.as_i64()?.max(0),
         _ => return Some(Err(bad400("revision must be a whole number"))),
@@ -14554,6 +14560,7 @@ fn sc_door(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     let Some(wid) = body.get("wall_id").and_then(|v| v.as_str()).map(str::to_string) else { return Some(bad400("wall_id required")) };
     let Value::Object(body) = body else { return None };
     let want = body.get("state").and_then(|v| v.as_str()).filter(|v| *v == "open" || *v == "closed" || *v == "broken").map(str::to_string);
+    let unlock = body.get("unlock").and_then(Value::as_bool).unwrap_or(false);
     let Value::Array(mut walls) = sc_load(&sc, "walls_json", true)? else { return None };
     for w in walls.iter_mut() {
         let w = w.as_object_mut()?; // a non-object wall: Python's error
@@ -14565,6 +14572,12 @@ fn sc_door(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
                 (_, Some("broken")) => "broken".into(),
                 _ => "open".into(),
             });
+            if state == "open" && w.get("locked") == Some(&Value::Bool(true)) && !unlock {
+                return Some(crate::ai_more::detail(StatusCode::CONFLICT, "Door is locked"));
+            }
+            if unlock {
+                w.remove("locked");
+            }
             let old_state = w.get("state").and_then(|v| v.as_str()).unwrap_or("closed").to_string();
             if state == "broken" && w.get("breakable") != Some(&Value::Bool(true)) {
                 w.insert("breakable".into(), json!(true));
@@ -14605,6 +14618,7 @@ fn sc_break(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
                 let old_state = w.get("state").and_then(|v| v.as_str()).unwrap_or("closed").to_string();
                 w.insert("state".into(), json!("broken"));
                 w.insert("breakable".into(), json!(true));
+                w.remove("locked");
                 found = true;
                 if old_state != "broken" {
                     // The caller below bumps scene once; the physics helper updates
@@ -19187,6 +19201,12 @@ mod schematic_floor_tests {
         let result = sc_physics_stale(&body, 3).unwrap();
         let response = result.unwrap_err();
         assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let missing = serde_json::from_value::<Map<String, Value>>(json!({
+            "action": "tick"
+        })).unwrap();
+        let result = sc_physics_stale(&missing, 3).unwrap();
+        assert_eq!(result.unwrap_err().status(), StatusCode::BAD_REQUEST);
     }
 
     #[test]

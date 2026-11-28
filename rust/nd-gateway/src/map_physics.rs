@@ -375,6 +375,7 @@ fn unpack_rooms(rooms: &Value) -> Option<(f64, f64, f64, i64, i64, Vec<i64>, BTr
 struct WallSegment {
     kind: String,
     state: String,
+    locked: bool,
     pts: Vec<(f64, f64)>,
 }
 
@@ -385,6 +386,7 @@ fn parse_walls(walls: &Value) -> Vec<WallSegment> {
         let Some(item) = item.as_object() else { continue };
         let kind = item.get("kind").and_then(Value::as_str).unwrap_or("wall").to_string();
         let state = item.get("state").and_then(Value::as_str).unwrap_or("closed").to_string();
+        let locked = item.get("locked").and_then(Value::as_bool).unwrap_or(false);
         let Some(pts) = item.get("pts").and_then(Value::as_array) else { continue };
         let mut parsed = vec![];
         for point in pts {
@@ -393,7 +395,7 @@ fn parse_walls(walls: &Value) -> Vec<WallSegment> {
             parsed.push((x, y));
         }
         if parsed.len() >= 2 {
-            out.push(WallSegment { kind, state, pts: parsed });
+            out.push(WallSegment { kind, state, locked, pts: parsed });
         }
     }
     out
@@ -435,7 +437,7 @@ fn passable_wall(wall: Option<&WallSegment>) -> (bool, String) {
     let Some(wall) = wall else { return (false, "wall".to_string()) };
     match wall.kind.as_str() {
         "door" | "secret" | "window" => (
-            matches!(wall.state.as_str(), "open" | "broken"),
+            !wall.locked && matches!(wall.state.as_str(), "open" | "broken"),
             wall.kind.clone(),
         ),
         "wall" => (false, "wall".to_string()),
@@ -753,6 +755,18 @@ mod tests {
         assert_eq!(open.edges[0].b, "2");
         let closed = derive_graph(&rooms(), &walls("closed"));
         assert!(closed.edges.is_empty());
+    }
+
+    #[test]
+    fn locked_open_state_does_not_conduct() {
+        let mut locked_walls = walls("open");
+        locked_walls[0]["locked"] = json!(true);
+        let locked = derive_graph(&rooms(), &locked_walls);
+        assert!(locked.edges.is_empty());
+        let mut broken_walls = walls("broken");
+        broken_walls[0]["locked"] = json!(true);
+        let broken = derive_graph(&rooms(), &broken_walls);
+        assert!(broken.edges.is_empty());
     }
 
     #[test]
