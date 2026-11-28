@@ -757,6 +757,20 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
                 Err(_) => Response::builder().status(axum::http::StatusCode::INTERNAL_SERVER_ERROR).body(Body::from("Could not manage Map Maker discoveries")).unwrap(),
             };
         }
+        if matches!(*req.method(), axum::http::Method::GET | axum::http::Method::POST) && path == "/api/cartographer/runtime-objects" {
+            let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
+            let method = req.method().as_str().to_string();
+            let body = if method != "GET" {
+                match axum::body::to_bytes(req.into_body(), 1024 * 1024).await {
+                    Ok(bytes) => Some(bytes),
+                    Err(_) => return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap(),
+                }
+            } else { None };
+            return match tokio::task::spawn_blocking(move || cartographer::runtime_objects(&cfg, &uri, &headers, &method, body.as_deref())).await {
+                Ok(resp) => resp,
+                Err(_) => Response::builder().status(axum::http::StatusCode::INTERNAL_SERVER_ERROR).body(Body::from("Could not manage Map Maker runtime objects")).unwrap(),
+            };
+        }
     }
     if req.method() == axum::http::Method::GET && req.uri().path() == "/export/foundry.json" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());

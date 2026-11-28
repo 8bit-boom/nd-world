@@ -1523,6 +1523,160 @@ pub fn discoveries(cfg: &Config, uri: &Uri, headers: &HeaderMap, method: &str, b
     reply(StatusCode::OK, json!({"discoveries":items}))
 }
 
+pub fn runtime_objects(cfg: &Config, uri: &Uri, headers: &HeaderMap, method: &str, body: Option<&[u8]>) -> Response<Body> {
+    let Some((db, page)) = gm_ctx(cfg, method, uri, headers) else {
+        return reply(StatusCode::FORBIDDEN, json!({"error":"GM access required"}));
+    };
+    let Some(world_id) = page.world.as_ref().and_then(|w| w.get("id")).and_then(Value::as_i64) else {
+        return reply(StatusCode::FORBIDDEN, json!({"error":"Active world required"}));
+    };
+    let kind = query_param(uri, "kind").unwrap_or_else(|| "region".to_string());
+    let project = query_param(uri, "project").and_then(|value| safe_binding_part(&value));
+    let floor = query_param(uri, "floor").and_then(|value| safe_binding_part(&value));
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64).unwrap_or(0);
+
+    if method == "POST" {
+        let Some(body) = body else { return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid request"})); };
+        let Ok(data) = serde_json::from_slice::<Value>(body) else {
+            return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid request"}));
+        };
+        let Some(project) = data["project"].as_str().and_then(safe_binding_part) else {
+            return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid project"}));
+        };
+        let floor = data["floor"].as_str().and_then(safe_binding_part);
+        let revision = data["revision"].as_i64().unwrap_or(1).max(1);
+        return match kind.as_str() {
+            "region" => {
+                let Some(region_id) = data["region"].as_str().and_then(safe_binding_part) else {
+                    return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid region"}));
+                };
+                let behavior = data["behavior"].as_str().unwrap_or("");
+                if !matches!(behavior,
+                    "read_aloud" | "notify_gm" | "suggest_encounter" | "discover_location" |
+                    "difficult_terrain" | "darkness" | "toggle_door" | "toggle_light" | "portal" | "hazard"
+                ) {
+                    return reply(StatusCode::BAD_REQUEST, json!({"error":"Unsupported region behavior"}));
+                }
+                let config = serde_json::to_string(data["config"].as_object().map(|map| Value::Object(map.clone())).as_ref().unwrap_or(&json!({}))).unwrap_or_else(|_| "{}".to_string());
+                let result = db.execute(
+                    "INSERT INTO cartographer_regions(region_id, world_id, project_id, floor_id, behavior, config_json, revision, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+                     ON CONFLICT(region_id) DO UPDATE SET behavior=excluded.behavior, config_json=excluded.config_json,
+                        revision=excluded.revision, updated_at=excluded.updated_at",
+                    rusqlite::params![region_id, world_id, project, floor, behavior, config, revision, now],
+                );
+                return match result {
+                    Ok(_) => reply(StatusCode::OK, json!({"ok":true,"kind":"region","region":region_id,"behavior":behavior,"revision":revision})),
+                    Err(error) => reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":format!("Could not save region: {error}")})),
+                };
+            }
+            "interactable" => {
+                let Some(prop_id) = data["prop"].as_str().and_then(safe_binding_part) else {
+                    return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid prop"}));
+                };
+                let prop_kind = data["prop_kind"].as_str().unwrap_or("");
+                if !matches!(prop_kind, "container" | "door" | "light_switch" | "clue" | "portal" | "destructible" | "hazard") {
+                    return reply(StatusCode::BAD_REQUEST, json!({"error":"Unsupported interactable kind"}));
+                }
+                let target_entity_id = data["target_entity_id"].as_i64().filter(|id| *id > 0);
+                if let Some(target_entity_id) = target_entity_id {
+                    let target_world = db.query_row("SELECT world_id FROM entities WHERE id = ?1", [target_entity_id], |r| r.get::<_, i64>(0)).unwrap_or(-1);
+                    if target_world != world_id {
+                        return reply(StatusCode::BAD_REQUEST, json!({"error":"Target entity is not in the active world"}));
+                    }
+                }
+                let state = serde_json::to_string(data["state"].as_object().map(|map| Value::Object(map.clone())).as_ref().unwrap_or(&json!({}))).unwrap_or_else(|_| "{}".to_string());
+                let result = db.execute(
+                    "INSERT INTO cartographer_interactables(prop_id, world_id, project_id, floor_id, kind, target_entity_id, state_json, revision, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+                     ON CONFLICT(prop_id) DO UPDATE SET kind=excluded.kind, target_entity_id=excluded.target_entity_id,
+                        state_json=excluded.state_json, revision=excluded.revision, updated_at=excluded.updated_at",
+                    rusqlite::params![prop_id, world_id, project, floor, prop_kind, target_entity_id, state, revision, now],
+                );
+                return match result {
+                    Ok(_) => reply(StatusCode::OK, json!({"ok":true,"kind":"interactable","prop":prop_id,"prop_kind":prop_kind,"revision":revision})),
+                    Err(error) => reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":format!("Could not save interactable: {error}")})),
+                };
+            }
+            "encounter" => {
+                let Some(encounter_id) = data["encounter"].as_str().and_then(safe_binding_part) else {
+                    return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid encounter"}));
+                };
+                let template_id = data["template"].as_str().and_then(safe_binding_part);
+                let combat_session_id = data["combat_session_id"].as_i64().filter(|id| *id > 0);
+                if let Some(combat_session_id) = combat_session_id {
+                    let combat_world = db.query_row("SELECT world_id FROM combat_sessions WHERE id = ?1", [combat_session_id], |r| r.get::<_, i64>(0)).unwrap_or(-1);
+                    if combat_world != world_id {
+                        return reply(StatusCode::BAD_REQUEST, json!({"error":"Combat session is not in the active world"}));
+                    }
+                }
+                let state = serde_json::to_string(data["state"].as_object().map(|map| Value::Object(map.clone())).as_ref().unwrap_or(&json!({}))).unwrap_or_else(|_| "{}".to_string());
+                let result = db.execute(
+                    "INSERT INTO cartographer_encounter_instances(encounter_id, world_id, project_id, floor_id, source_template_id, combat_session_id, state_json, revision, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+                     ON CONFLICT(encounter_id) DO UPDATE SET source_template_id=excluded.source_template_id,
+                        combat_session_id=excluded.combat_session_id, state_json=excluded.state_json,
+                        revision=excluded.revision, updated_at=excluded.updated_at",
+                    rusqlite::params![encounter_id, world_id, project, floor, template_id, combat_session_id, state, revision, now],
+                );
+                return match result {
+                    Ok(_) => reply(StatusCode::OK, json!({"ok":true,"kind":"encounter","encounter":encounter_id,"revision":revision})),
+                    Err(error) => reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":format!("Could not save encounter: {error}")})),
+                };
+            }
+            _ => reply(StatusCode::BAD_REQUEST, json!({"error":"Unsupported runtime object kind"})),
+        }
+    }
+    if method != "GET" {
+        return reply(StatusCode::METHOD_NOT_ALLOWED, json!({"error":"Method not allowed"}));
+    }
+    let mut items = Vec::new();
+    match kind.as_str() {
+        "region" => {
+            let mut st = db.prepare("SELECT region_id, project_id, floor_id, behavior, config_json, revision, updated_at FROM cartographer_regions WHERE world_id = ?1").ok();
+            if let Some(ref mut st) = st {
+                let rows = st.query_map([world_id], |r| Ok(json!({
+                    "region":r.get::<_, String>(0)?,"project":r.get::<_, String>(1)?,"floor":r.get::<_, Option<String>>(2)?,
+                    "behavior":r.get::<_, String>(3)?,"config":serde_json::from_str::<Value>(&r.get::<_, String>(4)?).unwrap_or(json!({})),
+                    "revision":r.get::<_, i64>(5)?,"updated_at":r.get::<_, i64>(6)?
+                }))).ok();
+                if let Some(rows) = rows { items = rows.collect::<Result<Vec<_>, _>>().unwrap_or_default(); }
+            }
+        }
+        "interactable" => {
+            let mut st = db.prepare("SELECT prop_id, project_id, floor_id, kind, target_entity_id, state_json, revision, updated_at FROM cartographer_interactables WHERE world_id = ?1").ok();
+            if let Some(ref mut st) = st {
+                let rows = st.query_map([world_id], |r| Ok(json!({
+                    "prop":r.get::<_, String>(0)?,"project":r.get::<_, String>(1)?,"floor":r.get::<_, Option<String>>(2)?,
+                    "prop_kind":r.get::<_, String>(3)?,"target_entity_id":r.get::<_, Option<i64>>(4)?,
+                    "state":serde_json::from_str::<Value>(&r.get::<_, String>(5)?).unwrap_or(json!({})),
+                    "revision":r.get::<_, i64>(6)?,"updated_at":r.get::<_, i64>(7)?
+                }))).ok();
+                if let Some(rows) = rows { items = rows.collect::<Result<Vec<_>, _>>().unwrap_or_default(); }
+            }
+        }
+        "encounter" => {
+            let mut st = db.prepare("SELECT encounter_id, project_id, floor_id, source_template_id, combat_session_id, state_json, revision, updated_at FROM cartographer_encounter_instances WHERE world_id = ?1").ok();
+            if let Some(ref mut st) = st {
+                let rows = st.query_map([world_id], |r| Ok(json!({
+                    "encounter":r.get::<_, String>(0)?,"project":r.get::<_, String>(1)?,"floor":r.get::<_, Option<String>>(2)?,
+                    "template":r.get::<_, Option<String>>(3)?,"combat_session_id":r.get::<_, Option<i64>>(4)?,
+                    "state":serde_json::from_str::<Value>(&r.get::<_, String>(5)?).unwrap_or(json!({})),
+                    "revision":r.get::<_, i64>(6)?,"updated_at":r.get::<_, i64>(7)?
+                }))).ok();
+                if let Some(rows) = rows { items = rows.collect::<Result<Vec<_>, _>>().unwrap_or_default(); }
+            }
+        }
+        _ => return reply(StatusCode::BAD_REQUEST, json!({"error":"Unsupported runtime object kind"})),
+    }
+    let items = items.into_iter().filter(|item| {
+        project.as_deref().map_or(true, |wanted| item["project"].as_str() == Some(wanted))
+            && floor.as_deref().map_or(true, |wanted| item["floor"].as_str() == Some(wanted))
+    }).collect::<Vec<_>>();
+    reply(StatusCode::OK, json!({"kind":kind,"objects":items}))
+}
+
 fn existing_maps(db: &rusqlite::Connection, cfg: &Config, world_id: i64) -> Option<Value> {
     let mut maps = vec![];
     for (slug, data) in crate::maps::world_maps(db, cfg, world_id)? {

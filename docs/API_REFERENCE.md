@@ -665,6 +665,7 @@ The next confirmed session also shows on the in-world calendar page and in each 
 | GET, POST | `/api/cartographer/publications` | GM | Lists or records revision-bound native Map Maker publication manifests. |
 | GET, POST | `/api/cartographer/scene-instances` | GM | Lists or creates campaign-specific live Map Maker scene instances. |
 | GET, POST | `/api/cartographer/discoveries` | GM | Lists or records audience-specific Map Maker discoveries. |
+| GET, POST | `/api/cartographer/runtime-objects` | GM | Lists or saves typed region behaviors, interactable props and encounter instances. |
 
 ## Schematics
 

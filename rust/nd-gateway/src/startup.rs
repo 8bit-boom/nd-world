@@ -48,6 +48,9 @@ fn run_schema(db: &rusqlite::Connection) -> Option<()> {
     ensure_cartographer_publications(db).ok()?;
     ensure_cartographer_scene_instances(db).ok()?;
     ensure_cartographer_discoveries(db).ok()?;
+    ensure_cartographer_regions(db).ok()?;
+    ensure_cartographer_interactables(db).ok()?;
+    ensure_cartographer_encounter_instances(db).ok()?;
     ensure_cartographer_playable(db).ok()?;
     ensure_cartographer_update_runs(db).ok()?;
     Some(())
@@ -219,6 +222,77 @@ pub(crate) fn ensure_cartographer_discoveries(db: &rusqlite::Connection) -> Resu
         );
         CREATE INDEX IF NOT EXISTS ix_cartographer_discoveries_audience
             ON cartographer_discoveries(world_id, instance_id, audience_key);",
+    ).map_err(|e| e.to_string())?;
+    Ok(before == 0)
+}
+
+pub(crate) fn ensure_cartographer_regions(db: &rusqlite::Connection) -> Result<bool, String> {
+    let before: i64 = db.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'cartographer_regions'",
+        [], |r| r.get(0),
+    ).map_err(|e| e.to_string())?;
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS cartographer_regions (
+            region_id TEXT PRIMARY KEY NOT NULL,
+            world_id INTEGER NOT NULL,
+            project_id TEXT NOT NULL,
+            floor_id TEXT,
+            behavior TEXT NOT NULL,
+            config_json TEXT NOT NULL DEFAULT '{}',
+            revision INTEGER NOT NULL DEFAULT 1,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_cartographer_regions_world
+            ON cartographer_regions(world_id, project_id, floor_id);",
+    ).map_err(|e| e.to_string())?;
+    Ok(before == 0)
+}
+
+pub(crate) fn ensure_cartographer_interactables(db: &rusqlite::Connection) -> Result<bool, String> {
+    let before: i64 = db.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'cartographer_interactables'",
+        [], |r| r.get(0),
+    ).map_err(|e| e.to_string())?;
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS cartographer_interactables (
+            prop_id TEXT PRIMARY KEY NOT NULL,
+            world_id INTEGER NOT NULL,
+            project_id TEXT NOT NULL,
+            floor_id TEXT,
+            kind TEXT NOT NULL,
+            target_entity_id INTEGER,
+            state_json TEXT NOT NULL DEFAULT '{}',
+            revision INTEGER NOT NULL DEFAULT 1,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_cartographer_interactables_world
+            ON cartographer_interactables(world_id, project_id, floor_id);",
+    ).map_err(|e| e.to_string())?;
+    Ok(before == 0)
+}
+
+pub(crate) fn ensure_cartographer_encounter_instances(db: &rusqlite::Connection) -> Result<bool, String> {
+    let before: i64 = db.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'cartographer_encounter_instances'",
+        [], |r| r.get(0),
+    ).map_err(|e| e.to_string())?;
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS cartographer_encounter_instances (
+            encounter_id TEXT PRIMARY KEY NOT NULL,
+            world_id INTEGER NOT NULL,
+            project_id TEXT NOT NULL,
+            floor_id TEXT,
+            source_template_id TEXT,
+            combat_session_id INTEGER,
+            state_json TEXT NOT NULL DEFAULT '{}',
+            revision INTEGER NOT NULL DEFAULT 1,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_cartographer_encounter_instances_world
+            ON cartographer_encounter_instances(world_id, project_id, floor_id);",
     ).map_err(|e| e.to_string())?;
     Ok(before == 0)
 }
@@ -512,6 +586,21 @@ pub(crate) fn heal_schema(db: &rusqlite::Connection) -> Result<Vec<String>, Stri
         Ok(false) => {}
         Err(e) => return Err(e),
     }
+    match ensure_cartographer_regions(db) {
+        Ok(true) => done.push("created table cartographer_regions".into()),
+        Ok(false) => {}
+        Err(e) => return Err(e),
+    }
+    match ensure_cartographer_interactables(db) {
+        Ok(true) => done.push("created table cartographer_interactables".into()),
+        Ok(false) => {}
+        Err(e) => return Err(e),
+    }
+    match ensure_cartographer_encounter_instances(db) {
+        Ok(true) => done.push("created table cartographer_encounter_instances".into()),
+        Ok(false) => {}
+        Err(e) => return Err(e),
+    }
     match ensure_cartographer_playable(db) {
         Ok(true) => done.push("created table cartographer_playable".into()),
         Ok(false) => {}
@@ -782,11 +871,20 @@ mod tests {
         assert!(!ensure_cartographer_scene_instances(&db).unwrap());
         assert!(ensure_cartographer_discoveries(&db).unwrap());
         assert!(!ensure_cartographer_discoveries(&db).unwrap());
+        assert!(ensure_cartographer_regions(&db).unwrap());
+        assert!(!ensure_cartographer_regions(&db).unwrap());
+        assert!(ensure_cartographer_interactables(&db).unwrap());
+        assert!(!ensure_cartographer_interactables(&db).unwrap());
+        assert!(ensure_cartographer_encounter_instances(&db).unwrap());
+        assert!(!ensure_cartographer_encounter_instances(&db).unwrap());
         for table in [
             "cartographer_object_bindings",
             "cartographer_publications",
             "cartographer_scene_instances",
             "cartographer_discoveries",
+            "cartographer_regions",
+            "cartographer_interactables",
+            "cartographer_encounter_instances",
         ] {
             let count: i64 = db.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
