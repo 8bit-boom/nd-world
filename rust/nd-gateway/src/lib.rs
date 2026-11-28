@@ -771,6 +771,13 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
                 Err(_) => Response::builder().status(axum::http::StatusCode::INTERNAL_SERVER_ERROR).body(Body::from("Could not manage Map Maker runtime objects")).unwrap(),
             };
         }
+        if req.method() == axum::http::Method::GET && path == "/api/cartographer/interop-status" {
+            let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
+            return match tokio::task::spawn_blocking(move || cartographer::interop_status(&cfg, &uri, &headers)).await {
+                Ok(resp) => resp,
+                Err(_) => Response::builder().status(axum::http::StatusCode::INTERNAL_SERVER_ERROR).body(Body::from("Could not report Map Maker interoperability")).unwrap(),
+            };
+        }
     }
     if req.method() == axum::http::Method::GET && req.uri().path() == "/export/foundry.json" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());

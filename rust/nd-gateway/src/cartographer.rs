@@ -1753,6 +1753,45 @@ pub fn runtime_objects(cfg: &Config, uri: &Uri, headers: &HeaderMap, method: &st
     reply(StatusCode::OK, json!({"kind":kind,"objects":items}))
 }
 
+pub fn interop_status(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Response<Body> {
+    let Some((_db, page)) = gm_ctx(cfg, "GET", uri, headers) else {
+        return reply(StatusCode::FORBIDDEN, json!({"error":"GM access required"}));
+    };
+    if page.world.as_ref().and_then(|world| world.get("id")).and_then(Value::as_i64).is_none() {
+        return reply(StatusCode::FORBIDDEN, json!({"error":"Active world required"}));
+    }
+    reply(StatusCode::OK, json!({
+        "targets":[
+            {
+                "id":"uvtt",
+                "status":"supported",
+                "semantics":"artwork, square grid, walls, lights",
+                "losses":["secret doors become plain walls","GM-only notes and entity secrets are dropped","non-UVTT campaign metadata is not portable"]
+            },
+            {
+                "id":"foundry",
+                "status":"partially_verified",
+                "target_versions":["v11","v12"],
+                "semantics":"scene links, floors and basic geometry where supported",
+                "losses":["Foundry v14 regions/templates require live target verification","native nd-world bindings are not represented in external scene documents"]
+            },
+            {
+                "id":"native_nd_world",
+                "status":"supported",
+                "semantics":"bindings, publications, scene instances, discoveries, regions, interactables and encounters",
+                "losses":[]
+            },
+            {
+                "id":"keyed_prep",
+                "status":"supported",
+                "semantics":"server-rendered Map Maker preparation data",
+                "losses":["print and PDF layout vary by device"]
+            }
+        ],
+        "strict_private_export":true
+    }))
+}
+
 fn existing_maps(db: &rusqlite::Connection, cfg: &Config, world_id: i64) -> Option<Value> {
     let mut maps = vec![];
     for (slug, data) in crate::maps::world_maps(db, cfg, world_id)? {
