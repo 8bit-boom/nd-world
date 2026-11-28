@@ -662,7 +662,7 @@ The next confirmed session also shows on the in-world calendar page and in each 
 | POST | `/api/cartographer/update-run` | GM | Starts, marks, reads or cancels a recoverable per-floor playable-scene update run; marks accept revision, patch hash and operation ID for stale/changed approval rejection. |
 | GET, POST | `/api/cartographer/links` | GM | Lists active-world project links or links a newly copied project to an existing map (`project`, `kind`, `slug`). |
 | GET, POST, DELETE | `/api/cartographer/bindings` | GM | Lists, creates/updates or deletes typed world-scoped entity bindings for Map Maker objects. |
-| GET, POST | `/api/cartographer/publications` | GM | Lists or records revision-bound native Map Maker publication manifests. |
+| GET, POST | `/api/cartographer/publications` | GM | Lists or records revision-bound native Map Maker publication manifests; rejects cross-world entity bindings and unsupported runtime objects. |
 | GET, POST | `/api/cartographer/scene-instances` | GM | Lists or creates campaign-specific live Map Maker scene instances. |
 | GET, POST | `/api/cartographer/discoveries` | GM | Lists or records audience-specific Map Maker discoveries. |
 | GET, POST | `/api/cartographer/runtime-objects` | GM | Lists or saves typed region behaviors, interactable props and encounter instances. |

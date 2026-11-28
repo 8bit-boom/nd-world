@@ -176,6 +176,28 @@ mod tests {
         assert_eq!(status(&cfg)["source_revision"], SOURCE_REVISION);
     }
 
+    #[test]
+    fn publication_manifest_rejects_cross_world_entities() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE entities (id INTEGER PRIMARY KEY, world_id INTEGER);
+             INSERT INTO entities VALUES (1, 1);
+             INSERT INTO entities VALUES (2, 2);"
+        ).unwrap();
+        let valid = json!({"bindings":[{"target_id":1,"relation":"located_at"}]});
+        assert!(validate_publication_manifest(&db, 1, &valid).is_ok());
+        let foreign = json!({"bindings":[{"target_id":2,"relation":"located_at"}]});
+        assert_eq!(
+            validate_publication_manifest(&db, 1, &foreign),
+            Err("Publication contains an entity outside the active world".to_string()),
+        );
+        let unsupported = json!({"runtime_objects":[{"kind":"script"}]});
+        assert_eq!(
+            validate_publication_manifest(&db, 1, &unsupported),
+            Err("Publication contains an unsupported runtime object".to_string()),
+        );
+    }
+
     #[tokio::test]
     async fn studio_css_puts_previews_above_webgl_and_invalidates_cached_styles() {
         let response = Response::builder()
@@ -1280,6 +1302,48 @@ pub fn bindings(cfg: &Config, uri: &Uri, headers: &HeaderMap, method: &str, body
     reply(StatusCode::OK, json!({"bindings":items}))
 }
 
+fn validate_publication_manifest(db: &rusqlite::Connection, world_id: i64, manifest: &Value) -> Result<(), String> {
+    if let Some(bindings) = manifest.get("bindings").and_then(Value::as_array) {
+        for binding in bindings {
+            let Some(target_id) = binding.get("target_id").and_then(Value::as_i64).filter(|id| *id > 0) else {
+                return Err("Invalid binding target_id".to_string());
+            };
+            let target_world = db.query_row(
+                "SELECT world_id FROM entities WHERE id = ?1",
+                [target_id],
+                |r| r.get::<_, i64>(0),
+            );
+            if target_world != Ok(world_id) {
+                return Err("Publication contains an entity outside the active world".to_string());
+            }
+            let relation = binding.get("relation").and_then(Value::as_str).unwrap_or("");
+            if !matches!(relation,
+                "represents" | "controls" | "claims" | "influences" | "headquarters" |
+                "located_at" | "contains" | "occupant" | "portal" | "interacts" | "encounter"
+            ) {
+                return Err("Publication contains an unsupported binding relation".to_string());
+            }
+        }
+    }
+    if let Some(objects) = manifest.get("runtime_objects").and_then(Value::as_array) {
+        for object in objects {
+            let kind = object.get("kind").and_then(Value::as_str).unwrap_or("");
+            if !matches!(kind, "region" | "interactable" | "encounter") {
+                return Err("Publication contains an unsupported runtime object".to_string());
+            }
+            if kind == "interactable" {
+                if let Some(target_id) = object.get("target_entity_id").and_then(Value::as_i64).filter(|id| *id > 0) {
+                    let target_world = db.query_row("SELECT world_id FROM entities WHERE id = ?1", [target_id], |r| r.get::<_, i64>(0));
+                    if target_world != Ok(world_id) {
+                        return Err("Publication contains an interactable entity outside the active world".to_string());
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn publications(cfg: &Config, uri: &Uri, headers: &HeaderMap, method: &str, body: Option<&[u8]>) -> Response<Body> {
     let Some((db, page)) = gm_ctx(cfg, method, uri, headers) else {
         return reply(StatusCode::FORBIDDEN, json!({"error":"GM access required"}));
@@ -1311,6 +1375,9 @@ pub fn publications(cfg: &Config, uri: &Uri, headers: &HeaderMap, method: &str, 
         let status = manifest["status"].as_str().unwrap_or("approved");
         if !matches!(status, "draft" | "approved" | "published" | "cancelled" | "partial") {
             return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid publication status"}));
+        }
+        if let Err(message) = validate_publication_manifest(&db, world_id, &manifest) {
+            return reply(StatusCode::BAD_REQUEST, json!({"error":message}));
         }
         let result = db.execute(
             "INSERT INTO cartographer_publications
