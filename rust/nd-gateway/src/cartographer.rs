@@ -1373,7 +1373,7 @@ pub fn publications(cfg: &Config, uri: &Uri, headers: &HeaderMap, method: &str, 
             .map(|duration| duration.as_secs() as i64)
             .unwrap_or(0);
         let status = manifest["status"].as_str().unwrap_or("approved");
-        if !matches!(status, "draft" | "approved" | "published" | "cancelled" | "partial") {
+        if !matches!(status, "draft" | "proposed" | "approved" | "published" | "cancelled" | "partial") {
             return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid publication status"}));
         }
         if let Err(message) = validate_publication_manifest(&db, world_id, &manifest) {
@@ -1451,6 +1451,9 @@ pub fn scene_instances(cfg: &Config, uri: &Uri, headers: &HeaderMap, method: &st
         };
         let floor = data["floor"].as_str().and_then(safe_binding_part);
         let schematic_id = data["schematic_id"].as_i64().filter(|id| *id > 0);
+        let parent_project = data["parent_project"].as_str().and_then(safe_binding_part);
+        let parent_floor = data["parent_floor"].as_str().and_then(safe_binding_part);
+        let anchor_object = data["anchor"].as_str().and_then(safe_binding_part);
         let state = data["state"].as_object().cloned().unwrap_or_default();
         let state_json = serde_json::to_string(&Value::Object(state)).unwrap_or_else(|_| "{}".to_string());
         let now = std::time::SystemTime::now()
@@ -1460,15 +1463,17 @@ pub fn scene_instances(cfg: &Config, uri: &Uri, headers: &HeaderMap, method: &st
         let instance_id = format!("scene_{world_id}_{project}_{revision}_{:032x}", rand::random::<u128>());
         let result = db.execute(
             "INSERT INTO cartographer_scene_instances
-                (instance_id, world_id, project_id, revision, floor_id, schematic_id, state_json, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
-            rusqlite::params![instance_id, world_id, project, revision, floor, schematic_id, state_json, now],
+                (instance_id, world_id, project_id, revision, floor_id, schematic_id, parent_project_id, parent_floor_id, anchor_object_id, state_json, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
+            rusqlite::params![instance_id, world_id, project, revision, floor, schematic_id, parent_project, parent_floor, anchor_object, state_json, now],
         );
         return match result {
             Ok(_) => reply(StatusCode::OK, json!({
                 "ok":true, "instance_id":instance_id, "world_id":world_id,
                 "project":project, "revision":revision, "floor":floor,
-                "schematic_id":schematic_id, "state":serde_json::from_str::<Value>(&state_json).unwrap_or(json!({}))
+                "schematic_id":schematic_id,
+                "parent_project":parent_project, "parent_floor":parent_floor, "anchor":anchor_object,
+                "state":serde_json::from_str::<Value>(&state_json).unwrap_or(json!({}))
             })),
             Err(error) => reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":format!("Could not create scene instance: {error}")})),
         };
@@ -1478,7 +1483,8 @@ pub fn scene_instances(cfg: &Config, uri: &Uri, headers: &HeaderMap, method: &st
     }
     let project = query_param(uri, "project");
     let mut sql = String::from(
-        "SELECT instance_id, project_id, revision, floor_id, schematic_id, state_json, created_at, updated_at
+        "SELECT instance_id, project_id, revision, floor_id, schematic_id,
+                parent_project_id, parent_floor_id, anchor_object_id, state_json, created_at, updated_at
          FROM cartographer_scene_instances WHERE world_id = ?1"
     );
     let mut params: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Integer(world_id)];
@@ -1492,16 +1498,19 @@ pub fn scene_instances(cfg: &Config, uri: &Uri, headers: &HeaderMap, method: &st
         Err(error) => return reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":error.to_string()})),
     };
     let rows = st.query_map(rusqlite::params_from_iter(params), |r| {
-        let state: Value = serde_json::from_str(&r.get::<_, String>(5)?).unwrap_or(json!({}));
+        let state: Value = serde_json::from_str(&r.get::<_, String>(8)?).unwrap_or(json!({}));
         Ok(json!({
             "instance_id":r.get::<_, String>(0)?,
             "project":r.get::<_, String>(1)?,
             "revision":r.get::<_, i64>(2)?,
             "floor":r.get::<_, Option<String>>(3)?,
             "schematic_id":r.get::<_, Option<i64>>(4)?,
+            "parent_project":r.get::<_, Option<String>>(5)?,
+            "parent_floor":r.get::<_, Option<String>>(6)?,
+            "anchor":r.get::<_, Option<String>>(7)?,
             "state":state,
-            "created_at":r.get::<_, i64>(6)?,
-            "updated_at":r.get::<_, i64>(7)?
+            "created_at":r.get::<_, i64>(9)?,
+            "updated_at":r.get::<_, i64>(10)?
         }))
     });
     let items = match rows {

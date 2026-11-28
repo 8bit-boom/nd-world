@@ -196,6 +196,9 @@ pub(crate) fn ensure_cartographer_scene_instances(db: &rusqlite::Connection) -> 
             revision INTEGER NOT NULL,
             floor_id TEXT,
             schematic_id INTEGER,
+            parent_project_id TEXT,
+            parent_floor_id TEXT,
+            anchor_object_id TEXT,
             state_json TEXT NOT NULL DEFAULT '{}',
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
@@ -203,6 +206,23 @@ pub(crate) fn ensure_cartographer_scene_instances(db: &rusqlite::Connection) -> 
         CREATE INDEX IF NOT EXISTS ix_cartographer_scene_instances_world
             ON cartographer_scene_instances(world_id, project_id, floor_id);",
     ).map_err(|e| e.to_string())?;
+    for (column, definition) in [
+        ("parent_project_id", "TEXT"),
+        ("parent_floor_id", "TEXT"),
+        ("anchor_object_id", "TEXT"),
+    ] {
+        let found = db.prepare("PRAGMA table_info(cartographer_scene_instances)")
+            .ok()
+            .and_then(|mut st| st.query_map([], |r| r.get::<_, String>(1)).ok()
+                .map(|rows| rows.flatten().any(|name| name == column)))
+            .unwrap_or(false);
+        if !found {
+            db.execute_batch(&format!(
+                "ALTER TABLE cartographer_scene_instances ADD COLUMN {column} {definition}"
+            ))
+            .map_err(|e| e.to_string())?;
+        }
+    }
     Ok(before == 0)
 }
 
@@ -877,6 +897,25 @@ mod tests {
         assert!(!ensure_cartographer_interactables(&db).unwrap());
         assert!(ensure_cartographer_encounter_instances(&db).unwrap());
         assert!(!ensure_cartographer_encounter_instances(&db).unwrap());
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS cartographer_scene_instances (
+                instance_id TEXT PRIMARY KEY NOT NULL,
+                world_id INTEGER NOT NULL,
+                project_id TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                floor_id TEXT,
+                schematic_id INTEGER,
+                state_json TEXT NOT NULL DEFAULT '{}',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );"
+        ).unwrap();
+        assert!(!ensure_cartographer_scene_instances(&db).unwrap());
+        let mut nested = db.prepare("PRAGMA table_info(cartographer_scene_instances)").unwrap();
+        let cols = nested.query_map([], |r| r.get::<_, String>(1)).unwrap()
+            .flatten().collect::<Vec<_>>();
+        assert!(cols.iter().any(|name| name == "parent_project_id"));
+        assert!(cols.iter().any(|name| name == "anchor_object_id"));
         for table in [
             "cartographer_object_bindings",
             "cartographer_publications",
