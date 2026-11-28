@@ -40,6 +40,55 @@
 
   // ── drawing the overlay ─────────────────────────────────────────────────────
   function pathOf(pts) { return pts.map(function (p, i) { return (i ? 'L' : 'M') + p[0] + ' ' + p[1]; }).join(''); }
+  function wallFeature(w, sw) {
+    var out = [];
+    var state = w.state || 'closed';
+    for (var i = 0; i + 1 < w.pts.length; i++) {
+      var m = w.pts[i], n = w.pts[i + 1];
+      var dx = n[0] - m[0], dy = n[1] - m[1], len = Math.hypot(dx, dy) || 1;
+      var ux = dx / len, uy = dy / len, px = -uy, py = ux;
+      if (state === 'broken') {
+        var mid = [(m[0] + n[0]) / 2, (m[1] + n[1]) / 2];
+        out.push(el('path', { d: 'M' + m[0] + ' ' + m[1] + ' L' + (mid[0] - px * 5) + ' ' + (mid[1] - py * 5) +
+          ' L' + (mid[0] + px * 7) + ' ' + (mid[1] + py * 7) + ' L' + n[0] + ' ' + n[1],
+          fill:'none', stroke:'#b9a68c', 'stroke-width':Math.max(2, sw), 'stroke-linecap':'round', opacity:0.95 }));
+        out.push(el('line', { x1:mid[0]-5*px, y1:mid[1]-5*py, x2:mid[0]+5*px, y2:mid[1]+5*py,
+          stroke:'#6bd6ff', 'stroke-width':Math.max(2, sw), opacity:0.9 }));
+        continue;
+      }
+      if (w.kind === 'window') {
+        var off = Math.max(4, sw * 1.4);
+        out.push(el('line', { x1:m[0]+px*off, y1:m[1]+py*off, x2:n[0]+px*off, y2:n[1]+py*off,
+          stroke:'#91ddff', 'stroke-width':Math.max(3, sw), opacity:0.95 }));
+        out.push(el('line', { x1:m[0]-px*off, y1:m[1]-py*off, x2:n[0]-px*off, y2:n[1]-py*off,
+          stroke:'#91ddff', 'stroke-width':Math.max(3, sw), opacity:0.95 }));
+        out.push(el('line', { x1:(m[0]+n[0])/2-px*off, y1:(m[1]+n[1])/2-py*off,
+          x2:(m[0]+n[0])/2+px*off, y2:(m[1]+n[1])/2+py*off,
+          stroke:'#91ddff', 'stroke-width':Math.max(2, sw), opacity:0.85 }));
+        continue;
+      }
+      if (w.kind === 'door' || w.kind === 'secret') {
+        var frame = Math.max(5, sw * 1.8);
+        out.push(el('line', { x1:m[0]+px*frame, y1:m[1]+py*frame, x2:n[0]+px*frame, y2:n[1]+py*frame,
+          stroke:COLOURS[w.kind] || COLOURS.door, 'stroke-width':Math.max(3, sw), opacity:0.95 }));
+        out.push(el('line', { x1:m[0]-px*frame, y1:m[1]-py*frame, x2:n[0]-px*frame, y2:n[1]-py*frame,
+          stroke:COLOURS[w.kind] || COLOURS.door, 'stroke-width':Math.max(3, sw), opacity:0.95 }));
+        if (state === 'open') {
+          out.push(el('path', { d:'M' + m[0] + ' ' + m[1] + ' L' + (m[0]+px*len) + ' ' + (m[1]+py*len),
+            fill:'none', stroke:COLOURS[w.kind], 'stroke-width':Math.max(3, sw), 'stroke-dasharray':'5 4', opacity:0.75 }));
+          out.push(el('path', { d:'M' + m[0] + ' ' + m[1] + ' A' + len + ' ' + len + ' 0 0 1 ' + n[0] + ' ' + n[1],
+            fill:'none', stroke:COLOURS[w.kind], 'stroke-width':1.5, 'stroke-dasharray':'3 5', opacity:0.55 }));
+        } else {
+          var inset = 2;
+          out.push(el('line', { x1:m[0]+ux*inset, y1:m[1]+uy*inset, x2:n[0]-px*frame, y2:n[1]-py*frame,
+            stroke:'#d9c09a', 'stroke-width':Math.max(4, sw), opacity:0.9 }));
+          out.push(el('circle', { cx:n[0]-ux*3-px*frame, cy:n[1]-uy*3-py*frame, r:Math.max(2, sw*.7),
+            fill:'#f0c060', stroke:'#5b4a2a', 'stroke-width':1 }));
+        }
+      }
+    }
+    return out;
+  }
   function render() {
     if (!layer) return;
     layer.textContent = '';
@@ -52,13 +101,9 @@
       if (w.kind === 'window') a['stroke-dasharray'] = '10 5';
       if (w.kind === 'secret') a['stroke-dasharray'] = '3 4';
       if (open) { a['stroke-dasharray'] = '2 8'; a.opacity = 0.6; }
+      if (w.state === 'broken') { a.opacity = 0.35; a['stroke-dasharray'] = '2 3'; }
       layer.appendChild(el('path', a));
-      if (w.kind === 'door' || w.kind === 'secret') {
-        var m = w.pts[0], n = w.pts[w.pts.length - 1];
-        var t = el('text', { x: (m[0] + n[0]) / 2, y: (m[1] + n[1]) / 2 - sw * 1.5, 'font-size': 14, fill: COLOURS[w.kind], 'text-anchor': 'middle', 'font-family': 'monospace' });
-        t.textContent = (w.kind === 'secret' ? 'S ' : '') + (open ? '◌' : '▮');
-        layer.appendChild(t);
-      }
+      wallFeature(w, sw).forEach(function (feature) { layer.appendChild(feature); });
     });
     if (drawing) {
       var pts = drawing.pts.concat(cursor ? [cursor] : []);
@@ -193,6 +238,25 @@
         row.appendChild(btn(w.state === 'open' ? '🔓 Close' : '🚪 Open', 'Open or close this door for everyone, live', function () {
           post('/door', { wall_id: w.id }).then(function (r) { w.state = r.state; render(); list(); }).catch(function (e) { msg(e.message); });
         }));
+      }
+      if (w.kind === 'door' || w.kind === 'window' || w.kind === 'secret') {
+        var breakable = document.createElement('label');
+        breakable.style.cssText = 'display:inline-flex;align-items:center;gap:.2rem';
+        var breakBox = document.createElement('input');
+        breakBox.type = 'checkbox';
+        breakBox.checked = w.breakable === true;
+        breakBox.onchange = function () { w.breakable = breakBox.checked; save(); };
+        breakable.append(breakBox, ' breakable');
+        row.appendChild(breakable);
+        if (w.state !== 'broken') {
+          row.appendChild(btn('💥 Break', 'Break this door or window; the live state stays broken', function () {
+            post('/door', { wall_id: w.id, state: 'broken' }).then(function (r) { w.state = r.state; render(); list(); }).catch(function (e) { msg(e.message); });
+          }));
+        } else {
+          row.appendChild(btn('↺ Restore', 'Restore this door or window', function () {
+            post('/door', { wall_id: w.id, state: 'closed' }).then(function (r) { w.state = r.state; render(); list(); }).catch(function (e) { msg(e.message); });
+          }));
+        }
       }
       var sel = document.createElement('select');
       ['wall', 'door', 'window', 'secret'].forEach(function (k) { var op = document.createElement('option'); op.value = k; op.textContent = KIND_LABEL[k]; if (k === w.kind) op.selected = true; sel.appendChild(op); });

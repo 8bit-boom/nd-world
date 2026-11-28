@@ -14,11 +14,14 @@
   'use strict';
 
   function blocksSight(s) {
+    if (s.state === 'broken') return false;
     if (s.kind === 'window') return false;
     if (s.kind === 'door') return s.state !== 'open';
     return true;
   }
   function blocksMove(s) {
+    if (s.state === 'broken') return s.kind === 'window';
+    if (s.kind === 'window') return true;
     if (s.kind === 'door') return s.state !== 'open';
     return true;
   }

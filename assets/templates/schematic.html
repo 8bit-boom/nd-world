@@ -298,6 +298,13 @@
       </span>
       <label>Label</label>
       <input type="text" id="p-label" placeholder="…" oninput="setPropLabelLive(this.value)" onchange="snapshot()"/>
+      <span id="p-breakable-extra" style="display:none;align-items:center;gap:.25rem">
+        <label title="Players and GMs can break this object"><input type="checkbox" id="p-breakable" onchange="setPropLive('breakable',this.checked);snapshot()"/> Breakable</label>
+        <label>HP</label>
+        <input type="number" class="pnum" id="p-hp" min="0" max="10000" oninput="setPropLive('hp',+this.value)" onchange="snapshot()"/>
+        <button type="button" class="tb" style="padding:.1rem .35rem;color:#ff8877" onclick="breakSelectedObjects()">💥 Break</button>
+        <button type="button" class="tb" style="padding:.1rem .35rem" onclick="restoreSelectedObjects()">↺ Restore</button>
+      </span>
       <span id="p-pos" style="opacity:.4;font-size:.72rem;margin-left:.3rem"></span>
       <button class="tb" style="color:var(--neon2);margin-left:.3rem" onclick="delSelected()">🗑</button>
     </div>
@@ -1271,11 +1278,31 @@ function showProps(show, el) {
   const rx = document.getElementById('p-rect-extra');
   rx.style.display = el.type==='rect' ? 'flex' : 'none';
   if (el.type==='rect') document.getElementById('p-rx').value = el.rx||0;
+  const breakableExtra = document.getElementById('p-breakable-extra');
+  breakableExtra.style.display = ['rect','circle','poly','path','image','text','pin'].includes(el.type) ? 'flex' : 'none';
+  document.getElementById('p-breakable').checked = el.breakable === true;
+  document.getElementById('p-hp').value = el.hp ?? 1;
 }
 
 function setPropLive(k, v) {
   selectedEls().forEach(el => { el[k] = v; });
   redraw();
+}
+function breakSelectedObjects() {
+  selectedEls().forEach(el => { el.breakable = true; el.broken = true; el.hp = 0; });
+  redraw(); snapshot();
+  fetch(`/maps/schematic/${SLUG}/elements`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ elements }),
+  }).catch(() => {});
+}
+function restoreSelectedObjects() {
+  selectedEls().forEach(el => { el.broken = false; el.hp = el.max_hp > 0 ? el.max_hp : (el.hp || 1); });
+  redraw(); snapshot();
+  fetch(`/maps/schematic/${SLUG}/elements`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ elements }),
+  }).catch(() => {});
 }
 function setPropLabelLive(v) {
   selectedEls().forEach(el => { if (el.type==='text') el.text=v; else el.label=v; });

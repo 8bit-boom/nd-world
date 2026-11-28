@@ -5,6 +5,7 @@ const vm = require('node:vm');
 const path = require('node:path');
 
 const script = fs.readFileSync(path.join(__dirname, '../../../static/js/cartographer-workspace.js'), 'utf8');
+const visionScript = fs.readFileSync(path.join(__dirname, '../../../static/js/map-vision.js'), 'utf8');
 
 function workspace(project, initialPicker) {
   const status = { hidden: true, textContent: '' };
@@ -587,6 +588,17 @@ test('saves an entity placement through the Map Maker binding inspector', async 
     visibility_policy: 'discovered', revision: 1,
   });
   assert.equal(status.textContent, 'Entity placement bound.');
+});
+
+test('broken doors and windows release the expected vision and movement rules', () => {
+  const context = { window: {} };
+  vm.runInNewContext(visionScript, context);
+  const vision = context.window.ndMapVision;
+  assert.equal(vision.blocksSight({ kind: 'door', state: 'broken' }), false);
+  assert.equal(vision.blocksMove({ kind: 'door', state: 'broken' }), false);
+  assert.equal(vision.blocksMove({ kind: 'window', state: 'closed' }), true);
+  assert.equal(vision.blocksMove({ kind: 'window', state: 'broken' }), true);
+  assert.equal(vision.blocksSight({ kind: 'window', state: 'broken' }), false);
 });
 
 test('the hidden-visibility guard is not used as project readiness', async () => {

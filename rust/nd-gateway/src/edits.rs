@@ -544,7 +544,7 @@ const SLUG_ROUTES: &[(&str, &str, SlugHandler)] = &[("/api/maps/schematic/", "/m
     ("/api/maps/schematic/", "/buy-item", sc_buy),
     ("/api/maps/schematic/", "/play-manifest", sc_play_manifest), ("/api/maps/schematic/", "/play", sc_play),
     ("/maps/schematic/", "/add-floor", sc_add_floor), ("/maps/schematic/", "/portal", sc_floor_portal),
-    ("/maps/schematic/", "/door", sc_door), ("/maps/schematic/", "/fog", sc_fog),
+    ("/maps/schematic/", "/door", sc_door), ("/maps/schematic/", "/break", sc_break), ("/maps/schematic/", "/fog", sc_fog),
     ("/maps/schematic/", "/rooms", sc_rooms), ("/maps/schematic/", "/rooms/detect", sc_rooms_detect), ("/maps/schematic/", "/lights", sc_lights), ("/maps/schematic/", "/walls", sc_walls),
     ("/maps/schematic/", "/elements", sc_elements), ("/maps/schematic/", "/rename", sc_rename), ("/maps/schematic/", "/delete", sc_delete),
     ("/maps/schematic/", "/grid", sc_grid), ("/maps/schematic/", "/link-combat", sc_link_combat), ("/maps/schematic/", "/unlink-combat", sc_unlink_combat),
@@ -13420,8 +13420,19 @@ pub(crate) fn clean_walls(data: &[Value], sc: &Map<String, Value>) -> Option<(Ve
         item.insert("id".into(), json!(wid));
         item.insert("pts".into(), json!(pts));
         item.insert("kind".into(), json!(kind));
-        if kind == "door" || kind == "secret" {
-            item.insert("state".into(), json!(if w.get("state").and_then(|v| v.as_str()) == Some("open") { "open" } else { "closed" }));
+        if kind == "door" || kind == "window" || kind == "secret" {
+            let state = match w.get("state").and_then(|v| v.as_str()) {
+                Some("open") => "open",
+                Some("broken") => "broken",
+                _ => "closed",
+            };
+            item.insert("state".into(), json!(state));
+        }
+        if w.get("breakable") == Some(&Value::Bool(true)) {
+            item.insert("breakable".into(), json!(true));
+        }
+        if let Some(hp) = w.get("hp").and_then(|v| v.as_i64()).filter(|hp| (0..=10000).contains(hp)) {
+            item.insert("hp".into(), json!(hp));
         }
         out.push(Value::Object(item));
     }
@@ -14351,12 +14362,21 @@ fn sc_door(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     let body = match sc_body(c)? { Ok(b) => b, Err(r) => return Some(r) };
     let Some(wid) = body.get("wall_id").and_then(|v| v.as_str()).map(str::to_string) else { return Some(bad400("wall_id required")) };
     let Value::Object(body) = body else { return None };
-    let want = body.get("state").and_then(|v| v.as_str()).filter(|v| *v == "open" || *v == "closed").map(str::to_string);
+    let want = body.get("state").and_then(|v| v.as_str()).filter(|v| *v == "open" || *v == "closed" || *v == "broken").map(str::to_string);
     let Value::Array(mut walls) = sc_load(&sc, "walls_json", true)? else { return None };
     for w in walls.iter_mut() {
         let w = w.as_object_mut()?; // a non-object wall: Python's error
-        if w.get("id").and_then(|v| v.as_str()) == Some(wid.as_str()) && matches!(w.get("kind").and_then(|v| v.as_str()), Some("door" | "secret")) {
-            let state = want.clone().unwrap_or_else(|| if w.get("state").and_then(|v| v.as_str()) == Some("open") { "closed".into() } else { "open".into() });
+        if w.get("id").and_then(|v| v.as_str()) == Some(wid.as_str()) && matches!(w.get("kind").and_then(|v| v.as_str()), Some("door" | "window" | "secret")) {
+            let kind = w.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            let state = want.clone().unwrap_or_else(|| match (kind, w.get("state").and_then(|v| v.as_str())) {
+                ("window", _) => "closed".into(),
+                (_, Some("open")) => "closed".into(),
+                (_, Some("broken")) => "broken".into(),
+                _ => "open".into(),
+            });
+            if state == "broken" && w.get("breakable") != Some(&Value::Bool(true)) {
+                w.insert("breakable".into(), json!(true));
+            }
             w.insert("state".into(), json!(state));
             orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("walls_json", s(&nd_render::py_dumps(&Value::Array(walls.clone()))))])?;
             orm::touch(&c.db, sc.get("world_id")?.as_i64()?)?;
@@ -14364,6 +14384,77 @@ fn sc_door(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
         }
     }
     Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "No such door"))
+}
+
+/// Player/GM interaction that breaks a wall-mounted door/window or a breakable
+/// container element. It is idempotent: breaking an already-broken target
+/// returns the same result and never drops loot or entity data.
+fn sc_break(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let (sc, mut elements) = sc_for_player(c, slug)?;
+    let wid = sc.get("world_id")?.as_i64()?;
+    let body = match sc_body(c)? { Ok(body) => body, Err(r) => return Some(r) };
+    let body = body.as_object()?;
+    let kind = body.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+
+    if kind == "wall" || kind == "door" || kind == "window" {
+        let target = body.get("wall_id").and_then(|v| v.as_str()).map(str::to_string)?;
+        let Value::Array(mut walls) = sc_load(&sc, "walls_json", true)? else { return None };
+        let mut found = false;
+        for wall in walls.iter_mut() {
+            let Some(w) = wall.as_object_mut() else { continue };
+            if w.get("id").and_then(|v| v.as_str()) == Some(target.as_str()) {
+                let wall_kind = w.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                if !matches!(wall_kind, "door" | "window" | "secret") {
+                    return Some(bad400("Only doors and windows can be broken"));
+                }
+                w.insert("state".into(), json!("broken"));
+                w.insert("breakable".into(), json!(true));
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "No such door or window"));
+        }
+        orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("walls_json", s(&nd_render::py_dumps(&Value::Array(walls))))])?;
+        orm::touch(&c.db, wid)?;
+        orm::bump_scene(&c.db, sc.get("id")?.as_i64()?, wid)?;
+        return json_response(&json!({"kind":"wall","wall_id":target,"state":"broken","ok":true}));
+    }
+
+    if kind == "element" || kind == "container" {
+        let target = body.get("element_id").and_then(|v| v.as_str()).map(str::to_string)?;
+        let mut found = false;
+        for element in elements.iter_mut() {
+            let Some(el) = element.as_object_mut() else { continue };
+            if el.get("id").and_then(|v| v.as_str()) != Some(target.as_str()) {
+                continue;
+            }
+            let label = el.get("label").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+            let text = el.get("text").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+            let container = el.get("breakable").and_then(|v| v.as_bool()) == Some(true)
+                || el.get("container").and_then(|v| v.as_bool()) == Some(true)
+                || ["container","chest","crate","barrel","cabinet","box"].iter().any(|name| label.contains(name) || text.contains(name));
+            if !container {
+                return Some(bad400("Only breakable containers can be broken"));
+            }
+            el.insert("broken".into(), json!(true));
+            el.insert("breakable".into(), json!(true));
+            el.insert("hp".into(), json!(0));
+            found = true;
+            break;
+        }
+        if !found {
+            return Some(crate::idpages::refusal(404));
+        }
+        let text = nd_render::py_dumps(&Value::Array(elements));
+        orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("elements_json", s(&text))])?;
+        orm::touch(&c.db, wid)?;
+        orm::bump_scene(&c.db, sc.get("id")?.as_i64()?, wid)?;
+        return json_response(&json!({"kind":"element","element_id":target,"broken":true,"ok":true}));
+    }
+
+    Some(bad400("kind must be wall, door, window, element or container"))
 }
 
 /// The viewer's characters in the map's world, oldest first
@@ -16600,12 +16691,38 @@ pub fn player_scene(db: &Connection, sc: &Map<String, Value>, viewer: Option<(i6
     let darkness = fog["darkness"].as_f64()?;
     let active = fog["enabled"] == json!(true) || darkness > 0.0;
     let mut walls = vec![];
+    let stored_walls = sc_load(sc, "walls_json", true)?.as_array()?.clone();
+    if !active {
+        for w in stored_walls.iter().filter_map(|w| w.as_object()) {
+            let kind = w.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            if !matches!(kind, "door" | "window" | "secret") {
+                continue;
+            }
+            if w.get("breakable") != Some(&Value::Bool(true)) {
+                continue;
+            }
+            let state = w.get("state").and_then(|v| v.as_str()).unwrap_or("closed");
+            if kind == "secret" && state != "broken" {
+                continue;
+            }
+            walls.push(json!({
+                "id": w.get("id").cloned().unwrap_or(Value::Null),
+                "pts": w.get("pts").cloned().unwrap_or(json!([])),
+                "kind": if kind == "secret" { "door" } else { kind },
+                "state": state,
+                "breakable": true
+            }));
+        }
+    }
     if active {
         for w in sc_load(sc, "walls_json", true)?.as_array()? {
             let Some(w) = w.as_object() else { continue };
             if w.get("kind").and_then(|v| v.as_str()) == Some("secret") {
                 let (id, pts) = (w.get("id").cloned().unwrap_or(Value::Null), w.get("pts").cloned().unwrap_or(Value::Null));
-                walls.push(if w.get("state").and_then(|v| v.as_str()) == Some("open") {
+                let state = w.get("state").and_then(|v| v.as_str()).unwrap_or("closed");
+                walls.push(if state == "broken" {
+                    json!({"id": id, "pts": pts, "kind": "door", "state": "broken", "breakable": true})
+                } else if state == "open" {
                     json!({"id": id, "pts": pts, "kind": "door", "state": "open"})
                 } else {
                     json!({"id": id, "pts": pts, "kind": "wall"})
@@ -18833,6 +18950,29 @@ fn em_complete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 #[cfg(test)]
 mod schematic_floor_tests {
     use super::*;
+
+    #[test]
+    fn broken_and_breakable_walls_keep_their_state() {
+        let sc = serde_json::from_value::<Map<String, Value>>(json!({
+            "canvas_width": 1000,
+            "canvas_height": 1000
+        })).unwrap();
+        let data = vec![json!({
+            "id":"door-1","kind":"door","state":"broken","breakable":true,"hp":0,
+            "pts":[[10,10],[60,10]]
+        }), json!({
+            "id":"window-1","kind":"window","state":"closed","breakable":true,"hp":5,
+            "pts":[[10,20],[60,20]]
+        })];
+        let (walls, _) = clean_walls(&data, &sc).unwrap();
+        assert_eq!(walls[0]["state"], "broken");
+        assert_eq!(walls[0]["breakable"], true);
+        assert_eq!(walls[0]["hp"], 0);
+        assert_eq!(walls[1]["kind"], "window");
+        assert_eq!(walls[1]["state"], "closed");
+        assert_eq!(walls[1]["breakable"], true);
+        assert_eq!(walls[1]["hp"], 5);
+    }
 
     #[test]
     fn floor_navigation_is_ordered_and_marks_the_current_floor() {

@@ -207,6 +207,29 @@ function aoeConePoints(x1, y1, x2, y2) {
   return [[x1,y1], p1, p2];
 }
 
+function appendBrokenMarker(g, el) {
+  if (!el || el.broken !== true) return;
+  const b = getBounds(el);
+  if (!b) return;
+  g.setAttribute('opacity', '0.55');
+  g.appendChild(svgEl('rect', {
+    x:b.x, y:b.y, width:b.w, height:b.h,
+    fill:'#3b2a20', opacity:0.32, stroke:'#b56a50', 'stroke-width':3,
+    'stroke-dasharray':'5 4',
+  }));
+  g.appendChild(svgEl('path', {
+    d:`M ${b.x+2} ${b.y+2} L ${b.x+b.w-2} ${b.y+b.h-2} M ${b.x+b.w-2} ${b.y+2} L ${b.x+2} ${b.y+b.h-2}`,
+    fill:'none', stroke:'#ff9a72', 'stroke-width':3, 'stroke-linecap':'round', opacity:0.9,
+  }));
+  const label = svgEl('text', {
+    x:b.x+b.w/2, y:b.y+b.h/2+4, 'text-anchor':'middle', 'font-size':12,
+    'font-family':'monospace', fill:'#ffb199', 'pointer-events':'none',
+    style:'paint-order:stroke;stroke:#2a120c;stroke-width:4px',
+  });
+  label.textContent = 'BROKEN';
+  g.appendChild(label);
+}
+
 // ── Render one element into an SVG <g> ────────────────────────────────────────
 function makeElSVG(el) {
   // Layer visibility / lock
@@ -255,7 +278,9 @@ function makeElSVG(el) {
     case 'image':
       main = svgEl('image', { x:el.x, y:el.y, width:el.w, height:el.h, href:el.href, preserveAspectRatio:'none' });
       if (isFinite(+el.rot) && +el.rot % 360) main.setAttribute('transform', `rotate(${+el.rot} ${el.x + el.w/2} ${el.y + el.h/2})`);
-      g.appendChild(main); return g;
+      g.appendChild(main);
+      appendBrokenMarker(g, el);
+      return g;
     case 'measure': {
       const ln = svgEl('line', { x1:el.x1, y1:el.y1, x2:el.x2, y2:el.y2,
         stroke:'#ffaa44', 'stroke-width':2, 'stroke-dasharray':'6 3' });
@@ -419,5 +444,6 @@ function makeElSVG(el) {
       g.appendChild(st);
     }
   }
+  appendBrokenMarker(g, el);
   return g;
 }
