@@ -37,7 +37,7 @@
   <div class="carto-header">
     <h1>🗺 Map Maker</h1>
     <div class="carto-actions">
-      <span class="carto-status"><span class="carto-dot"></span>running<span>{{ cartographer.version if cartographer.version else '' }}</span></span>
+      <span class="carto-status" title="nd-cartographer source {{ cartographer.source_revision if cartographer.source_revision else '' }}"><span class="carto-dot"></span>running <span>{{ cartographer.version if cartographer.version else '' }}</span></span>
       <a href="{{ cartographer_embed_url }}" target="_blank" rel="noopener" class="carto-btn">↗ Open in new tab</a>
     </div>
   </div>

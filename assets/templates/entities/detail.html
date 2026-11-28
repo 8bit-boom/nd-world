@@ -389,6 +389,24 @@
   </script>
   {% endif %}
 
+  {% if map_placements and is_gm %}
+  <section class="relations" data-ep="links">
+    <h2>// MAP PLACEMENTS</h2>
+    <div class="card-grid small">
+      {% for placement in map_placements %}
+      <div class="entity-card rel-card">
+        <a class="rel-link" href="/cartographer?project={{ placement.project|urlencode }}{% if placement.floor %}&amp;floor={{ placement.floor|urlencode }}{% endif %}&amp;object={{ placement.object|urlencode }}&amp;w={{ world.slug|urlencode }}">
+          <span class="entity-kind">🗺</span>
+          <span>{{ placement.project }}</span>
+          {% if placement.floor %}<span class="entity-sub">{{ placement.floor }} · {{ placement.object }}</span>{% else %}<span class="entity-sub">{{ placement.object }}</span>{% endif %}
+          <span class="entity-sub">{{ placement.relation }} · {{ placement.visibility_policy }}</span>
+        </a>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
   <section class="relations" data-ep="links">
     <h2>// CONNECTIONS</h2>
     {% if visible_related or backlinks %}

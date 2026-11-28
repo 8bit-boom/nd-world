@@ -18,6 +18,7 @@ use crate::pages::Pages;
 pub const STUDIO_BASE: &str = "/cartographer/studio";
 // nd-cartographer's v0.4.0 tag still declares 0.1.0 in its Cargo workspace metadata.
 pub const VERSION: &str = "0.4.0";
+pub const SOURCE_REVISION: &str = "33bd61e079ab05187e109382b38e85ccbfefd4d8";
 
 // The studio's positioned WebGL canvas otherwise paints over its unpositioned
 // 2D canvas, hiding all live drawing previews.
@@ -149,6 +150,7 @@ pub fn status(cfg: &Config) -> Value {
         "autostart": true,
         "url": STUDIO_BASE,
         "version": VERSION,
+        "source_revision": SOURCE_REVISION,
         "dir": base(cfg).to_string_lossy(),
     })
 }
@@ -171,6 +173,7 @@ mod tests {
             secret_key: None,
         };
         assert_eq!(status(&cfg)["version"], VERSION);
+        assert_eq!(status(&cfg)["source_revision"], SOURCE_REVISION);
     }
 
     #[tokio::test]
@@ -233,6 +236,8 @@ mod tests {
         assert_eq!(map_overlay_data(&db, &cfg, 1, "city"), Err("Invalid region data"));
         assert!(crate::startup::ensure_cartographer_links(&db).unwrap());
         assert!(!crate::startup::ensure_cartographer_links(&db).unwrap());
+        assert!(crate::startup::ensure_cartographer_object_bindings(&db).unwrap());
+        assert!(!crate::startup::ensure_cartographer_object_bindings(&db).unwrap());
         assert!(crate::startup::ensure_cartographer_playable(&db).unwrap());
         assert!(!crate::startup::ensure_cartographer_playable(&db).unwrap());
         let project_dir = data_dir(&cfg).join("doc_test");
@@ -265,7 +270,7 @@ mod tests {
         let render = |maps: Value| env.get_template("cartographer.html").unwrap().render(minijinja::context! {
             existing_maps => maps,
             cartographer_links => json!([]),
-            cartographer => json!({"version": VERSION, "dir": "/data/cartographer"}),
+            cartographer => json!({"version": VERSION, "source_revision": SOURCE_REVISION, "dir": "/data/cartographer"}),
             cartographer_embed_url => STUDIO_BASE,
         }).unwrap();
         let html = render(json!([
@@ -1077,6 +1082,418 @@ pub fn links(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: Option<&[u8]>) 
             reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":"Could not read project links"}))
         }
     }
+}
+
+fn query_param(uri: &Uri, key: &str) -> Option<String> {
+    uri.query()?.split('&').find_map(|part| {
+        let (name, value) = part.split_once('=')?;
+        if name == key {
+            Some(percent_encoding::percent_decode_str(&value.replace('+', " "))
+                .decode_utf8_lossy()
+                .to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn safe_binding_part(value: &str) -> Option<String> {
+    if value.is_empty() || value.len() > 96 {
+        return None;
+    }
+    let safe = value.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'));
+    safe.then(|| value.to_string())
+}
+
+pub fn bindings(cfg: &Config, uri: &Uri, headers: &HeaderMap, method: &str, body: Option<&[u8]>) -> Response<Body> {
+    let Some((db, page)) = gm_ctx(cfg, method, uri, headers) else {
+        return reply(StatusCode::FORBIDDEN, json!({"error":"GM access required"}));
+    };
+    let Some(world_id) = page.world.as_ref().and_then(|w| w.get("id")).and_then(Value::as_i64) else {
+        return reply(StatusCode::FORBIDDEN, json!({"error":"Active world required"}));
+    };
+    match method {
+        "DELETE" => {
+            let Some(body) = body else { return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid request"})); };
+            let Ok(data) = serde_json::from_slice::<Value>(body) else {
+                return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid request"}));
+            };
+            let Some(binding_id) = data["binding_id"].as_str().filter(|v| safe_binding_part(v).is_some()) else {
+                return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid binding_id"}));
+            };
+            let changed = db.execute(
+                "DELETE FROM cartographer_object_bindings WHERE world_id = ?1 AND binding_id = ?2",
+                rusqlite::params![world_id, binding_id],
+            ).unwrap_or(0);
+            return reply(StatusCode::OK, json!({"ok":true, "deleted":changed > 0}));
+        }
+        "POST" => {
+            let Some(body) = body else { return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid request"})); };
+            let Ok(data) = serde_json::from_slice::<Value>(body) else {
+                return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid request"}));
+            };
+            let Some(project) = data["project"].as_str().and_then(safe_binding_part) else {
+                return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid project"}));
+            };
+            let floor = data["floor"].as_str().and_then(safe_binding_part);
+            let Some(object) = data["object"].as_str().and_then(safe_binding_part) else {
+                return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid object"}));
+            };
+            let target_type = data["target_type"].as_str().unwrap_or("entity");
+            let Some(target_id) = data["target_id"].as_i64().filter(|id| *id > 0) else {
+                return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid target_id"}));
+            };
+            let relation = data["relation"].as_str().unwrap_or("represents");
+            if target_type != "entity" || !matches!(relation,
+                "represents" | "controls" | "claims" | "influences" | "headquarters" |
+                "located_at" | "contains" | "occupant" | "portal" | "interacts" | "encounter"
+            ) {
+                return reply(StatusCode::BAD_REQUEST, json!({"error":"Unsupported target or relation"}));
+            }
+            let visibility = data["visibility_policy"].as_str().unwrap_or("inherit");
+            if !matches!(visibility, "inherit" | "gm_only" | "discovered") {
+                return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid visibility_policy"}));
+            }
+            let revision = data["revision"].as_i64().unwrap_or(1).max(1);
+            let entity_world = db.query_row(
+                "SELECT world_id FROM entities WHERE id = ?1",
+                [target_id], |r| r.get::<_, i64>(0),
+            );
+            if entity_world != Ok(world_id) {
+                return reply(StatusCode::BAD_REQUEST, json!({"error":"Entity is not in the active world"}));
+            }
+            let floor_id = floor.as_deref();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_secs() as i64)
+                .unwrap_or(0);
+            let binding_floor = floor_id.unwrap_or("global");
+            let binding_id = format!(
+                "bind-{world_id}-{project}-{binding_floor}-{object}-{relation}-{target_id}"
+            );
+            let result = db.execute(
+                "INSERT INTO cartographer_object_bindings
+                    (binding_id, world_id, project_id, floor_id, object_id, target_type, target_id, relation, visibility_policy, revision, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'entity', ?6, ?7, ?8, ?9, ?10, ?10)
+                 ON CONFLICT(binding_id) DO UPDATE SET
+                    visibility_policy = excluded.visibility_policy,
+                    revision = excluded.revision,
+                    updated_at = excluded.updated_at",
+                rusqlite::params![binding_id, world_id, project, floor_id, object, target_id, relation, visibility, revision, now],
+            );
+            return match result {
+                Ok(_) => reply(StatusCode::OK, json!({"ok":true, "binding_id":binding_id, "world_id":world_id,
+                    "project":project, "floor":floor_id, "object":object, "target_type":"entity",
+                    "target_id":target_id, "relation":relation, "visibility_policy":visibility, "revision":revision})),
+                Err(error) => {
+                    eprintln!("nd-gateway: could not save Map Maker object binding: {error}");
+                    reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":"Could not save object binding"}))
+                }
+            };
+        }
+        "GET" => {}
+        _ => return reply(StatusCode::METHOD_NOT_ALLOWED, json!({"error":"Method not allowed"})),
+    }
+    let mut sql = String::from(
+        "SELECT binding_id, world_id, project_id, floor_id, object_id, target_type, target_id,
+                relation, visibility_policy, revision, created_at, updated_at
+         FROM cartographer_object_bindings WHERE world_id = ?1"
+    );
+    let project = query_param(uri, "project");
+    let floor = query_param(uri, "floor");
+    let object = query_param(uri, "object");
+    let target_type = query_param(uri, "target_type");
+    let target_id = query_param(uri, "target_id").and_then(|v| v.parse::<i64>().ok());
+    let mut params: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Integer(world_id)];
+    let mut next = 2;
+    if let Some(project) = project.as_deref() {
+        sql.push_str(&format!(" AND project_id = ?{next}"));
+        params.push(rusqlite::types::Value::Text(project.to_string()));
+        next += 1;
+    }
+    if let Some(floor) = floor.as_deref() {
+        sql.push_str(&format!(" AND floor_id = ?{next}"));
+        params.push(rusqlite::types::Value::Text(floor.to_string()));
+        next += 1;
+    }
+    if let Some(object) = object.as_deref() {
+        sql.push_str(&format!(" AND object_id = ?{next}"));
+        params.push(rusqlite::types::Value::Text(object.to_string()));
+        next += 1;
+    }
+    if target_type.as_deref() == Some("entity") {
+        sql.push_str(&format!(" AND target_type = ?{next}"));
+        params.push(rusqlite::types::Value::Text("entity".to_string()));
+        next += 1;
+    }
+    if let Some(target_id) = target_id {
+        sql.push_str(&format!(" AND target_id = ?{next}"));
+        params.push(rusqlite::types::Value::Integer(target_id));
+    }
+    sql.push_str(" ORDER BY project_id, floor_id, object_id, relation");
+    let mut st = match db.prepare(&sql) { Ok(st) => st, Err(error) => return reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":error.to_string()})) };
+    let rows = st.query_map(rusqlite::params_from_iter(params), |r| Ok(json!({
+        "binding_id": r.get::<_, String>(0)?,
+        "world_id": r.get::<_, i64>(1)?,
+        "project": r.get::<_, String>(2)?,
+        "floor": r.get::<_, Option<String>>(3)?,
+        "object": r.get::<_, String>(4)?,
+        "target_type": r.get::<_, String>(5)?,
+        "target_id": r.get::<_, i64>(6)?,
+        "relation": r.get::<_, String>(7)?,
+        "visibility_policy": r.get::<_, String>(8)?,
+        "revision": r.get::<_, i64>(9)?,
+        "created_at": r.get::<_, i64>(10)?,
+        "updated_at": r.get::<_, i64>(11)?
+    })));
+    let items = match rows {
+        Ok(rows) => rows.collect::<Result<Vec<_>, _>>().unwrap_or_default(),
+        Err(error) => return reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":error.to_string()})),
+    };
+    reply(StatusCode::OK, json!({"bindings":items}))
+}
+
+pub fn publications(cfg: &Config, uri: &Uri, headers: &HeaderMap, method: &str, body: Option<&[u8]>) -> Response<Body> {
+    let Some((db, page)) = gm_ctx(cfg, method, uri, headers) else {
+        return reply(StatusCode::FORBIDDEN, json!({"error":"GM access required"}));
+    };
+    let Some(world_id) = page.world.as_ref().and_then(|w| w.get("id")).and_then(Value::as_i64) else {
+        return reply(StatusCode::FORBIDDEN, json!({"error":"Active world required"}));
+    };
+    if method == "POST" {
+        let Some(body) = body else { return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid request"})); };
+        let Ok(mut manifest) = serde_json::from_slice::<Value>(body) else {
+            return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid manifest"}));
+        };
+        let Some(project) = manifest["project"].as_str().and_then(safe_binding_part) else {
+            return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid project"}));
+        };
+        let Some(revision) = manifest["revision"].as_i64().filter(|revision| *revision >= 0) else {
+            return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid revision"}));
+        };
+        manifest["project"] = json!(project);
+        manifest["revision"] = json!(revision);
+        manifest["world_id"] = json!(world_id);
+        let canonical = nd_render::py_dumps(&manifest);
+        use sha2::{Digest, Sha256};
+        let manifest_hash = Sha256::digest(canonical.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or(0);
+        let status = manifest["status"].as_str().unwrap_or("approved");
+        if !matches!(status, "draft" | "approved" | "published" | "cancelled" | "partial") {
+            return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid publication status"}));
+        }
+        let result = db.execute(
+            "INSERT INTO cartographer_publications
+                (world_id, project_id, revision, manifest_hash, manifest_json, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+             ON CONFLICT(world_id, project_id, revision) DO UPDATE SET
+                manifest_hash = excluded.manifest_hash,
+                manifest_json = excluded.manifest_json,
+                status = excluded.status,
+                updated_at = excluded.updated_at",
+            rusqlite::params![world_id, project, revision, manifest_hash, canonical, status, now],
+        );
+        return match result {
+            Ok(_) => reply(StatusCode::OK, json!({
+                "ok":true, "world_id":world_id, "project":project, "revision":revision,
+                "manifest_hash":manifest_hash, "status":status
+            })),
+            Err(error) => {
+                eprintln!("nd-gateway: could not save Map Maker publication: {error}");
+                reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":"Could not save publication"}))
+            }
+        };
+    }
+    if method != "GET" {
+        return reply(StatusCode::METHOD_NOT_ALLOWED, json!({"error":"Method not allowed"}));
+    }
+    let mut st = match db.prepare(
+        "SELECT project_id, revision, manifest_hash, manifest_json, status, created_at, updated_at
+         FROM cartographer_publications WHERE world_id = ?1
+         ORDER BY project_id, revision DESC"
+    ) {
+        Ok(st) => st,
+        Err(error) => return reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":error.to_string()})),
+    };
+    let rows = st.query_map([world_id], |r| {
+        let manifest: Value = serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or(json!({}));
+        Ok(json!({
+            "project":r.get::<_, String>(0)?,
+            "revision":r.get::<_, i64>(1)?,
+            "manifest_hash":r.get::<_, String>(2)?,
+            "manifest":manifest,
+            "status":r.get::<_, String>(4)?,
+            "created_at":r.get::<_, i64>(5)?,
+            "updated_at":r.get::<_, i64>(6)?
+        }))
+    });
+    let items = match rows {
+        Ok(rows) => rows.collect::<Result<Vec<_>, _>>().unwrap_or_default(),
+        Err(error) => return reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":error.to_string()})),
+    };
+    reply(StatusCode::OK, json!({"publications":items}))
+}
+
+pub fn scene_instances(cfg: &Config, uri: &Uri, headers: &HeaderMap, method: &str, body: Option<&[u8]>) -> Response<Body> {
+    let Some((db, page)) = gm_ctx(cfg, method, uri, headers) else {
+        return reply(StatusCode::FORBIDDEN, json!({"error":"GM access required"}));
+    };
+    let Some(world_id) = page.world.as_ref().and_then(|w| w.get("id")).and_then(Value::as_i64) else {
+        return reply(StatusCode::FORBIDDEN, json!({"error":"Active world required"}));
+    };
+    if method == "POST" {
+        let Some(body) = body else { return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid request"})); };
+        let Ok(data) = serde_json::from_slice::<Value>(body) else {
+            return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid request"}));
+        };
+        let Some(project) = data["project"].as_str().and_then(safe_binding_part) else {
+            return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid project"}));
+        };
+        let Some(revision) = data["revision"].as_i64().filter(|revision| *revision >= 0) else {
+            return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid revision"}));
+        };
+        let floor = data["floor"].as_str().and_then(safe_binding_part);
+        let schematic_id = data["schematic_id"].as_i64().filter(|id| *id > 0);
+        let state = data["state"].as_object().cloned().unwrap_or_default();
+        let state_json = serde_json::to_string(&Value::Object(state)).unwrap_or_else(|_| "{}".to_string());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or(0);
+        let instance_id = format!("scene_{world_id}_{project}_{revision}_{:032x}", rand::random::<u128>());
+        let result = db.execute(
+            "INSERT INTO cartographer_scene_instances
+                (instance_id, world_id, project_id, revision, floor_id, schematic_id, state_json, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+            rusqlite::params![instance_id, world_id, project, revision, floor, schematic_id, state_json, now],
+        );
+        return match result {
+            Ok(_) => reply(StatusCode::OK, json!({
+                "ok":true, "instance_id":instance_id, "world_id":world_id,
+                "project":project, "revision":revision, "floor":floor,
+                "schematic_id":schematic_id, "state":serde_json::from_str::<Value>(&state_json).unwrap_or(json!({}))
+            })),
+            Err(error) => reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":format!("Could not create scene instance: {error}")})),
+        };
+    }
+    if method != "GET" {
+        return reply(StatusCode::METHOD_NOT_ALLOWED, json!({"error":"Method not allowed"}));
+    }
+    let project = query_param(uri, "project");
+    let mut sql = String::from(
+        "SELECT instance_id, project_id, revision, floor_id, schematic_id, state_json, created_at, updated_at
+         FROM cartographer_scene_instances WHERE world_id = ?1"
+    );
+    let mut params: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Integer(world_id)];
+    if let Some(project) = project.as_deref() {
+        sql.push_str(" AND project_id = ?2");
+        params.push(rusqlite::types::Value::Text(project.to_string()));
+    }
+    sql.push_str(" ORDER BY updated_at DESC");
+    let mut st = match db.prepare(&sql) {
+        Ok(st) => st,
+        Err(error) => return reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":error.to_string()})),
+    };
+    let rows = st.query_map(rusqlite::params_from_iter(params), |r| {
+        let state: Value = serde_json::from_str(&r.get::<_, String>(5)?).unwrap_or(json!({}));
+        Ok(json!({
+            "instance_id":r.get::<_, String>(0)?,
+            "project":r.get::<_, String>(1)?,
+            "revision":r.get::<_, i64>(2)?,
+            "floor":r.get::<_, Option<String>>(3)?,
+            "schematic_id":r.get::<_, Option<i64>>(4)?,
+            "state":state,
+            "created_at":r.get::<_, i64>(6)?,
+            "updated_at":r.get::<_, i64>(7)?
+        }))
+    });
+    let items = match rows {
+        Ok(rows) => rows.collect::<Result<Vec<_>, _>>().unwrap_or_default(),
+        Err(error) => return reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":error.to_string()})),
+    };
+    reply(StatusCode::OK, json!({"instances":items}))
+}
+
+pub fn discoveries(cfg: &Config, uri: &Uri, headers: &HeaderMap, method: &str, body: Option<&[u8]>) -> Response<Body> {
+    let Some((db, page)) = gm_ctx(cfg, method, uri, headers) else {
+        return reply(StatusCode::FORBIDDEN, json!({"error":"GM access required"}));
+    };
+    let Some(world_id) = page.world.as_ref().and_then(|w| w.get("id")).and_then(Value::as_i64) else {
+        return reply(StatusCode::FORBIDDEN, json!({"error":"Active world required"}));
+    };
+    if method == "POST" {
+        let Some(body) = body else { return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid request"})); };
+        let Ok(data) = serde_json::from_slice::<Value>(body) else {
+            return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid request"}));
+        };
+        let Some(instance_id) = data["instance_id"].as_str().and_then(safe_binding_part) else {
+            return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid instance_id"}));
+        };
+        let Some(audience_key) = data["audience_key"].as_str().and_then(safe_binding_part) else {
+            return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid audience_key"}));
+        };
+        let Some(object_id) = data["object"].as_str().and_then(safe_binding_part) else {
+            return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid object"}));
+        };
+        let exists: bool = db.query_row(
+            "SELECT 1 FROM cartographer_scene_instances WHERE world_id = ?1 AND instance_id = ?2",
+            rusqlite::params![world_id, instance_id], |_| Ok(true),
+        ).unwrap_or(false);
+        if !exists {
+            return reply(StatusCode::NOT_FOUND, json!({"error":"Scene instance not found"}));
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or(0);
+        let result = db.execute(
+            "INSERT OR IGNORE INTO cartographer_discoveries
+                (world_id, instance_id, audience_key, object_id, discovered_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![world_id, instance_id, audience_key, object_id, now],
+        );
+        return match result {
+            Ok(_) => reply(StatusCode::OK, json!({"ok":true, "instance_id":instance_id,
+                "audience_key":audience_key, "object":object_id, "discovered_at":now})),
+            Err(error) => reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":format!("Could not record discovery: {error}")})),
+        };
+    }
+    if method != "GET" {
+        return reply(StatusCode::METHOD_NOT_ALLOWED, json!({"error":"Method not allowed"}));
+    }
+    let Some(instance_id) = query_param(uri, "instance").and_then(|value| safe_binding_part(&value)) else {
+        return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid instance_id"}));
+    };
+    let audience_key = query_param(uri, "audience").and_then(|value| safe_binding_part(&value));
+    let mut sql = String::from(
+        "SELECT instance_id, audience_key, object_id, discovered_at
+         FROM cartographer_discoveries WHERE world_id = ?1 AND instance_id = ?2"
+    );
+    let mut params: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Integer(world_id),
+        rusqlite::types::Value::Text(instance_id)];
+    if let Some(audience_key) = audience_key.as_deref() {
+        sql.push_str(" AND audience_key = ?3");
+        params.push(rusqlite::types::Value::Text(audience_key.to_string()));
+    }
+    sql.push_str(" ORDER BY object_id");
+    let mut st = match db.prepare(&sql) {
+        Ok(st) => st,
+        Err(error) => return reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":error.to_string()})),
+    };
+    let rows = st.query_map(rusqlite::params_from_iter(params), |r| Ok(json!({
+        "instance_id":r.get::<_, String>(0)?,
+        "audience_key":r.get::<_, String>(1)?,
+        "object":r.get::<_, String>(2)?,
+        "discovered_at":r.get::<_, i64>(3)?
+    })));
+    let items = match rows {
+        Ok(rows) => rows.collect::<Result<Vec<_>, _>>().unwrap_or_default(),
+        Err(error) => return reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":error.to_string()})),
+    };
+    reply(StatusCode::OK, json!({"discoveries":items}))
 }
 
 fn existing_maps(db: &rusqlite::Connection, cfg: &Config, world_id: i64) -> Option<Value> {

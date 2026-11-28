@@ -297,7 +297,8 @@ pub fn admin_backup(pages: &crate::pages::Pages, cfg: &Config, uri: &Uri, header
     let mut tables = Map::new();
     for t in ["worlds", "entities", "users", "world_memberships", "invite_codes", "player_characters", "combat_sessions",
               "quests", "parties", "game_sessions", "schematics", "schematic_floors", "map_overlays", "invest_boards", "private_notes",
-              "entity_notes", "entity_templates", "cartographer_links", "cartographer_playable"] {
+              "entity_notes", "entity_templates", "cartographer_links", "cartographer_object_bindings",
+              "cartographer_publications", "cartographer_scene_instances", "cartographer_discoveries", "cartographer_playable"] {
         tables.insert(t.into(), json!(count(t)?));
     }
     manifest.insert("tables".into(), Value::Object(tables));

@@ -1,6 +1,20 @@
 (function () {
   const params = new URLSearchParams(window.location.search);
   const project = params.get('project');
+  let buildView = 'studio';
+  function richTokenElements(source, floorId) {
+    const floor = source && Array.isArray(source.floors)
+      ? source.floors.find(item => item && item.id === floorId)
+      : null;
+    if (!floor || !Array.isArray(floor.markers)) return [];
+    return floor.markers
+      .filter(marker => typeof marker.note === 'string' && marker.note.startsWith('NDWORLD-RICH-TOKEN:'))
+      .map(marker => {
+        try { return JSON.parse(marker.note.slice('NDWORLD-RICH-TOKEN:'.length)); }
+        catch (_) { return null; }
+      })
+      .filter(value => value && typeof value === 'object' && !Array.isArray(value));
+  }
   function setWorkflowStage(stage) {
     const stages = ['build', 'prepare', 'run'];
     stages.forEach(name => {
@@ -14,8 +28,14 @@
     const run = document.getElementById('carto-run-stage');
     if (prepare) prepare.hidden = stage !== 'prepare';
     if (buildExisting) buildExisting.hidden = stage !== 'build';
-    if (stage === 'prepare' || stage === 'run') {
-      if (studio) studio.hidden = true;
+    if (stage === 'build') {
+      if (studio) studio.hidden = buildView !== 'studio';
+      if (existing) existing.hidden = buildView !== 'existing';
+    } else {
+      // Preparation controls read the loaded studio project directly. Keeping
+      // the frame mounted and visible avoids a stage switch becoming the
+      // guard for otherwise valid project state.
+      if (studio) studio.hidden = false;
       if (existing) existing.hidden = true;
     }
     if (run) run.hidden = stage !== 'run';
@@ -71,11 +91,6 @@
   async function updatePlayable(mode) {
     const status = document.getElementById('carto-workspace-status');
     const link = document.getElementById('carto-playable-link');
-    if (document.getElementById('carto-studio-wrap').hidden) {
-      status.hidden = false;
-      status.textContent = 'Switch to Map Maker to choose the floor to copy.';
-      return;
-    }
     const studioDoc = document.getElementById('carto-studio-frame').contentDocument;
     const picker = studioDoc && studioDoc.getElementById('doc-select');
     const activeFloor = studioDoc && studioDoc.querySelector('#floor-tabs [role="tab"][aria-selected="true"]');
@@ -108,9 +123,14 @@
     }
     try {
       await request(base + '/save', { method: 'POST' });
-      let richElements = [];
       const exported = await request(base + '/export/uvtt?floor=' + encodeURIComponent(floor) + '&ppc=32&audience=player');
       const data = await exported.blob();
+      let richElements = [];
+      if (mode === 'create' || mode === 'ensure') {
+        const sourceResponse = await request(base);
+        const source = typeof sourceResponse.json === 'function' ? await sourceResponse.json() : null;
+        richElements = richTokenElements(source, floor);
+      }
       const form = new FormData();
       form.append('file', data, 'map-maker-floor.dd2vtt');
       form.append('name', projectName + ' - ' + floorName);
@@ -155,11 +175,6 @@
     close.addEventListener('click', () => updateDialog.close());
     updateScene.addEventListener('click', async () => {
       const status = document.getElementById('carto-workspace-status');
-      if (document.getElementById('carto-studio-wrap').hidden) {
-        status.hidden = false;
-        status.textContent = 'Switch to Map Maker to choose a project.';
-        return;
-      }
       const studioDoc = document.getElementById('carto-studio-frame').contentDocument;
       const picker = studioDoc && studioDoc.getElementById('doc-select');
       const id = picker && picker.value;
@@ -417,11 +432,6 @@
   if (playableFloors) playableFloors.addEventListener('click', async () => {
     const status = document.getElementById('carto-workspace-status');
     const link = document.getElementById('carto-playable-link');
-    if (document.getElementById('carto-studio-wrap').hidden) {
-      status.hidden = false;
-      status.textContent = 'Switch to Map Maker to choose a project.';
-      return;
-    }
     const doc = document.getElementById('carto-studio-frame').contentDocument;
     const picker = doc && doc.getElementById('doc-select');
     const id = picker && picker.value;
@@ -481,11 +491,7 @@
         form.append('floor', floor.id);
         form.append('mode', 'ensure');
         form.append('revision', String(source.rev));
-        const studioFloor = source.floors.find(item => item.id === floor.id);
-        const richElements = (studioFloor?.markers || []).filter(marker => typeof marker.note === 'string' && marker.note.startsWith('NDWORLD-RICH-TOKEN:'))
-          .map(marker => {
-            try { return JSON.parse(marker.note.slice('NDWORLD-RICH-TOKEN:'.length)); } catch (_) { return null; }
-          }).filter(Boolean);
+        const richElements = richTokenElements(source, floor.id);
         if (richElements.length) form.append('elements', JSON.stringify(richElements));
         const prepared = await (await request(importUrl.pathname + importUrl.search, { method: 'POST', body: form })).json();
         if (!Number.isInteger(prepared.width) || !Number.isInteger(prepared.height) || typeof prepared.image_url !== 'string') {
@@ -617,11 +623,13 @@
       frame.title = select.selectedOptions[0].textContent;
       frame.src = url;
     }
+    buildView = 'existing';
     studio.hidden = true;
     existing.hidden = false;
     studioButton.setAttribute('aria-pressed', 'false');
   });
   studioButton.addEventListener('click', () => {
+    buildView = 'studio';
     existing.hidden = true;
     studio.hidden = false;
     studioButton.setAttribute('aria-pressed', 'true');

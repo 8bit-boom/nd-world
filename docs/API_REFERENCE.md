@@ -661,6 +661,10 @@ The next confirmed session also shows on the in-world calendar page and in each 
 | POST | `/api/cartographer/playable-preview` | GM | Inspects a Map Maker project and every linked playable floor, reporting project revision, missing copies, playable-side conflicts, and which artwork or geometry updates are available. |
 | POST | `/api/cartographer/update-run` | GM | Starts, marks, reads or cancels a recoverable per-floor playable-scene update run. |
 | GET, POST | `/api/cartographer/links` | GM | Lists active-world project links or links a newly copied project to an existing map (`project`, `kind`, `slug`). |
+| GET, POST, DELETE | `/api/cartographer/bindings` | GM | Lists, creates/updates or deletes typed world-scoped entity bindings for Map Maker objects. |
+| GET, POST | `/api/cartographer/publications` | GM | Lists or records revision-bound native Map Maker publication manifests. |
+| GET, POST | `/api/cartographer/scene-instances` | GM | Lists or creates campaign-specific live Map Maker scene instances. |
+| GET, POST | `/api/cartographer/discoveries` | GM | Lists or records audience-specific Map Maker discoveries. |
 
 ## Schematics
 

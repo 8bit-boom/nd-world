@@ -701,6 +701,62 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
                 Err(_) => Response::builder().status(axum::http::StatusCode::INTERNAL_SERVER_ERROR).body(Body::from("Could not manage project links")).unwrap(),
             };
         }
+        if matches!(*req.method(), axum::http::Method::GET | axum::http::Method::POST | axum::http::Method::DELETE) && path == "/api/cartographer/bindings" {
+            let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
+            let method = req.method().as_str().to_string();
+            let body = if method != "GET" {
+                match axum::body::to_bytes(req.into_body(), 4096).await {
+                    Ok(bytes) => Some(bytes),
+                    Err(_) => return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap(),
+                }
+            } else { None };
+            return match tokio::task::spawn_blocking(move || cartographer::bindings(&cfg, &uri, &headers, &method, body.as_deref())).await {
+                Ok(resp) => resp,
+                Err(_) => Response::builder().status(axum::http::StatusCode::INTERNAL_SERVER_ERROR).body(Body::from("Could not manage map object bindings")).unwrap(),
+            };
+        }
+        if matches!(*req.method(), axum::http::Method::GET | axum::http::Method::POST) && path == "/api/cartographer/publications" {
+            let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
+            let method = req.method().as_str().to_string();
+            let body = if method != "GET" {
+                match axum::body::to_bytes(req.into_body(), 1024 * 1024).await {
+                    Ok(bytes) => Some(bytes),
+                    Err(_) => return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap(),
+                }
+            } else { None };
+            return match tokio::task::spawn_blocking(move || cartographer::publications(&cfg, &uri, &headers, &method, body.as_deref())).await {
+                Ok(resp) => resp,
+                Err(_) => Response::builder().status(axum::http::StatusCode::INTERNAL_SERVER_ERROR).body(Body::from("Could not manage Map Maker publications")).unwrap(),
+            };
+        }
+        if matches!(*req.method(), axum::http::Method::GET | axum::http::Method::POST) && path == "/api/cartographer/scene-instances" {
+            let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
+            let method = req.method().as_str().to_string();
+            let body = if method != "GET" {
+                match axum::body::to_bytes(req.into_body(), 1024 * 1024).await {
+                    Ok(bytes) => Some(bytes),
+                    Err(_) => return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap(),
+                }
+            } else { None };
+            return match tokio::task::spawn_blocking(move || cartographer::scene_instances(&cfg, &uri, &headers, &method, body.as_deref())).await {
+                Ok(resp) => resp,
+                Err(_) => Response::builder().status(axum::http::StatusCode::INTERNAL_SERVER_ERROR).body(Body::from("Could not manage Map Maker scene instances")).unwrap(),
+            };
+        }
+        if matches!(*req.method(), axum::http::Method::GET | axum::http::Method::POST) && path == "/api/cartographer/discoveries" {
+            let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
+            let method = req.method().as_str().to_string();
+            let body = if method != "GET" {
+                match axum::body::to_bytes(req.into_body(), 4096).await {
+                    Ok(bytes) => Some(bytes),
+                    Err(_) => return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap(),
+                }
+            } else { None };
+            return match tokio::task::spawn_blocking(move || cartographer::discoveries(&cfg, &uri, &headers, &method, body.as_deref())).await {
+                Ok(resp) => resp,
+                Err(_) => Response::builder().status(axum::http::StatusCode::INTERNAL_SERVER_ERROR).body(Body::from("Could not manage Map Maker discoveries")).unwrap(),
+            };
+        }
     }
     if req.method() == axum::http::Method::GET && req.uri().path() == "/export/foundry.json" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());

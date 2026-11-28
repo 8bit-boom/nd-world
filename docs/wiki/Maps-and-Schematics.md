@@ -20,9 +20,9 @@ original in the workspace so its editor can be reopened quickly. Deleting the
 original or the project removes that link, not the other copy.
 For GMs, the top-level collection also lists Map Maker projects, which are
 shared across worlds. Publishing a project again can replace manually edited
-elements and tokens in its published schematic. Full Backup does not include
-the Map Maker project folder (`<data>/cartographer/data`) is now included in
-Full Backup and restored with database project associations.
+elements and tokens in its published schematic. Full Backup includes the Map
+Maker project folder (`<data>/cartographer/data`) and restores project files
+together with database project associations.
 
 To play a Map Maker floor, finish editing and choose **Create playable copy
 of current floor**. This creates a new schematic using the player-filtered

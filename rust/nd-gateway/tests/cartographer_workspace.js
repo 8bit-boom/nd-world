@@ -67,6 +67,52 @@ test('reports a studio or project list that never loads', () => {
   assert.match(page.status.textContent, /Could not load/);
 });
 
+test('Build → Prepare → Run → Build keeps the studio mounted and restores Build view', () => {
+  const handlers = {};
+  const studio = { hidden: false };
+  const existing = { hidden: true };
+  const prepare = { hidden: true };
+  const buildExisting = { hidden: false };
+  const run = { hidden: true };
+  const stages = {};
+  for (const name of ['build', 'prepare', 'run']) {
+    const button = {
+      classList: { toggle() {} },
+      addEventListener: (event, fn) => { handlers[name] = fn; },
+    };
+    stages[name] = button;
+  }
+  const elements = {
+    'carto-stage-build': stages.build,
+    'carto-stage-prepare': stages.prepare,
+    'carto-stage-run': stages.run,
+    'carto-prepare-stage': prepare,
+    'carto-build-existing': buildExisting,
+    'carto-studio-wrap': studio,
+    'carto-existing-wrap': existing,
+    'carto-run-stage': run,
+  };
+  vm.runInNewContext(script, {
+    document: { getElementById: id => elements[id] || null },
+    window: { location: { search: '' } }, URLSearchParams,
+  });
+
+  handlers.prepare();
+  assert.equal(prepare.hidden, false);
+  assert.equal(studio.hidden, false);
+  assert.equal(existing.hidden, true);
+
+  handlers.run();
+  assert.equal(run.hidden, false);
+  assert.equal(studio.hidden, false);
+  assert.equal(existing.hidden, true);
+
+  handlers.build();
+  assert.equal(buildExisting.hidden, false);
+  assert.equal(studio.hidden, false);
+  assert.equal(existing.hidden, true);
+});
+
 function copyWorkspace(failUnderlay, kind = 'map', image = '/uploads/maps/town.png', html = 'no', multiFloor = false, badDestination = false) {
   const handlers = {};
   function element(id) {
@@ -287,6 +333,14 @@ test('creates a new playable schematic from the selected player-filtered floor',
   const fetch = async (url, options) => {
     requests.push({ url, options });
     if (url.includes('/export/uvtt')) return { ok: true, blob: async () => 'uvtt' };
+    if (url === '/cartographer/studio/api/docs/doc_one') return { ok: true, json: async () => ({
+      rev: 2,
+      floors: [{ id: 'fl_upper', name: 'Upper', markers: [
+        { note: 'NDWORLD-RICH-TOKEN:' + JSON.stringify({ id: 'npc-7', name: 'Guildmaster', entity_id: 7, visible: true }) },
+        { note: 'NDWORLD-RICH-TOKEN:not-json' },
+        { note: 'ordinary' },
+      ] }],
+    }) };
     if (url.startsWith('/maps/schematic/import-uvtt')) return { ok: true, json: async () => ({ slug: 'tower-upper', warnings: [] }) };
     return { ok: true };
   };
@@ -298,10 +352,12 @@ test('creates a new playable schematic from the selected player-filtered floor',
   await handlers.click();
   assert.equal(requests[0].url, '/cartographer/studio/api/docs/doc_one/save');
   assert.equal(requests[1].url, '/cartographer/studio/api/docs/doc_one/export/uvtt?floor=fl_upper&ppc=32&audience=player');
-  assert.equal(requests[2].url, '/maps/schematic/import-uvtt?w=test-world');
-  assert.deepEqual(requests[2].options.body.parts, [
+  assert.equal(requests[2].url, '/cartographer/studio/api/docs/doc_one');
+  assert.equal(requests[3].url, '/maps/schematic/import-uvtt?w=test-world');
+  assert.deepEqual(requests[3].options.body.parts, [
     ['file', 'uvtt', 'map-maker-floor.dd2vtt'], ['name', 'Tower - Upper'],
     ['project', 'doc_one'], ['floor', 'fl_upper'], ['mode', 'create'],
+    ['elements', JSON.stringify([{ id: 'npc-7', name: 'Guildmaster', entity_id: 7, visible: true }])],
   ]);
   assert.equal(link.href, '/cartographer?kind=schematic&slug=tower-upper&w=test-world');
   assert.equal(link.hidden, false);
@@ -373,7 +429,11 @@ test('creates linked playable floors and converts stair coordinates', async () =
     append(...args) { this.parts.push(args); }
   }
   const source = { rev: 5, floors: [
-    { id: 'fl_one', name: 'Ground', digest: 'a', markers: [{ id: 'stairs', label: 'Up', x: 1, y: 2, links_to: { floor: 'fl_two', x: 3, y: 4 } }] },
+    { id: 'fl_one', name: 'Ground', digest: 'a', markers: [
+      { id: 'stairs', label: 'Up', x: 1, y: 2, links_to: { floor: 'fl_two', x: 3, y: 4 } },
+      { note: 'NDWORLD-RICH-TOKEN:' + JSON.stringify({ id: 'merchant-3', name: 'Mirra', merchant: true, qty: 4 }) },
+      { note: 'NDWORLD-RICH-TOKEN:{broken' },
+    ] },
     { id: 'fl_two', name: 'Upper', digest: 'b', markers: [] },
   ] };
   const requests = [];
@@ -392,7 +452,11 @@ test('creates linked playable floors and converts stair coordinates', async () =
   await handler();
   const imports = requests.filter(r => r.url.startsWith('/maps/schematic/import-uvtt'));
   assert.equal(imports.length, 2);
-  assert.deepEqual(imports[0].options.body.parts.slice(-4), [['project', 'doc_one'], ['floor', 'fl_one'], ['mode', 'ensure'], ['revision', '5']]);
+  assert.deepEqual(imports[0].options.body.parts.slice(-6), [
+    ['name', 'Tower - Ground'], ['project', 'doc_one'], ['floor', 'fl_one'],
+    ['mode', 'ensure'], ['revision', '5'],
+    ['elements', JSON.stringify([{ id: 'merchant-3', name: 'Mirra', merchant: true, qty: 4 }])],
+  ]);
   const group = JSON.parse(requests.find(r => r.url.startsWith('/api/cartographer/playable-floors')).options.body);
   assert.equal(group.project, 'doc_one');
   assert.deepEqual(group.floors[0].links, [{ id: 'stairs', label: 'Up', destination: 'fl_two', x: 32, y: 64, destination_x: 96, destination_y: 128 }]);
@@ -477,15 +541,22 @@ test('shows a playable-scene update preview before applying', async () => {
   assert.match(summary.textContent, /1 floor/);
 });
 
-test('does not copy a hidden studio floor while viewing an existing map', async () => {
+test('the hidden-visibility guard is not used as project readiness', async () => {
   let handler;
-  const status = {};
+  const status = { textContent: '' };
+  const picker = { value: 'doc_one', selectedOptions: [{ textContent: 'Tower' }] };
+  const floor = { dataset: { floor: 'floor_one' }, textContent: 'Ground' };
+  const frame = { contentDocument: { getElementById: () => picker, querySelector: () => floor } };
   const elements = { 'carto-playable-copy': { addEventListener: (_, fn) => { handler = fn; } },
-    'carto-playable-link': {}, 'carto-workspace-status': status, 'carto-studio-wrap': { hidden: true } };
+    'carto-playable-link': { hidden: true }, 'carto-workspace-status': status,
+    'carto-studio-frame': frame, 'carto-studio-wrap': { hidden: true } };
+  let confirmMessage;
   vm.runInNewContext(script, {
     document: { getElementById: id => elements[id] || null },
-    window: { location: { search: '' } }, URLSearchParams,
+    window: { confirm: message => { confirmMessage = message; return false; }, location: { search: '', origin: 'http://example.test' } },
+    URLSearchParams, URL,
   });
   await handler();
-  assert.match(status.textContent, /Switch to Map Maker/);
+  assert.match(confirmMessage, /Create a new playable schematic/);
+  assert.doesNotMatch(status.textContent, /Switch to Map Maker/);
 });

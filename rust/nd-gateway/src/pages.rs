@@ -721,6 +721,29 @@ pub fn entity_detail(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
     // the request's own visibility rule (filter_visible_entities) goes by the REAL viewer, not the preview
     let vis = if p.is_gm { "1".to_string() } else { format!("(e.visible_to_players IS NOT 0 OR e.id IN (SELECT entity_id FROM entity_player_access WHERE user_id = {}))", p.user_id) };
     let backlinks = rows(&format!("SELECT e.* FROM entities e JOIN entity_links l ON l.source_id = e.id WHERE l.target_id = ?1 AND {vis} ORDER BY e.kind, e.name"), &[&id]).or_else(|| dtrace(714))?;
+    let map_placements: Vec<Value> = if is_gm {
+        match db.prepare_cached(
+            "SELECT binding_id, project_id, floor_id, object_id, relation, visibility_policy, revision
+             FROM cartographer_object_bindings
+             WHERE world_id = ?1 AND target_type = 'entity' AND target_id = ?2
+             ORDER BY project_id, floor_id, object_id"
+        ) {
+            Ok(mut st) => st.query_map([ewid, id], |r| Ok(json!({
+                "binding_id": r.get::<_, String>(0)?,
+                "project": r.get::<_, String>(1)?,
+                "floor": r.get::<_, Option<String>>(2)?,
+                "object": r.get::<_, String>(3)?,
+                "relation": r.get::<_, String>(4)?,
+                "visibility_policy": r.get::<_, String>(5)?,
+                "revision": r.get::<_, i64>(6)?
+            }))).ok()
+                .and_then(|rows| rows.collect::<Result<Vec<_>, _>>().ok())
+                .unwrap_or_default(),
+            Err(_) => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
     let notes_vis = if p.is_gm { "" } else { " AND visible_to_players IS 1" };
     let mut notes = rows(&format!("SELECT * FROM entity_notes WHERE entity_id = ?1{notes_vis} ORDER BY created_at"), &[&id]).or_else(|| dtrace(716))?;
     let names = autolink_names_all(&db, ewid, &vis).or_else(|| dtrace(717))?;
@@ -867,6 +890,7 @@ pub fn entity_detail(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
     c.insert("entity".into(), Value::Object(entity));
     c.insert("view_as_player".into(), json!(view_as_player));
     c.insert("backlinks".into(), objs(backlinks));
+    c.insert("map_placements".into(), Value::Array(map_placements));
     c.insert("entity_notes".into(), objs(notes));
     c.insert("custom_sections".into(), Value::Array(custom_sections.into_iter().map(|(s, f)| json!([s, f])).collect()));
     c.insert("custom_fields".into(), Value::Object(custom_fields));

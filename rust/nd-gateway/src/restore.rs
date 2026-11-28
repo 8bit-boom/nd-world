@@ -199,25 +199,46 @@ pub fn apply_staged(cfg: &Config) {
     for ext in ["-wal", "-shm"] {
         let _ = std::fs::remove_file(format!("{}{ext}", db_path.display()));
     }
-    for sub in ["uploads", "maps", "cartographer"] {
-        merge_dir(&staging.join(sub), &dir.join(sub));
+    let mut restore_errors = Vec::new();
+    for sub in ["uploads", "maps"] {
+        if let Err(error) = merge_dir(&staging.join(sub), &dir.join(sub)) {
+            restore_errors.push(format!("{sub}: {error}"));
+        }
     }
-    let _ = std::fs::remove_dir_all(&staging);
+    if let Err(error) = merge_dir(&staging.join("cartographer"), &cfg.accel_root.join("cartographer")) {
+        restore_errors.push(format!("cartographer: {error}"));
+    }
+    if !restore_errors.is_empty() {
+        eprintln!(
+            "nd-gateway: Full Backup database applied, but file restore was incomplete: {}",
+            restore_errors.join("; ")
+        );
+        return;
+    }
+    if let Err(error) = std::fs::remove_dir_all(&staging) {
+        eprintln!("nd-gateway: Full Backup restore applied; could not remove restore staging: {error}");
+        return;
+    }
     eprintln!("nd-gateway: Full Backup restore applied.");
 }
 
-fn merge_dir(from: &Path, to: &Path) {
-    let Ok(rd) = std::fs::read_dir(from) else { return };
-    for e in rd.flatten() {
+fn merge_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    let rd = match std::fs::read_dir(from) {
+        Ok(rd) => rd,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    for e in rd {
+        let e = e?;
         let (src, dst) = (e.path(), to.join(e.file_name()));
         if src.is_dir() {
-            merge_dir(&src, &dst);
+            merge_dir(&src, &dst)?;
         } else if src.is_file() {
-            let _ = std::fs::create_dir_all(to);
-            let _ = std::fs::copy(&src, &dst);
+            std::fs::create_dir_all(to)?;
+            std::fs::copy(&src, &dst)?;
         }
     }
-
+    Ok(())
 }
 
 #[cfg(test)]
@@ -231,11 +252,23 @@ mod tests {
         let to = dir.path().join("live/cartographer/doc_test");
         std::fs::create_dir_all(&from).unwrap();
         std::fs::write(from.join("manifest.json"), r#"{"id":"doc_test"}"#).unwrap();
-        merge_dir(&dir.path().join("restore/cartographer"), &dir.path().join("live/cartographer"));
+        merge_dir(&dir.path().join("restore/cartographer"), &dir.path().join("live/cartographer")).unwrap();
         assert_eq!(
             std::fs::read_to_string(to.join("manifest.json")).unwrap(),
             r#"{"id":"doc_test"}"#,
         );
+    }
+
+    #[test]
+    fn merge_dir_reports_copy_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("restore");
+        let to = dir.path().join("live");
+        std::fs::create_dir_all(&from).unwrap();
+        std::fs::write(from.join("file.txt"), "backup").unwrap();
+        std::fs::write(&to, "not a directory").unwrap();
+        let error = merge_dir(&from, &to).unwrap_err();
+        assert_ne!(error.kind(), std::io::ErrorKind::NotFound);
     }
 }
 
