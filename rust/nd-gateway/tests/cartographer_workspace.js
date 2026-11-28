@@ -541,6 +541,54 @@ test('shows a playable-scene update preview before applying', async () => {
   assert.match(summary.textContent, /1 floor/);
 });
 
+test('saves an entity placement through the Map Maker binding inspector', async () => {
+  let saveHandler;
+  const status = { hidden: true, textContent: '' };
+  const entity = { value: '42', replaceChildren() {}, append() {} };
+  const object = { value: 'room-altar', replaceChildren() {} };
+  const relation = { value: 'located_at' };
+  const visibility = { value: 'discovered' };
+  const save = { disabled: false, addEventListener: (_, fn) => { saveHandler = fn; } };
+  const list = { replaceChildren() {}, append() {} };
+  const picker = { value: 'doc_one', selectedOptions: [{ textContent: 'Tower' }] };
+  const floor = { dataset: { floor: 'fl_one' } };
+  const frame = { contentDocument: {
+    getElementById: () => picker,
+    querySelector: () => floor,
+  } };
+  const elements = {
+    'carto-binding-entity': entity,
+    'carto-binding-object': object,
+    'carto-binding-relation': relation,
+    'carto-binding-visibility': visibility,
+    'carto-binding-save': save,
+    'carto-binding-list': list,
+    'carto-studio-frame': frame,
+    'carto-workspace-status': status,
+  };
+  const requests = [];
+  vm.runInNewContext(script, {
+    document: { getElementById: id => elements[id] || null, createElement: () => ({ replaceChildren() {}, append() {}, appendChild() {}, addEventListener() {}, setAttribute() {}, className: '', textContent: '', hidden: false }) },
+    window: { location: { search: '?w=test-world', origin: 'http://example.test' } },
+    URLSearchParams, URL,
+    fetch: async (url, options = {}) => {
+      requests.push({ url, options });
+      if (!options.method) return { ok: true, json: async () => ({ entities: [{ id: 42, name: 'Guildmaster', kind: 'npc' }], bindings: [] }) };
+      return { ok: true, json: async () => ({ ok: true, binding_id: 'bind-test' }) };
+    },
+  });
+  await saveHandler();
+  const post = requests.find(request => request.options.method === 'POST');
+  assert.ok(post);
+  assert.equal(post.url, '/api/cartographer/bindings?w=test-world');
+  assert.deepEqual(JSON.parse(post.options.body), {
+    project: 'doc_one', floor: 'fl_one', object: 'room-altar',
+    target_type: 'entity', target_id: 42, relation: 'located_at',
+    visibility_policy: 'discovered', revision: 1,
+  });
+  assert.equal(status.textContent, 'Entity placement bound.');
+});
+
 test('the hidden-visibility guard is not used as project readiness', async () => {
   let handler;
   const status = { textContent: '' };

@@ -764,7 +764,13 @@ pub fn update_run(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> 
                 let modes: Vec<&str> = modes.iter().filter_map(|v| v.as_str()).filter(|m| matches!(*m, "artwork" | "geometry")).collect();
                 let Some(id) = id else { return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid floor"})); };
                 if modes.is_empty() { continue; }
-                records.push(json!({"id":id,"name":name,"modes":modes,"status":"pending","error":null}));
+                let patch_hash = floor["patch_hash"].as_str().and_then(|hash| {
+                    (hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                        .then(|| hash.to_ascii_lowercase())
+                });
+                let mut record = json!({"id":id,"name":name,"modes":modes,"status":"pending","error":null});
+                if let Some(patch_hash) = patch_hash { record["patch_hash"] = json!(patch_hash); }
+                records.push(record);
             }
             if records.is_empty() { return reply(StatusCode::BAD_REQUEST, json!({"error":"No approved updates"})); }
             let id = format!("run_{:032x}", rand::random::<u128>());
@@ -829,6 +835,18 @@ pub fn update_run(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> 
             let Some((revision, floors_json, run_status)) = row else {
                 return reply(StatusCode::NOT_FOUND, json!({"error":"Update run not found"}));
             };
+            if let Some(expected_revision) = data["revision"].as_i64() {
+                if expected_revision != revision {
+                    return reply(StatusCode::CONFLICT, json!({"error":"Update run revision changed","run_revision":revision}));
+                }
+            }
+            let supplied_hash = data["patch_hash"].as_str().and_then(|hash| {
+                (hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                    .then(|| hash.to_ascii_lowercase())
+            });
+            if data.get("patch_hash").is_some() && supplied_hash.is_none() {
+                return reply(StatusCode::BAD_REQUEST, json!({"error":"Invalid patch_hash"}));
+            }
             if run_status == "cancelled" {
                 return reply(StatusCode::CONFLICT, json!({"error":"This update run was cancelled"}));
             }
@@ -839,8 +857,17 @@ pub fn update_run(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> 
             for floor in &mut floors {
                 if floor["id"].as_str() == Some(floor_id) {
                     found = true;
+                    if let (Some(expected_hash), Some(stored_hash)) = (supplied_hash.as_deref(), floor["patch_hash"].as_str()) {
+                        if expected_hash != stored_hash {
+                            return reply(StatusCode::CONFLICT, json!({"error":"Patch changed after approval","floor":floor_id}));
+                        }
+                    }
                     floor["status"] = json!(floor_status);
                     floor["error"] = data["error"].as_str().map(|message| json!(message.chars().take(500).collect::<String>())).unwrap_or(Value::Null);
+                    if let Some(operation_id) = data["operation_id"].as_str()
+                        .filter(|id| id.len() <= 96 && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))) {
+                        floor["operation_id"] = json!(operation_id);
+                    }
                 }
             }
             if !found { return reply(StatusCode::BAD_REQUEST, json!({"error":"Floor is not in this update run"})); }

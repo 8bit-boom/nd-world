@@ -23,10 +23,12 @@
     });
     const prepare = document.getElementById('carto-prepare-stage');
     const buildExisting = document.getElementById('carto-build-existing');
+    const binding = document.getElementById('carto-binding-stage');
     const studio = document.getElementById('carto-studio-wrap');
     const existing = document.getElementById('carto-existing-wrap');
     const run = document.getElementById('carto-run-stage');
     if (prepare) prepare.hidden = stage !== 'prepare';
+    if (binding) binding.hidden = stage !== 'prepare';
     if (buildExisting) buildExisting.hidden = stage !== 'build';
     if (stage === 'build') {
       if (studio) studio.hidden = buildView !== 'studio';
@@ -42,9 +44,167 @@
   }
   ['build', 'prepare', 'run'].forEach(stage => {
     const button = document.getElementById('carto-stage-' + stage);
-    if (button) button.addEventListener('click', () => setWorkflowStage(stage));
+    if (button) button.addEventListener('click', () => {
+      setWorkflowStage(stage);
+      if (stage === 'prepare') cartoLoadBindings();
+    });
   });
   setWorkflowStage(project ? 'build' : 'build');
+
+  function cartoApiUrl(path) {
+    const url = new URL(path, window.location.origin);
+    if (params.get('w')) url.searchParams.set('w', params.get('w'));
+    return url;
+  }
+  function cartoStudioSelection() {
+    const frame = document.getElementById('carto-studio-frame');
+    const studioDoc = frame && frame.contentDocument;
+    const picker = studioDoc && studioDoc.getElementById('doc-select');
+    const activeFloor = studioDoc && studioDoc.querySelector('#floor-tabs [role="tab"][aria-selected="true"]');
+    return {
+      project: picker && picker.value,
+      floor: activeFloor && activeFloor.dataset.floor,
+    };
+  }
+  async function cartoPatchHash(project, revision, floorId, modes) {
+    const payload = JSON.stringify({ project, revision, floor: floorId, modes: modes.slice().sort() });
+    if (window.crypto && window.crypto.subtle && window.TextEncoder) {
+      const bytes = await window.crypto.subtle.digest('SHA-256', new window.TextEncoder().encode(payload));
+      return Array.from(new Uint8Array(bytes)).map(byte => byte.toString(16).padStart(2, '0')).join('');
+    }
+    let hash = 0;
+    for (let index = 0; index < payload.length; index++) {
+      hash = ((hash << 5) - hash + payload.charCodeAt(index)) >>> 0;
+    }
+    return (hash.toString(16).padStart(8, '0')).repeat(8);
+  }
+  const bindingEntity = document.getElementById('carto-binding-entity');
+  const bindingObject = document.getElementById('carto-binding-object');
+  const bindingRelation = document.getElementById('carto-binding-relation');
+  const bindingVisibility = document.getElementById('carto-binding-visibility');
+  const bindingSave = document.getElementById('carto-binding-save');
+  const bindingList = document.getElementById('carto-binding-list');
+  async function cartoLoadBindings() {
+    if (!bindingList) return;
+    bindingList.replaceChildren();
+    const selection = cartoStudioSelection();
+    const url = cartoApiUrl('/api/cartographer/bindings');
+    if (selection.project) url.searchParams.set('project', selection.project);
+    if (selection.floor) url.searchParams.set('floor', selection.floor);
+    try {
+      const response = await fetch(url.pathname + url.search);
+      if (!response.ok) throw new Error('Could not load placements.');
+      const data = await response.json();
+      const bindings = Array.isArray(data.bindings) ? data.bindings : [];
+      if (!bindings.length) {
+        const empty = document.createElement('p');
+        empty.className = 'carto-note';
+        empty.textContent = 'No placements bound yet.';
+        bindingList.append(empty);
+        return;
+      }
+      bindings.forEach(binding => {
+        const row = document.createElement('div');
+        row.className = 'carto-binding-row';
+        const text = document.createElement('span');
+        const entityName = document.createElement('strong');
+        entityName.textContent = 'Entity #' + binding.target_id;
+        text.append(entityName, document.createTextNode(' · '), binding.object, document.createTextNode(' · ' + binding.relation + ' · ' + binding.visibility_policy));
+        row.append(text);
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'carto-btn';
+        remove.textContent = 'Remove';
+        remove.addEventListener('click', async () => {
+          remove.disabled = true;
+          try {
+            const removeUrl = cartoApiUrl('/api/cartographer/bindings');
+            const removed = await fetch(removeUrl.pathname + removeUrl.search, {
+              method: 'DELETE', headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ binding_id: binding.binding_id }),
+            });
+            if (!removed.ok) throw new Error('Could not remove binding.');
+            await cartoLoadBindings();
+          } catch (error) {
+            const status = document.getElementById('carto-workspace-status');
+            status.hidden = false;
+            status.textContent = error.message;
+            remove.disabled = false;
+          }
+        });
+        row.append(remove);
+        bindingList.append(row);
+      });
+    } catch (error) {
+      const message = document.createElement('p');
+      message.className = 'carto-note';
+      message.textContent = error.message;
+      bindingList.append(message);
+    }
+  }
+  async function cartoLoadEntities() {
+    if (!bindingEntity) return;
+    const url = cartoApiUrl('/api/entities/picker');
+    try {
+      const response = await fetch(url.pathname + url.search);
+      if (!response.ok) throw new Error('Could not load entities.');
+      const data = await response.json();
+      bindingEntity.replaceChildren();
+      const choose = document.createElement('option');
+      choose.value = '';
+      choose.textContent = 'Choose an entity…';
+      bindingEntity.append(choose);
+      (Array.isArray(data.entities) ? data.entities : []).forEach(entity => {
+        const option = document.createElement('option');
+        option.value = String(entity.id);
+        option.textContent = (entity.name || 'Unnamed') + ' · ' + (entity.kind || 'entity');
+        bindingEntity.append(option);
+      });
+    } catch (error) {
+      bindingEntity.replaceChildren();
+      const option = document.createElement('option');
+      option.value = '';
+      option.textContent = error.message;
+      bindingEntity.append(option);
+    }
+  }
+  if (bindingSave) bindingSave.addEventListener('click', async () => {
+    const status = document.getElementById('carto-workspace-status');
+    const selection = cartoStudioSelection();
+    const targetId = Number(bindingEntity && bindingEntity.value);
+    const object = bindingObject && bindingObject.value.trim();
+    if (!selection.project || !selection.floor || !targetId || !object) {
+      status.hidden = false;
+      status.textContent = 'Choose a loaded project/floor, an entity, and a map object ID.';
+      return;
+    }
+    bindingSave.disabled = true;
+    try {
+      const url = cartoApiUrl('/api/cartographer/bindings');
+      const response = await fetch(url.pathname + url.search, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          project: selection.project, floor: selection.floor, object,
+          target_type: 'entity', target_id: targetId,
+          relation: bindingRelation ? bindingRelation.value : 'represents',
+          visibility_policy: bindingVisibility ? bindingVisibility.value : 'inherit',
+          revision: 1,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Could not save binding.');
+      bindingObject.value = '';
+      await cartoLoadBindings();
+      status.hidden = false;
+      status.textContent = 'Entity placement bound.';
+    } catch (error) {
+      status.hidden = false;
+      status.textContent = error.message;
+    } finally {
+      bindingSave.disabled = false;
+    }
+  });
+  cartoLoadEntities();
   function setRunTarget(slug) {
     window.cartoRunSlug = slug;
     const open = document.getElementById('carto-run-open');
@@ -329,14 +489,18 @@
       const results = [];
       try {
         await request(base + '/save', { method: 'POST' });
-        const approved = updateState.source.floors.map(floor => {
+        const approved = (await Promise.all(updateState.source.floors.map(async floor => {
           const artwork = body.querySelector('input[data-role="artwork"][data-floor="' + floor.id + '"]:checked');
           const geometryChecked = body.querySelector('input[data-role="geometry"][data-floor="' + floor.id + '"]:checked');
           const modes = [];
           if (artwork) modes.push('artwork');
           if (geometryChecked) modes.push('geometry');
-          return modes.length ? { id: floor.id, name: floor.name, modes } : null;
-        }).filter(Boolean);
+          if (!modes.length) return null;
+          return {
+            id: floor.id, name: floor.name, modes,
+            patch_hash: await cartoPatchHash(updateState.id, updateState.source.rev, floor.id, modes),
+          };
+        }))).filter(Boolean);
         const runUrl = new URL('/api/cartographer/update-run', window.location.origin);
         if (params.get('w')) runUrl.searchParams.set('w', params.get('w'));
         let run;
@@ -347,7 +511,7 @@
             if (floor.status === 'failed' || floor.status === 'cancelled') {
               await request(runUrl.pathname + runUrl.search, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'mark', id: run.id, floor: floor.id, status: 'pending', error: null }),
+                body: JSON.stringify({ action: 'mark', id: run.id, floor: floor.id, status: 'pending', revision: updateState.source.rev, error: null }),
               });
             }
           }
@@ -366,9 +530,15 @@
           const artwork = body.querySelector('input[data-role="artwork"][data-floor="' + floor.id + '"]:checked');
           const geometryChecked = body.querySelector('input[data-role="geometry"][data-floor="' + floor.id + '"]:checked');
           if (!artwork && !geometryChecked) continue;
+          const modesForHash = [];
+          if (artwork) modesForHash.push('artwork');
+          if (geometryChecked) modesForHash.push('geometry');
+          const patchHash = await cartoPatchHash(updateState.id, updateState.source.rev, floor.id, modesForHash);
+          const operationId = run.id + '-' + floor.id;
           await request(runUrl.pathname + runUrl.search, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'mark', id: run.id, floor: floor.id, status: 'running' }),
+            body: JSON.stringify({ action: 'mark', id: run.id, floor: floor.id, status: 'running',
+              revision: updateState.source.rev, patch_hash: patchHash, operation_id: operationId }),
           });
           const modes = artwork ? ['refresh'] : [];
           if (geometryChecked) modes.push('geometry');
@@ -390,7 +560,8 @@
               floorFailed = true;
               await request(runUrl.pathname + runUrl.search, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'mark', id: run.id, floor: floor.id, status: 'failed', error: error.message }),
+                body: JSON.stringify({ action: 'mark', id: run.id, floor: floor.id, status: 'failed',
+                  revision: updateState.source.rev, patch_hash: patchHash, operation_id: operationId, error: error.message }),
               });
               const line = document.createElement('p');
               line.className = 'carto-note';
@@ -401,7 +572,8 @@
           if (!floorFailed) {
             await request(runUrl.pathname + runUrl.search, {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action: 'mark', id: run.id, floor: floor.id, status: 'done' }),
+              body: JSON.stringify({ action: 'mark', id: run.id, floor: floor.id, status: 'done',
+                revision: updateState.source.rev, patch_hash: patchHash, operation_id: operationId }),
             });
           }
         }

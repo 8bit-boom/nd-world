@@ -31,6 +31,17 @@
 .carto-workflow-step.active { border-color:var(--neon); color:var(--neon); background:rgba(0,240,255,.08); }
 .carto-stage[hidden] { display:none; }
 .carto-run-pane { border:1px solid var(--border); border-radius:4px; background:var(--bg2); padding:.9rem; }
+.carto-binding-panel { border:1px solid var(--border); border-radius:4px; background:var(--bg2); padding:.9rem; }
+.carto-binding-grid { display:grid; grid-template-columns:minmax(180px,1fr) minmax(140px,1fr) minmax(140px,1fr) minmax(140px,1fr) auto; gap:.5rem; align-items:end; }
+.carto-binding-grid label { display:flex; flex-direction:column; gap:.25rem; font-size:.78rem; color:var(--text-dim); }
+.carto-binding-grid input,.carto-binding-grid select { width:100%; box-sizing:border-box; }
+.carto-binding-list { display:grid; gap:.35rem; margin-top:.7rem; }
+.carto-binding-row { display:flex; align-items:center; justify-content:space-between; gap:.5rem; border-top:1px solid var(--border); padding:.45rem 0; font-size:.82rem; }
+.carto-binding-row[hidden] { display:none; }
+.carto-binding-row code { color:var(--neon3); }
+.carto-binding-row .carto-btn { padding:.25rem .55rem; }
+@media (max-width:900px) { .carto-binding-grid { grid-template-columns:1fr 1fr; } }
+@media (max-width:560px) { .carto-binding-grid { grid-template-columns:1fr; } }
 </style>
 
 <div class="carto-wrap">
@@ -63,6 +74,42 @@
       <a class="carto-btn" id="carto-run-open" hidden>Open live map</a>
       <button type="button" class="carto-btn" id="carto-run-play">Play this scene</button>
     </div>
+    <section class="carto-binding-panel carto-stage" id="carto-binding-stage" hidden aria-labelledby="carto-binding-title">
+      <strong id="carto-binding-title">Entity placement bindings</strong>
+      <p class="carto-note">Bind an existing entity to a stable map/floor object. Player visibility is checked separately from canonical entity access.</p>
+      <div class="carto-binding-grid">
+        <label>Entity
+          <select id="carto-binding-entity"><option value="">Choose an entity…</option></select>
+        </label>
+        <label>Floor/object
+          <input id="carto-binding-object" maxlength="96" placeholder="room_... or npc_token_..." />
+        </label>
+        <label>Relation
+          <select id="carto-binding-relation">
+            <option value="represents">Represents</option>
+            <option value="occupant">Occupant</option>
+            <option value="located_at">Located at</option>
+            <option value="contains">Contains</option>
+            <option value="headquarters">Headquarters</option>
+            <option value="controls">Controls</option>
+            <option value="claims">Claims</option>
+            <option value="influences">Influences</option>
+            <option value="portal">Portal</option>
+            <option value="interacts">Interactable</option>
+            <option value="encounter">Encounter</option>
+          </select>
+        </label>
+        <label>Visibility
+          <select id="carto-binding-visibility">
+            <option value="inherit">Inherit</option>
+            <option value="discovered">Discovered only</option>
+            <option value="gm_only">GM only</option>
+          </select>
+        </label>
+        <button type="button" class="carto-btn" id="carto-binding-save">Bind entity</button>
+      </div>
+      <div class="carto-binding-list" id="carto-binding-list"><p class="carto-note">Loading placements…</p></div>
+    </section>
   </div>
   {% if existing_maps %}
   <div class="carto-actions carto-stage" id="carto-build-existing">
